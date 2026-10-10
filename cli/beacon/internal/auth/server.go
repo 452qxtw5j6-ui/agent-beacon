@@ -310,13 +310,18 @@ func renderCallbackPage(p callbackPage) string {
       font: 15px/1.6 ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     }
     .card { width: 100%%; max-width: 420px; text-align: center; }
-    .mark { font-size: 11px; letter-spacing: .38em; color: %s; font-weight: 700; margin-bottom: 28px; }
+    .brand {
+      display: inline-flex; align-items: center; gap: 10px; margin-bottom: 28px;
+      color: #e8e8ed; font-size: 17px; font-weight: 750; letter-spacing: -.04em;
+    }
+    .brand svg { display: block; width: 30px; height: 30px; }
     h1 { font-size: 22px; line-height: 1.3; margin: 0 0 12px; font-weight: 600; }
     .lead { margin: 0; color: #a8a8b3; }
     .note { margin: 28px 0 0; font-size: 13px; color: #74747f; }
     a { color: %s; }
     @media (prefers-color-scheme: light) {
       body { background: #fbfbfd; color: #16161a; }
+      .brand { color: #16161a; }
       .lead { color: #5b5b66; }
       .note { color: #8a8a94; }
     }
@@ -324,12 +329,17 @@ func renderCallbackPage(p callbackPage) string {
 </head>
 <body>
   <main class="card">
-    <div class="mark">B E A C O N</div>
+    <div class="brand" aria-label="Beacon">
+      <svg viewBox="21 20 200 200" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <path d="M182.194 156.596C152.215 156.596 127.94 180.244 127.939 210.23V210.525H114.234V210.23H114.257C114.257 180.244 89.9597 156.596 60.0029 156.596V126.709C89.9595 126.709 114.256 150.357 114.257 180.343H114.234V180.639H127.939V180.343C127.94 150.357 152.215 126.709 182.194 126.709V156.596ZM127.96 30.2949H127.938C127.938 60.281 152.235 83.9295 182.191 83.9297V113.816C152.235 113.816 127.938 90.1685 127.938 60.1826H127.96V59.8867H114.255V60.1826C114.255 90.1687 89.9796 113.816 60 113.816V83.9297C89.9797 83.9297 114.255 60.2812 114.255 30.2949V30H127.96V30.2949Z" fill="#FF5400"/>
+      </svg>
+      <span>Beacon</span>
+    </div>
     <h1>%s</h1>
     <p class="lead">%s</p>
     %s
   </main>
 </body>
-</html>`, html.EscapeString(p.Title), accent, accent,
+</html>`, html.EscapeString(p.Title), accent,
 		html.EscapeString(p.Heading), html.EscapeString(p.Lead), footer.String())
 }
