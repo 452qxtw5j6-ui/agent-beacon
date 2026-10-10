@@ -94,6 +94,7 @@
             "icon": "sliders",
             "pages": [
               "deployment/managed-mcp",
+              "manage/profile",
               {
                 "group": "Inventory",
                 "root": "guides/inventory",
