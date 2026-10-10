@@ -115,7 +115,7 @@ func TestVectorConfigReadsTheStagedBackfillFromTheBeginningInEveryPrivacyMode(t 
 		if err != nil {
 			t.Fatal(err)
 		}
-		source := "[sources.beacon_backfill]\ntype = \"file\"\ninclude = [\"/tmp/beacon/" + BackfillLogName + "\"]\nread_from = \"beginning\""
+		source := "[sources.beacon_backfill]\ntype = \"file\"\ninclude = [\"/tmp/beacon/" + BackfillLogName + "\"]\nread_from = \"beginning\"\nfingerprint.strategy = \"device_and_inode\""
 		if !strings.Contains(got, source) {
 			t.Fatalf("%s config has no backfill source:\n%s", mode, got)
 		}
@@ -141,7 +141,7 @@ func TestVectorConfigReadsTheStagedBackfillFromTheBeginningInEveryPrivacyMode(t 
 	}
 }
 
-func TestFirstConnectStagesTheBackfillBeforeTheForwarderStartsAndReconnectDoesNot(t *testing.T) {
+func TestEveryConnectStagesTheBackfillBeforeTheForwarderStarts(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	isolateVectorDiscovery(t)
 	fd := newFakeDashboard(t)
@@ -154,11 +154,17 @@ func TestFirstConnectStagesTheBackfillBeforeTheForwarderStartsAndReconnectDoesNo
 	opts.Backfill = &ConnectBackfill{
 		Sync: func() error {
 			synced++
-			// The sweep runs before any key exists.
-			if _, err := ReadDeviceKey(true); err == nil {
+			// On a first connect the sweep runs before any key exists.
+			if _, err := ReadDeviceKey(true); synced == 1 && err == nil {
 				t.Error("backfill sync ran after the device key was stored")
 			}
-			writeLines(t, opts.LogPath, backfillTestLine(time.Now().UTC().Format(time.RFC3339), "poll", "fresh"))
+			now := time.Now().UTC().Format(time.RFC3339)
+			lines := []string{backfillTestLine(now, "poll", "fresh")}
+			if synced > 1 {
+				// Written while the endpoint was connected or not; the re-connect stages it too.
+				lines = append(lines, backfillTestLine(now, "poll", "later"))
+			}
+			writeLines(t, opts.LogPath, lines...)
 			return errors.New("one runtime could not be read")
 		},
 	}
@@ -176,23 +182,30 @@ func TestFirstConnectStagesTheBackfillBeforeTheForwarderStartsAndReconnectDoesNo
 		t.Fatalf("synced=%d backfill=%+v staged-before-load=%d", synced, result.Backfill, loadsAtStage)
 	}
 
-	// A re-connect resumes from the forwarder's checkpoints: no sweep, no new stage.
-	if err := os.Remove(staged); err != nil {
+	// A re-connect sweeps and stages again, as a new file the backfill source reads from the
+	// beginning, so history written while the endpoint was not connected still arrives.
+	first, err := os.Stat(staged)
+	if err != nil {
 		t.Fatal(err)
 	}
+	loadsAtStage = 0
 	again, err := Connect(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if synced != 1 || again.Backfill != nil {
-		t.Fatalf("re-connect synced=%d backfill=%+v", synced, again.Backfill)
+	if synced != 2 || again.Backfill == nil || again.Backfill.Events != 2 || loadsAtStage != 1 {
+		t.Fatalf("re-connect synced=%d backfill=%+v staged-before-load=%d", synced, again.Backfill, loadsAtStage)
 	}
-	if _, err := os.Stat(staged); !os.IsNotExist(err) {
-		t.Fatal("re-connect staged the backfill again")
+	second, err := os.Stat(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(first, second) {
+		t.Fatal("re-connect rewrote the staged backfill in place; the inode-fingerprinted source would resume at the old offset")
 	}
 }
 
-func TestPrivacyModeChangeDropsTheStagedBackfillWithTheCheckpoints(t *testing.T) {
+func TestPrivacyModeChangeRestagesTheBackfillInTheNewMode(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	isolateVectorDiscovery(t)
 	fd := newFakeDashboard(t)
@@ -205,15 +218,21 @@ func TestPrivacyModeChangeDropsTheStagedBackfillWithTheCheckpoints(t *testing.T)
 		t.Fatal(err)
 	}
 	staged := BackfillLogPath(opts.LogPath)
-	if _, err := os.Stat(staged); err != nil {
+	first, err := os.Stat(staged)
+	if err != nil {
 		t.Fatalf("first connect did not stage: %v", err)
 	}
 	opts.PrivacyMode = "metadata-only"
-	if _, err := Connect(context.Background(), opts); err != nil {
+	result, err := Connect(context.Background(), opts)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(staged); !os.IsNotExist(err) {
-		t.Fatal("a privacy mode change kept a staged backfill whose checkpoint it cleared")
+	second, err := os.Stat(staged)
+	if err != nil || result.Backfill == nil || result.Backfill.Events != 1 {
+		t.Fatalf("a privacy mode change did not restage the backfill: %v %+v", err, result.Backfill)
+	}
+	if os.SameFile(first, second) {
+		t.Fatal("a privacy mode change kept the old staged backfill")
 	}
 }
 

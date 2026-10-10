@@ -49,15 +49,15 @@ type ConnectOptions struct {
 	InstallID string
 	// PrivacyMode controls the Vector-side transform before managed upload.
 	PrivacyMode string
-	// Backfill, when set, ships recent session history on a first connect. Nil ships nothing
-	// recorded before the connection point.
+	// Backfill, when set, ships recent session history on this connect, first or not. Nil ships
+	// nothing recorded before the connection point.
 	Backfill *ConnectBackfill
 	Out      io.Writer
 	// Now is injectable for tests.
 	Now func() time.Time
 }
 
-// ConnectBackfill is the bounded session backfill a first connect ships. Neither step can fail
+// ConnectBackfill is the bounded session backfill a connect ships. Neither step can fail
 // the connect: a backfill that could not be staged leaves a working forwarder, and says so.
 type ConnectBackfill struct {
 	// Sync reads the agents' session stores into the runtime log, so the backfill covers what
@@ -185,7 +185,7 @@ func Connect(ctx context.Context, opts ConnectOptions) (_ *ConnectResult, err er
 
 	// The session-store sweep is local and can take a while on a machine with a lot of history,
 	// so it runs here, after every check that could refuse the connect and before a key exists.
-	if opts.Backfill != nil && opts.Backfill.Sync != nil && !reconnect {
+	if opts.Backfill != nil && opts.Backfill.Sync != nil {
 		if err := opts.Backfill.Sync(); err != nil {
 			fmt.Fprintf(out, "Session backfill: %v\n", err)
 		}
@@ -276,18 +276,20 @@ func Connect(ctx context.Context, opts ConnectOptions) (_ *ConnectResult, err er
 			if err := os.MkdirAll(dataDir, 0o700); err != nil {
 				return nil, err
 			}
-			// Clearing the checkpoints would have the backfill source read the file staged by
-			// the first connect from the beginning again, shipping that history twice.
+			// The buffer held lines in the old mode; drop the old staged copy with it. The
+			// backfill staged below replaces it in the new mode.
 			if err := RemoveBackfill(logPath); err != nil {
 				return nil, fmt.Errorf("could not remove the staged session backfill: %w", err)
 			}
 		}
 	}
-	// Staged after the config is written and before the forwarder starts, so the runtime source's
-	// connection point falls after every line staged here and nothing is shipped twice. Only a
-	// first connect stages: a re-connect resumes from the forwarder's checkpoints.
+	// Staged before the forwarder (re)starts, so on a first connect the runtime source's connection
+	// point falls after every line staged here. A re-connect stages too: the runtime source resumes
+	// from its checkpoint, and the backfill source reads the restaged file as a new one, so history
+	// the agents wrote while the endpoint was not connected, or before a system endpoint could read
+	// it, still arrives. Lines the forwarder already shipped carry the same deterministic event.id.
 	var backfill *BackfillResult
-	if opts.Backfill != nil && !reconnect {
+	if opts.Backfill != nil {
 		staged, err := StageBackfill(logPath, opts.Backfill.Options)
 		if err != nil {
 			fmt.Fprintf(out, "Session backfill was not staged: %v\n", err)

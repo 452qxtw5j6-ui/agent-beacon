@@ -57,7 +57,7 @@ The `claude` harness writes both Claude Code's OpenTelemetry settings and its us
 
 ## Session backfill
 
-After a successful user-mode install, Beacon reads the last 30 days of agent sessions from each
+After a successful install, user or system mode, Beacon reads the last 30 days of agent sessions from each
 runtime's own session store into the runtime log, so the [local dashboard](/cli/dashboard) has
 your recent sessions before any agent runs again. It is the same sweep each runtime's sync command
 runs (`beacon endpoint claude sync`, `codex sync`, `cursor sync`, `opencode sync`, `copilot sync`,
@@ -76,9 +76,14 @@ left out are not touched, so the runtime's sync command reads the rest; install 
 for each runtime that hit the limit. A runtime whose store cannot be read is reported as a warning
 and never fails the install. Re-running install reads only what changed since the last sweep.
 
-The backfill runs only for user-mode installs: system, package, MDM and `--dry-run` installs skip
-it. Turn it off with `--no-backfill` or `BEACON_BACKFILL=0`. If this install also connects to
-Beacon Cloud, the same history is [uploaded on the first connect](/cli/endpoint-connect#session-backfill).
+A system, package or MDM install runs as root, whose home holds no agent sessions, so it reads the
+session stores of the active console user instead: the same person system hook repair and the
+scheduled inventory resolve (`SUDO_USER` or the logind seat on Linux, the console owner on macOS,
+the active session on Windows). Its collector cursors stay under the system base directory. When
+nobody is logged in, install says the backfill was skipped and the next connect or manual sync
+reads the sessions. `--dry-run` installs skip it, and `--no-backfill` or `BEACON_BACKFILL=0` turn it
+off. If this install also connects to Beacon Cloud, the same history is
+[uploaded by the connect](/cli/endpoint-connect#session-backfill).
 
 ## Interactive onboarding wizard
 

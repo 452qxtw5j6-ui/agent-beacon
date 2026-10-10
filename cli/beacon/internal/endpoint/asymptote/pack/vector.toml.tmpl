@@ -26,12 +26,17 @@ include = ["{{LOG_PATH}}"]
 # Nothing recorded before the device was approved is shipped.
 read_from = "end"
 
-# The bounded session backfill a first connect stages from the agents' own
-# session stores, so the dashboard shows recent history at once. Read once.
+# The bounded session backfill every connect stages from the agents' own
+# session stores, so the dashboard shows recent history at once. Each connect
+# replaces the file atomically; fingerprinting by inode makes every restaged
+# copy a new file read from the beginning, where a content checksum could take
+# a restaged copy that starts with the same event for the old one and resume
+# at a stale offset. Lines already shipped carry the same event.id as before.
 [sources.beacon_backfill]
 type = "file"
 include = ["{{BACKFILL_LOG_PATH}}"]
 read_from = "beginning"
+fingerprint.strategy = "device_and_inode"
 
 [sources.beacon_inventory]
 type = "file"

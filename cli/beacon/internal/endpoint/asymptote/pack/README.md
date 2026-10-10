@@ -13,7 +13,7 @@ and Vector has been started.
 
 Every line of `runtime.jsonl` written after the forwarder starts, every line
 of `inventory_state.jsonl`, and every line of `cloud-backfill.jsonl` (the
-bounded session backfill `beacon endpoint connect` stages on a first connect;
+bounded session backfill each `beacon endpoint connect` stages;
 absent otherwise), exactly as Beacon wrote them locally. Local
 redaction, retention and size limits apply before a line is written, so they
 apply to what is forwarded. The ingest service adds a `tenant` block
