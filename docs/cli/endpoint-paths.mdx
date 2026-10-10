@@ -9,6 +9,7 @@ Beacon manages different paths depending on whether you install in user mode or 
 
 | Item | User mode | System mode (macOS) | System mode (Linux) | System mode (Windows) |
 |------|-----------|---------------------|---------------------|-----------------------|
+| User profile | `~/.beacon/profile.json` | `~/.beacon/profile.json` | `~/.beacon/profile.json` | `%USERPROFILE%\.beacon\profile.json` |
 | Config | `~/.beacon/endpoint/config.json` | `/Library/Application Support/Beacon/Endpoint/config.json` | `/etc/beacon/endpoint/config.json` | `%ProgramData%\Beacon\Endpoint\config.json` |
 | Base directory | `~/.beacon/endpoint` | `/Library/Application Support/Beacon/Endpoint` | `/etc/beacon/endpoint` | `%ProgramData%\Beacon\Endpoint` |
 | Runtime log | `~/.beacon/endpoint/logs/runtime.jsonl` | `/var/log/beacon-agent/runtime.jsonl` | `/var/log/beacon-agent/runtime.jsonl` | `%ProgramData%\Beacon\Endpoint\logs\runtime.jsonl` |
@@ -25,6 +26,12 @@ Beacon manages different paths depending on whether you install in user mode or 
 These are the default ports. `--otlp-grpc-port`, `--otlp-http-port`, and `--health-port` change them per install. When `--otlp-http-port` changes and no `--health-port` is given, the health-check port moves by the same amount, so a user-mode collector on alternate ports can run beside the system one. The ports in use are recorded under `collector` in `config.json`.
 
 On Windows the system log directory sits under the base directory rather than in a separate location, because there is no `/var/log` equivalent. `%ProgramData%` and `%ProgramFiles%` are read from the environment rather than hardcoded, so a relocated or localized install is found rather than missed.
+
+## User profile
+
+`profile.json` is a per-user record stored separately from mode-specific endpoint configuration. It stores a random install ID and the completed first-run onboarding choices, including the destination, privacy mode, and optional agent-tool selections. It may also contain the signed-in email used during onboarding. On macOS and Linux, Beacon creates the file with permissions `0600`.
+
+The profile sits outside the endpoint base directory so [`beacon endpoint uninstall`](/cli/endpoint-uninstall) does not remove it and a reinstall does not repeat completed onboarding. Inspect or clear the onboarding record with [`beacon endpoint onboarding`](/cli/endpoint-onboarding). The endpoint's runtime and forwarding settings remain in the mode-specific `config.json` paths listed above.
 
 ## Service definitions
 
