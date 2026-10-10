@@ -14,10 +14,11 @@ concurrency:
 
 jobs:
   review:
-    # Skip drafts, and fork PRs (secrets are not available to them).
+    # Skip drafts, fork PRs, and Dependabot (none of them get this repo's secrets).
     if: >-
       !github.event.pull_request.draft &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -34,6 +35,8 @@ jobs:
           # Workflow token: comments come from github-actions[bot] and no GitHub App is needed.
           # To post as claude[bot], install the Claude GitHub App, drop this, and add id-token: write.
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # The action refuses bot actors by default; let pushes from the Claude app be reviewed.
+          allowed_bots: "claude[bot]"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
