@@ -1,0 +1,64 @@
+---
+title: "Configure your profile"
+description: "Publish a shareable Beacon Cloud profile with aggregate activity, harness, and achievement data"
+---
+
+Beacon Cloud profiles turn your coding-agent activity into a shareable developer identity. Your
+profile is private by default, and publishing it exposes only the aggregate information shown on
+the profile—not your prompts, session contents, commands, or tool calls.
+
+See [Justin's profile](https://beacon.sh/profile/justin) for an example.
+
+## Configure your profile
+
+1. Sign in to [Beacon Cloud](https://beacon.sh/profile).
+2. Select **Edit profile**.
+3. Choose a public handle and configure the optional fields.
+4. Turn on **Publish profile**.
+5. Select **Save profile**.
+
+Publishing requires a handle. Your public URL uses the format
+`https://beacon.sh/profile/<handle>`.
+
+## Profile settings
+
+| Setting | Description |
+| --- | --- |
+| Profile picture | Managed from your Beacon account settings. |
+| Public handle | A unique 3–30 character name containing lowercase letters, numbers, underscores, or hyphens. It must start and end with a letter or number. Some reserved names are unavailable. |
+| Timezone | A valid [IANA timezone](https://www.iana.org/time-zones), such as `America/Los_Angeles`. Beacon uses it to group activity by calendar day and calculate time-based achievements. |
+| GitHub URL | An optional complete `http` or `https` URL to your GitHub profile. |
+| X URL | An optional complete `http` or `https` URL to your X profile. |
+| Website | An optional complete `http` or `https` URL to your personal site. |
+| Publish profile | Makes the aggregate profile available to anyone with its URL. Turn this off to make the profile private again. |
+
+Your display name and profile picture come from your Beacon account. To update the picture, select
+it while editing your profile to open account settings.
+
+## What a public profile shows
+
+A published profile can include:
+
+- Your display name, profile picture, handle, join date, and optional links
+- Aggregate token consumption and coding-agent activity
+- The supported agent harnesses Beacon has observed and their session counts
+- Aggregate session metrics when enough lifecycle data is available
+- Your activity calendar
+- Achievements you have earned
+
+Metrics explain their calculation directly on the profile. Some metrics may display **Not enough
+data** until Beacon observes the required session lifecycle events.
+
+<Note>
+Public profiles never expose raw prompts, responses, session transcripts, commands, tool-call
+arguments, or individual session records. Publishing changes only the visibility of the aggregate
+profile.
+</Note>
+
+## Share or unpublish your profile
+
+When your profile is public, use **Copy link** from your profile page or copy its
+`https://beacon.sh/profile/<handle>` URL.
+
+To remove public access, select **Edit profile**, turn off **Publish profile**, and save. The public
+URL will stop returning your profile; your Beacon Cloud account and telemetry remain unchanged.
