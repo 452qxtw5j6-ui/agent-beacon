@@ -234,7 +234,7 @@ func TestSuccessPageIsStyledAndPointsAtTheTerminal(t *testing.T) {
 	resp.Body.Close()
 	page := string(body)
 
-	for _, want := range []string{"Signed in to Beacon", "Return to your terminal", "<style>", "B E A C O N"} {
+	for _, want := range []string{"Signed in to Beacon", "Return to your terminal", "<style>", `class="brand"`, `aria-label="Beacon"`, "<span>Beacon</span>", "#FF5400"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("success page missing %q:\n%s", want, page)
 		}
