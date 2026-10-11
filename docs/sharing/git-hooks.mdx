@@ -1,0 +1,102 @@
+---
+title: "Sharing via Git Hooks"
+description: "Link commits to the agent sessions that wrote them, and share those sessions on push"
+---
+
+Beacon's git hooks record which agent sessions produced each commit, as a git note on the commit. Share the notes with your remote and teammates can trace a line of code back to the session that wrote it. Turn on session sharing as well and the pre-push hook publishes those sessions to beacon.sh and writes their links into the notes, so every pushed commit points at its trace.
+
+## Link commits to sessions
+
+```bash
+cd my-repo
+beacon git setup
+```
+
+This installs a `post-commit` hook that links every new commit as it is made, a `post-rewrite` hook that tidies links after an amend or rebase, and sets `notes.rewriteRef` so links follow a commit when it is rewritten. Existing shell hooks keep working: Beacon adds a short marked block that calls its own scripts.
+
+The post-commit hook reads the local runtime log and links each session that wrote a file the commit changes, between the parent commit and the commit. It never prints, never touches the network, gives up after three seconds, and never fails a commit. Reads do not count, and a clean merge or `git pull` links nothing.
+
+A link names a session by runtime and id, never its content:
+
+```text
+beacon:claude_code/5f0c1d2e-aaaa-4bbb-8ccc-000000000001
+```
+
+```bash
+beacon git notes                             # recent linked commits
+git log --notes=beacon                       # links inline in git log
+beacon git link 3f6aa6c                      # link a commit made before setup
+```
+
+See [How sessions are matched to a commit](/cli/git#how-sessions-are-matched-to-a-commit) for the exact rules.
+
+## Share links with your team
+
+Links stay local until you share them:
+
+```bash
+beacon git setup --share-notes
+```
+
+- A fetch refspec brings teammates' links into a read-only copy on every `git fetch` or `git pull`, and `beacon git notes` shows them alongside yours. Your own unpushed links are never overwritten.
+- A `pre-push` hook merges the remote's links with yours and pushes only `refs/notes/beacon` to the remote you are pushing to. It gives up after ten seconds and never fails your push.
+
+To push or fetch links by hand instead:
+
+```bash
+beacon git notes push
+beacon git notes fetch upstream
+```
+
+## Share sessions on push
+
+```bash
+beacon git setup --share-sessions                           # new traces are direct (link only)
+beacon git setup --share-sessions --share-visibility private
+```
+
+With `--share-sessions` (which implies `--share-notes`), every `git push` also:
+
+1. Reads the commits being pushed (at most 100) and the sessions linked to them.
+2. Shares each linked session that has no link to a trace yet (at most 10 per push), with the same upload and redaction as [`beacon share`](/sharing/cli). A session already shared from this machine only gets its link written. A teammate's session, which this machine does not have, is skipped.
+3. Writes each trace's link into the commit's note, then pushes the notes.
+
+```text title="Note with a share link"
+beacon:claude_code/5f0c1d2e-aaaa-4bbb-8ccc-000000000001 https://beacon.sh/s/k3x7q9m2a8c4d1e5f6g7h8j9
+```
+
+The hook uses your `beacon login` sign-in or `BEACON_API_KEY`; without either it shares nothing and prints nothing. Uploads get six of the hook's ten seconds, and whatever finished in time is written to the notes. It never fails the push; a failure prints one line. `--share-visibility public` lists every linked session in Discover, so `setup` asks first, and without a terminal needs `--yes`.
+
+The choice is stored in the repository's own git config (`beacon.shareSessions`, `beacon.shareVisibility`), so it applies to this clone only. Only `https` links on beacon.sh, or on the Beacon service the CLI is configured for, are written to or shown from notes, because a note can come from anyone who pushes to the remote.
+
+## Hook managers
+
+Tools such as husky and lefthook point `core.hooksPath` at a directory they own. `beacon git setup` will not write there by default; it prints the line to add to that tool's hook instead:
+
+```bash
+beacon git hook post-commit || true
+```
+
+Pass `--hooks-path` to install into that directory anyway. Called through a hook manager's `pre-push` line, Beacon cannot see which refs are being pushed, so it shares links but not sessions.
+
+## Turn it off
+
+```bash
+BEACON_GIT_HOOKS=0 git push                 # skip Beacon's hooks for one command
+beacon git setup --share-sessions=false     # stop sharing sessions, keep sharing links
+beacon git setup --share-notes=false        # stop sharing links and sessions
+beacon git remove                           # remove Beacon's hooks and settings
+```
+
+`remove` leaves the links already written in `refs/notes/beacon`.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="beacon git reference" icon="book" href="/cli/git">
+    Every flag, the note format and the `session.commit_linked` event.
+  </Card>
+  <Card title="Sharing via API Key" icon="key" href="/sharing/api-key">
+    Share from CI and other machines without a browser.
+  </Card>
+</Columns>

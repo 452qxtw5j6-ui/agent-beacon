@@ -98,6 +98,18 @@
             ]
           },
           {
+            "group": "Sharing Sessions",
+            "icon": "share-nodes",
+            "pages": [
+              "sharing/index",
+              "sharing/cli",
+              "sharing/agent-skills",
+              "sharing/agent-hooks",
+              "sharing/git-hooks",
+              "sharing/api-key"
+            ]
+          },
+          {
             "group": "How Beacon Works",
             "icon": "book-open",
             "pages": [

@@ -1,0 +1,113 @@
+---
+title: "Sharing via CLI"
+description: "Share a local agent session from your terminal with beacon share"
+---
+
+`beacon share` publishes one local agent session as a shared trace on beacon.sh and prints its link. It reads the session from your own machine, so it works for any runtime Beacon captures, whether or not the endpoint is connected to Beacon Cloud.
+
+## Sign in
+
+```bash
+beacon login
+```
+
+`beacon login` opens a browser to sign in to beacon.sh. The sign-in carries the `traces:write` permission `beacon share` needs. On a machine without a browser, use an [API key](/sharing/api-key) instead.
+
+## Share a session
+
+Run `beacon share` in the directory where the agent worked:
+
+```bash
+beacon share
+```
+
+With no other flag it shares the session it runs inside, and otherwise the most recent session that ran in the current directory. It names the session it picked before uploading, prints the link on stdout and a summary on stderr.
+
+```text title="Example output"
+https://beacon.sh/s/k3x7q9m2a8c4d1e5f6g7h8j9
+```
+
+To pick a different session:
+
+```bash
+beacon share --list                       # sessions here, newest first
+beacon share --session 5f0c1d2e           # a session id, or a prefix of at least 6 characters
+beacon share --cwd ~/src/app              # the most recent session in another directory
+beacon share --harness codex              # only one runtime's sessions
+```
+
+`--harness` matters when more than one runtime worked in the same directory. See [Choosing the session](/cli/share#choosing-the-session) for every selector.
+
+## Check before you share
+
+`--print` shows exactly the payload that would be uploaded, as JSON, and sends nothing:
+
+```bash
+beacon share --print
+```
+
+Read it before sharing a session that touched credentials or private data. Redaction catches common secret shapes, not everything sensitive.
+
+## Set visibility and title
+
+```bash
+beacon share --visibility private
+beacon share --visibility public           # asks for confirmation first
+beacon share --title "Fix the login test"
+```
+
+| `--visibility` | Who can view the trace |
+|----------------|------------------------|
+| `direct` | Anyone with the link, never listed. The default for a new trace |
+| `private` | Only you |
+| `public` | Anyone, and listed in Discover |
+
+Without a terminal, `--visibility public` is refused unless you add `--yes`. A re-share keeps the trace's visibility unless you pass `--visibility` again.
+
+## Keep a trace up to date
+
+Sharing a session again updates the same trace; nothing is duplicated. Two commands keep it current:
+
+```bash
+beacon share refresh                        # upload only the events added since the last upload
+beacon share --follow                       # keep uploading while the session runs, until it ends or Ctrl+C
+beacon share --follow --interval 30s
+```
+
+`--follow` checks the session locally every interval (default `10s`) and makes a request only when something changed. It stops when the session records its end.
+
+## Script it
+
+`--json` prints one document, for scripts and agents:
+
+```bash
+beacon share --json
+```
+
+```json
+{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","harness":"claude_code","event_count":42,"uploaded":42,"selected_by":"recent"}}
+```
+
+On failure it prints `{"ok":false,"error":"..."}` and exits non-zero.
+
+## See what you shared
+
+After an upload, `beacon share` records a `session.shared` event in the local runtime log with the link and visibility, so the local dashboard and `beacon endpoint traces list --state shared` mark the session as shared. A shared session with newer local activity shows as stale, with the `beacon share refresh` command to bring it up to date.
+
+```bash
+beacon endpoint traces list --state shared
+beacon endpoint traces list --state stale
+```
+
+Change visibility, copy links or unshare from the **Shared** page of the Beacon Cloud dashboard.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="beacon share reference" icon="book" href="/cli/share">
+    Every flag, how `--current` finds a session, and the upload format.
+  </Card>
+  <Card title="Sharing via Agent Skills" icon="wand-magic-sparkles" href="/sharing/agent-skills">
+    Let your agent run `beacon share` for you.
+  </Card>
+</Columns>

@@ -1,0 +1,90 @@
+---
+title: "Sharing via Agent Skills"
+description: "Ask your coding agent to share the session it is in"
+---
+
+The `beacon-trace-share` skill is one of the [Beacon Skills](/concepts/beacon-skills). Install it once, and you can ask the agent you are working with to "share this session". The agent runs [`beacon share --current`](/cli/share#sharing-this-session) from its own shell, then replies with the link.
+
+## Install the skill
+
+The interactive [`beacon endpoint install`](/cli/endpoint-onboarding#agent-tools) installs the Beacon Skills for every project unless you turn them off in the wizard. To install them at any other time:
+
+```bash
+beacon skills install
+```
+
+This writes the skills to `~/.agents/skills`, which Codex CLI, Gemini CLI, OpenCode, Pi and other runtimes read, and to `~/.claude/skills` when Claude Code is set up. They are carried in the `beacon` binary, so installing needs no network.
+
+The skills also install as a plugin from the `asymptote-labs/agent-beacon` repository, for example in Claude Code:
+
+```text
+/plugin marketplace add asymptote-labs/agent-beacon
+/plugin install beacon@beacon
+```
+
+[Beacon Skills](/concepts/beacon-skills#install) lists the install command for every other runtime.
+
+## Sign in
+
+The agent shares with your credential, so sign in once in your own terminal:
+
+```bash
+beacon login
+```
+
+The agent never runs `beacon login` itself, because it opens a browser. In CI or another headless environment, set a Beacon API key in `BEACON_API_KEY` instead (see [Sharing via API Key](/sharing/api-key)). Never paste a key into the conversation.
+
+## Share from chat
+
+Ask in your own words:
+
+```text
+Share this session.
+```
+
+```text
+Share this session privately.
+```
+
+```text
+Update the shared trace with what we just did.
+```
+
+The skill tells the agent to:
+
+1. Check that `beacon` is on `PATH`, and stop if it is not.
+2. Run `beacon share --current --harness <its runtime> --json` from the session's working directory. Naming its runtime keeps Beacon from picking another runtime's session in the same directory.
+3. Reply with the link, its visibility and how many events the trace holds. When Beacon picked the most recent session in the directory rather than one it knew was this one, the agent says which session it shared.
+
+New traces are `direct` (anyone with the link). The agent uses `private` when you ask for it, and asks you to confirm before it makes a session `public`. Asked to update a trace, it runs `beacon share refresh`, which uploads only the steps added since the last upload.
+
+To see what would be uploaded first, ask the agent to run the share with `--print`.
+
+## How the agent finds its own session
+
+An agent does not know its session id. `beacon share --current` finds it from, in order:
+
+1. `BEACON_SESSION_ID` and `BEACON_HARNESS`, which Beacon's Claude Code `SessionStart` hook exports into every shell command the session runs.
+2. The session Beacon's hooks last saw for that runtime in this directory.
+3. The most recent session in this directory.
+
+See [Sharing this session](/cli/share#sharing-this-session) for how conflicts are resolved.
+
+## Remove the skill
+
+```bash
+beacon skills uninstall
+```
+
+This removes only the copies Beacon installed. If you installed the plugin from a marketplace, uninstall it there.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Beacon Skills" icon="book" href="/concepts/beacon-skills">
+    Every Beacon skill and how to install it in each runtime.
+  </Card>
+  <Card title="Sharing via Agent Hooks" icon="bolt" href="/sharing/agent-hooks">
+    Share every new session automatically instead.
+  </Card>
+</Columns>
