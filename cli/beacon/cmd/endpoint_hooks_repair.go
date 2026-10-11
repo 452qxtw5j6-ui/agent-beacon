@@ -383,10 +383,24 @@ func defaultRunHookRepairAsUser(info consoleUserInfo, args ...string) error {
 	if runtime.GOOS == "windows" {
 		return runHookRepairInProfile(ctx, bin, info, args...)
 	}
-	// runuser is the root-side tool for this and ships with util-linux, so it is present on a
-	// minimal Debian or RPM system where sudo may not be installed at all -- and a package
-	// postinstall runs as root, which is exactly runuser's precondition. sudo remains the path
-	// everywhere else, including macOS.
+	out, err := consoleUserCommand(ctx, info, bin, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("refresh hooks for %s: %s: %w", info.Username, strings.TrimSpace(string(out)), err)
+	}
+	if text := strings.TrimSpace(string(out)); text != "" {
+		fmt.Println(text)
+	}
+	return nil
+}
+
+// consoleUserCommand runs bin with args as the console user on POSIX, with that user's HOME.
+//
+// runuser is the root-side tool for this and ships with util-linux, so it is present on a minimal
+// Debian or RPM system where sudo may not be installed at all -- and a package postinstall runs as
+// root, which is exactly runuser's precondition. sudo remains the path everywhere else, including
+// macOS. Hook repair and native config repair share it so the two cannot disagree about who they
+// run as.
+func consoleUserCommand(ctx context.Context, info consoleUserInfo, bin string, args ...string) *exec.Cmd {
 	launcher, cmdArgs := "sudo", []string{"-u", info.Username}
 	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
 		if path, err := exec.LookPath("runuser"); err == nil {
@@ -396,14 +410,7 @@ func defaultRunHookRepairAsUser(info consoleUserInfo, args ...string) error {
 	cmdArgs = append(cmdArgs, "env", "HOME="+info.HomeDir, "USER="+info.Username,
 		"LOGNAME="+info.Username, bin)
 	cmdArgs = append(cmdArgs, args...)
-	out, err := exec.CommandContext(ctx, launcher, cmdArgs...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("refresh hooks for %s: %s: %w", info.Username, strings.TrimSpace(string(out)), err)
-	}
-	if text := strings.TrimSpace(string(out)); text != "" {
-		fmt.Println(text)
-	}
-	return nil
+	return exec.CommandContext(ctx, launcher, cmdArgs...)
 }
 
 // runHookRepairInProfile re-runs this binary against another user's profile on Windows.
