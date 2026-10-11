@@ -67,8 +67,8 @@ type traceAggregate struct {
 	methods       map[string]bool
 	titlePriority int
 	// lastActivity is the newest timestamp of an event the session itself produced, and
-	// lastShareRecord the newest session.shared record's; a shared trace whose session has
-	// activity after its last share or refresh is stale.
+	// lastShareRecord the newest point a session.shared record covered (its shared_through, else
+	// its timestamp); a shared trace whose session has activity after that is stale.
 	lastActivity    string
 	lastShareRecord string
 }
@@ -388,7 +388,9 @@ func (a *traceAggregate) update(event schema.Event, traceEvent TraceEventV1) {
 	a.updateRawMetadata(event.Raw)
 	switch {
 	case event.Event.Action == "session.shared":
-		a.lastShareRecord = laterTimestamp(a.lastShareRecord, event.Timestamp)
+		// What the upload covered (shared_through, when the session was read for it), or the
+		// record's own time for a record from before that field.
+		a.lastShareRecord = laterTimestamp(a.lastShareRecord, firstNonEmpty(rawString(event.Raw, "shared_through"), event.Timestamp))
 	case !shareBookkeeping(event.Event.Action):
 		a.lastActivity = laterTimestamp(a.lastActivity, event.Timestamp)
 	}

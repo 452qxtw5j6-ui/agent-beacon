@@ -233,7 +233,7 @@ type sessionClassification struct {
 }
 
 func sessionIDsForState(path string, query EventQuery, state string) (map[string]bool, error) {
-	classifications, err := classifySessions(path, query)
+	classifications, _, err := classifySessions(path, query)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +249,11 @@ func sessionIDsForState(path string, query EventQuery, state string) (map[string
 // classifySessions assigns one mutually exclusive category to every session active
 // in the selected time window. Recurrence is computed over that complete set before
 // any event or session result limit is applied.
-func classifySessions(path string, query EventQuery) (map[string]sessionClassification, error) {
+//
+// It also returns each shared session's sharing state, worked out from every event of the session
+// whatever the filters are: a session.shared record outside the selected window or filters still
+// marks the session shared, and activity outside them still makes the share stale.
+func classifySessions(path string, query EventQuery) (map[string]sessionClassification, map[string]*SessionSharing, error) {
 	// Session state is a property of the whole session, not the filtered slice.
 	// Only the selected time window scopes recurrence. The owner is part of the
 	// recurrence key; content, harness and individual-session filters must not
@@ -259,10 +263,19 @@ func classifySessions(path string, query EventQuery) (map[string]sessionClassifi
 		Until: query.Until,
 	}
 	stats := map[string]*sessionStateStats{}
+	sharingAcc := map[string]*sessionAccumulator{}
 	for _, source := range eventSources(path) {
-		if err := collectSessionStateStats(source, stateQuery, stats); err != nil {
-			return nil, err
+		if err := collectSessionStateStats(source, stateQuery, stats, sharingAcc); err != nil {
+			return nil, nil, err
 		}
+	}
+	sharing := map[string]*SessionSharing{}
+	for id, acc := range sharingAcc {
+		if acc.record.Sharing == nil {
+			continue
+		}
+		acc.finish()
+		sharing[id] = acc.record.Sharing
 	}
 	groupCounts := map[string]int{}
 	groupKeys := map[string]string{}
@@ -285,10 +298,10 @@ func classifySessions(path string, query EventQuery) (map[string]sessionClassifi
 		}
 		classifications[id] = classification
 	}
-	return classifications, nil
+	return classifications, sharing, nil
 }
 
-func collectSessionStateStats(source eventSource, query EventQuery, stats map[string]*sessionStateStats) error {
+func collectSessionStateStats(source eventSource, query EventQuery, stats map[string]*sessionStateStats, sharing map[string]*sessionAccumulator) error {
 	file, err := os.Open(source.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -321,7 +334,16 @@ func collectSessionStateStats(source eventSource, query EventQuery, stats map[st
 			Parsed:     parsed,
 			WazuhLevel: WazuhLevel(event.Event.Action),
 		}
-		if !matchesQuery(record, query) || event.Session == nil || event.Session.ID == "" {
+		if event.Session == nil || event.Session.ID == "" {
+			continue
+		}
+		if acc := sharing[event.Session.ID]; acc == nil {
+			sharing[event.Session.ID] = &sessionAccumulator{record: SessionRecord{ID: event.Session.ID, Harness: event.Harness.Name}}
+		} else if acc.record.Harness == "" {
+			acc.record.Harness = event.Harness.Name
+		}
+		sharing[event.Session.ID].noteSharing(record)
+		if !matchesQuery(record, query) {
 			continue
 		}
 		stat := stats[event.Session.ID]

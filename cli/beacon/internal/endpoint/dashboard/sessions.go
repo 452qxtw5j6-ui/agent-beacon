@@ -77,7 +77,7 @@ type SessionDetail struct {
 
 func ReadSessions(path string, query EventQuery) (SessionResult, error) {
 	limit := normalizeLimit(query.Limit)
-	classifications, err := classifySessions(path, query)
+	classifications, sharing, err := classifySessions(path, query)
 	if err != nil {
 		return SessionResult{}, err
 	}
@@ -113,6 +113,8 @@ func ReadSessions(path string, query EventQuery) (SessionResult, error) {
 	sessions := make([]SessionRecord, 0, len(byID))
 	for id, acc := range byID {
 		acc.finish()
+		// Sharing is a property of the whole session, not of the events the filters kept.
+		acc.record.Sharing = sharing[id]
 		if classification := classifications[id]; classification.state == "recurring" {
 			acc.record.IsRecurring = true
 			acc.record.RecurrenceCount = classification.recurrenceCount
@@ -208,8 +210,14 @@ func (acc *sessionAccumulator) noteSharing(record EventRecord) {
 		if v := rawString(event.Raw, "last_refreshed_at"); v != "" {
 			s.LastRefreshedAt = v
 		}
-		if record.Parsed.After(acc.lastShared) {
-			acc.lastShared = record.Parsed
+		// What the upload covered: the session as read for it (shared_through), or, for a
+		// record from before that field, the record's own time.
+		covered := record.Parsed
+		if through, err := asymptoteobserve.ParseTimestamp(rawString(event.Raw, "shared_through")); err == nil && !through.IsZero() {
+			covered = through
+		}
+		if covered.After(acc.lastShared) {
+			acc.lastShared = covered
 		}
 		return
 	}
