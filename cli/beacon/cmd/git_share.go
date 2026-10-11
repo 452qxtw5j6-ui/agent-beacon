@@ -129,15 +129,18 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 	// A hook has no terminal to ask for credentials on; git's own push has already authenticated,
 	// and a credential helper answers the same way for this one.
 	repo.Git = repo.Git.WithExtraEnv("GIT_TERMINAL_PROMPT=0")
-	stdin := readHookStdin(cmd.InOrStdin())
-	if enabled, visibility := gitlink.ShareSessionsConfig(ctx, repo); enabled && stdin != "" {
-		// Sharing sessions gets the budget less what pushing the notes ref needs, so the links
-		// (with whatever URLs it recorded) still reach the remote.
-		shareCtx, cancelShare := context.WithTimeout(ctx, gitShareBudget-gitShareNotesReserve)
-		if _, err := gitShareSessionsOnPush(shareCtx, repo, args[0], stdin, visibility); err != nil && shareCtx.Err() == nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "beacon: linked sessions were not all shared: %s\n", gitlink.ErrorSummary(err))
+	// git's stdin (the refs being pushed) is read only when sessions are shared; the hook block
+	// hands Beacon a copy and replays the original to the rest of the repository's hook.
+	if enabled, visibility := gitlink.ShareSessionsConfig(ctx, repo); enabled {
+		if stdin := readHookStdin(cmd.InOrStdin()); stdin != "" {
+			// Sharing sessions gets the budget less what pushing the notes ref needs, so the links
+			// (with whatever URLs it recorded) still reach the remote.
+			shareCtx, cancelShare := context.WithTimeout(ctx, gitShareBudget-gitShareNotesReserve)
+			if _, err := gitShareSessionsOnPush(shareCtx, repo, args[0], stdin, visibility); err != nil && shareCtx.Err() == nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "beacon: linked sessions were not all shared: %s\n", gitlink.ErrorSummary(err))
+			}
+			cancelShare()
 		}
-		cancelShare()
 	}
 	if _, err := gitlink.PushNotes(ctx, repo, args[0]); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "beacon: commit links were not shared with %s: %s\n", args[0], gitlink.ErrorSummary(err))
