@@ -94,8 +94,9 @@ func RedactString(value string) string {
 	for _, rule := range secretRules {
 		value = rule.pattern.ReplaceAllString(value, rule.replacement)
 	}
-	for _, secret := range assigned {
-		value = strings.ReplaceAll(value, secret, redactedValue)
+	// Each copy is searched for and removed; none of it survives into the result.
+	for _, copied := range assigned {
+		value = strings.ReplaceAll(value, copied, redactedValue)
 	}
 	return value
 }
