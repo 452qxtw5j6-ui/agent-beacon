@@ -294,3 +294,48 @@ func TestRedactStringPrivateKeyNeedsKeyMaterial(t *testing.T) {
 		t.Fatalf("one-line key = %q, want it redacted", got)
 	}
 }
+
+// String-encoded tool arguments are decoded again after redaction (traceToolArgs), so a
+// secret-named key with a non-string value must still leave valid JSON.
+func TestRedactStringKeepsJSONParseable(t *testing.T) {
+	tests := []struct {
+		input, want string
+	}{
+		{`{"auth_token": 12345678, "x": 1}`, `{"auth_token": "[REDACTED]", "x": 1}`},
+		{`{"auth_token":12345678}`, `{"auth_token":"[REDACTED]"}`},
+		{`{"api_key": null, "password": true}`, `{"api_key": null, "password": true}`},
+		{`{"credentials": {"type": "x", "token": "abc12345"}}`, `{"credentials": {"type": "x", "token": "[REDACTED]"}}`},
+		{`{"secrets": ["a"], "token": "abc12345"}`, `{"secrets": ["a"], "token": "[REDACTED]"}`},
+	}
+	for _, tc := range tests {
+		got := RedactString(tc.input)
+		if got != tc.want {
+			t.Fatalf("RedactString(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+		if !json.Valid([]byte(got)) {
+			t.Fatalf("RedactString(%q) = %q, which is not valid JSON", tc.input, got)
+		}
+	}
+	escaped := `{\"auth_token\": 12345678}`
+	if got, want := RedactString(escaped), `{\"auth_token\": \"[REDACTED]\"}`; got != want {
+		t.Fatalf("escaped JSON = %q, want %q", got, want)
+	}
+}
+
+// Redaction that shrinks the window must not pull a fragment from the window's cut inside the
+// limit: three key blocks collapse to a few bytes, and a token straddling the first cut would
+// otherwise keep a prefix too short for its pattern.
+func TestCleanStringWidensTheWindowWhenRedactionShrinksIt(t *testing.T) {
+	block := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("MIIEowIBAAKCAQEA", 100) + "\n-----END RSA PRIVATE KEY-----\n"
+	prefix := block + block + block
+	limit := 1024
+	pad := strings.Repeat("x ", (limit+redactWindow-len(prefix)-20)/2)
+	value := prefix + pad + "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789 " + strings.Repeat("y", 20000)
+	got := CleanString(value, limit, true)
+	if strings.Contains(got, "ghp_AbCd") || strings.Contains(got, "MIIEowIB") {
+		t.Fatalf("CleanString kept part of a secret: %q", got)
+	}
+	if len(got) > limit {
+		t.Fatalf("CleanString = %d bytes, want at most %d", len(got), limit)
+	}
+}

@@ -42,12 +42,16 @@ const redactQuoted = `(?:[^"'` + "`" + `\\\n]|\\[^"'` + "`" + `\n])+`
 // escaped or not, so it leaves a value the quoted rule already replaced alone.
 const redactUnquoted = `(?:[^"'` + "`" + `,\s\\]|\\[^"'` + "`" + `])[^"'` + "`" + `,\s]*`
 
+// redactBare is a bare value after a quoted label: a JSON number or literal, which ends at the
+// structure around it.
+const redactBare = `[^"'` + "`" + `\\\s,{}\[\]][^"'` + "`" + `\\\s,{}\[\]]*`
+
 // redactionRule is one redaction. ${1} and ${3}, when the pattern has them, are kept around the
 // value.
 type redactionRule struct {
 	pattern     *regexp.Regexp
 	replacement string
-	// keep, when set, leaves a match alone if its value (${2}) passes.
+	// keep, when set, leaves a match alone if its value (the group named value) passes.
 	keep func(value string) bool
 }
 
@@ -67,6 +71,15 @@ func isAuthScheme(value string) bool {
 	return false
 }
 
+// isLiteralOrAuthScheme is isAuthScheme, plus the JSON literals that carry no secret.
+func isLiteralOrAuthScheme(value string) bool {
+	switch value {
+	case "null", "true", "false":
+		return true
+	}
+	return isAuthScheme(value)
+}
+
 var redactionRules = []redactionRule{
 	// A private key block. The header must be followed by key material, so source code, a diff or
 	// grep output that only names the header keeps the text after it. Without an END line (the
@@ -80,8 +93,13 @@ var redactionRules = []redactionRule{
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
 	// rule never starts at a quote, so it leaves a value the quoted rule already replaced alone.
-	{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + redactOpenQuote + `)(` + redactQuoted + `)()`), "${1}" + redactedValue, isAuthScheme},
-	{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + `)(` + redactUnquoted + `)()`), "${1}" + redactedValue, isAuthScheme},
+	{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + redactOpenQuote + `)(?P<value>` + redactQuoted + `)`), "${1}" + redactedValue, isAuthScheme},
+	// A quoted label with a bare value is JSON (or a YAML or Python mapping) holding a number, a
+	// literal or a structure. The replacement is quoted the way the label is, so the text still
+	// parses where something decodes it again (string-encoded tool arguments do); null, true, false
+	// and nested objects or arrays are left for their own fields' rules.
+	{regexp.MustCompile(`(?i)(\b` + redactLabel + `(?P<q>` + redactOpenQuote + `)\s*[:=]\s*)(?P<value>` + redactBare + `)`), "${1}${q}" + redactedValue + "${q}", isLiteralOrAuthScheme},
+	{regexp.MustCompile(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`), "${1}" + redactedValue, isAuthScheme},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`.
 	{regexp.MustCompile(`(?i)((?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+))([^\s"'-][^\s"']*)()`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
@@ -108,10 +126,11 @@ func (rule redactionRule) apply(value string) string {
 	if rule.keep == nil {
 		return rule.pattern.ReplaceAllString(value, rule.replacement)
 	}
+	group := 2 * rule.pattern.SubexpIndex("value")
 	var out []byte
 	last := 0
 	for _, match := range rule.pattern.FindAllStringSubmatchIndex(value, -1) {
-		if match[4] >= 0 && rule.keep(value[match[4]:match[5]]) {
+		if match[group] >= 0 && rule.keep(value[match[group]:match[group+1]]) {
 			continue
 		}
 		out = append(out, value[last:match[0]]...)
@@ -197,16 +216,26 @@ func TruncateString(value string, limit int) string {
 }
 
 // CleanString redacts before it truncates, so a cut can never leave part of a secret behind.
-// Redaction reads only redactWindow bytes past the limit, which keeps a multi-megabyte command output
-// as cheap as before.
+// Redaction reads only a window past the limit, which keeps a multi-megabyte command output as
+// cheap as before.
 func CleanString(value string, limit int, redactSecrets bool) string {
 	if !redactSecrets {
 		return TruncateString(value, limit)
 	}
-	if window := limit + redactWindow; limit > 0 && len(value) > window {
-		value = value[:window]
+	if limit <= 0 {
+		return TruncateString(RedactString(value), limit)
 	}
-	return TruncateString(RedactString(value), limit)
+	// Redaction shortens what it matches, so a window that shrank pulls text from near its own cut
+	// inside the limit, where an unrecognizable fragment of a secret would survive. Widen the window
+	// until a full redactWindow of redacted text is left past the limit, or the whole string fits.
+	for window := limit + redactWindow; ; window *= 2 {
+		if len(value) <= window {
+			return TruncateString(RedactString(value), limit)
+		}
+		if redacted := RedactString(value[:window]); len(redacted) >= limit+redactWindow {
+			return TruncateString(redacted, limit)
+		}
+	}
 }
 
 func SanitizeMap(input map[string]interface{}, opts PrivacyOptions) map[string]interface{} {
