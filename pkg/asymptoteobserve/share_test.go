@@ -384,6 +384,13 @@ func TestShareRemoteURL(t *testing.T) {
 		"ssh://git@host:22/acme/repo":              "ssh://host:22/acme/repo",
 		"https://github.com/acme/repo?token=abc":   "https://github.com/acme/repo",
 		"":                                         "",
+		"github.com:acme/repo.git":                 "github.com:acme/repo.git",
+		"/home/alice/src/foo":                      "",
+		"../foo.git":                               "",
+		"~/src/foo":                                "",
+		"file:///Users/alice/repos/foo":            "",
+		`C:\Users\alice\repo`:                      "",
+		"./a:b":                                    "",
 	}
 	for in, want := range cases {
 		if got := ShareRemoteURL(in); got != want {
@@ -495,5 +502,31 @@ func TestPathScrubberReplacesWholePathsOnly(t *testing.T) {
 	win := newPathScrubber(`C:\work\proj`, `C:\Users\al`)
 	if got := win.text(`C:\work\proj\a.go and C:\Users\alex\b`); got != `.\a.go and C:\Users\alex\b` {
 		t.Errorf("windows text = %q", got)
+	}
+}
+
+func TestBuildShareMessagesKeepsRepeatedPhaselessCallsApart(t *testing.T) {
+	// Cursor's beforeReadFile records file.read with a path and nothing else. Reading the same file
+	// twice is two calls, not a call and its result.
+	var events []Event
+	for i, ts := range []string{"2026-10-01T10:00:00Z", "2026-10-01T10:00:01Z", "2026-10-01T10:00:02Z"} {
+		read := shareEventAt(ts, "cursor", CollectionMethodHook, "file.read", "file")
+		read.Event.ID = "r-" + string(rune('a'+i))
+		read.File = &FileInfo{Path: "/home/dev/src/app/main.go", Operation: "read"}
+		events = append(events, read)
+	}
+	messages := BuildShareMessagesWithOptions(events, shareTestOpts)
+	want := "assistant/tool_call,assistant/tool_call,assistant/tool_call"
+	if got := partsOf(t, messages); strings.Join(got, ",") != want {
+		t.Fatalf("parts = %v", got)
+	}
+}
+
+func TestShareMetadataUsesExplicitHomeWithoutLookup(t *testing.T) {
+	prompt := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	prompt.Prompt = &PromptInfo{Text: "look at /home/al/secret"}
+	meta := ShareMetadataFromEventsWithOptions([]Event{prompt}, ShareOptions{HomeDirectory: "/home/al", NoHomeLookup: true})
+	if meta.Title != "look at ~/secret" {
+		t.Fatalf("title = %q", meta.Title)
 	}
 }
