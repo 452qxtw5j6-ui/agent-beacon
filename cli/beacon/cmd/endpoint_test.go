@@ -228,7 +228,17 @@ func TestPlannedInstallActionsSeparatesHookHarnesses(t *testing.T) {
 	}
 }
 
+// writeNativeConfigInProcess runs native config repair in this process, the non-root path, so a
+// test that checks what the writers produce does not depend on whether the suite runs as root.
+func writeNativeConfigInProcess(t *testing.T) {
+	t.Helper()
+	old := writeAsConsoleUser
+	t.Cleanup(func() { writeAsConsoleUser = old })
+	writeAsConsoleUser = func() bool { return false }
+}
+
 func TestRepairInstalledEndpointUserConfigConfiguresNativeAndHooks(t *testing.T) {
+	writeNativeConfigInProcess(t)
 	oldOpts := endpointOpts
 	oldActiveConsoleUser := activeConsoleUser
 	oldRunHookRepairAsUser := runHookRepairAsUser
@@ -342,6 +352,7 @@ func TestRepairInstalledEndpointUserConfigConfiguresNativeAndHooks(t *testing.T)
 }
 
 func TestRepairInstalledEndpointUserConfigAllowsNativeOnlyHarness(t *testing.T) {
+	writeNativeConfigInProcess(t)
 	oldOpts := endpointOpts
 	oldActiveConsoleUser := activeConsoleUser
 	oldRunHookRepairAsUser := runHookRepairAsUser
@@ -379,6 +390,7 @@ func TestRepairInstalledEndpointUserConfigAllowsNativeOnlyHarness(t *testing.T) 
 }
 
 func TestRepairInstalledEndpointUserConfigHonorsHookOnlyAliases(t *testing.T) {
+	writeNativeConfigInProcess(t)
 	oldOpts := endpointOpts
 	oldActiveConsoleUser := activeConsoleUser
 	oldRunHookRepairAsUser := runHookRepairAsUser
