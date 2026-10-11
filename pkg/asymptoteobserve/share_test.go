@@ -616,6 +616,41 @@ func TestShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) {
 	}
 }
 
+func TestShareMessagesKeepsCursorsToolOutputWriteApartFromItsWebSearch(t *testing.T) {
+	// Cursor records the file it saves a WebSearch's output to as a Write carrying the WebSearch's
+	// tool_use_id, ahead of the WebSearch's own postToolUse. The two are different tools: the Write
+	// must not swallow the WebSearch and its result. The Stop hook's payloadless tool.completed is
+	// the end of the turn, not a tool.
+	const id = "call_Ox7\nfc_0f44"
+	write := shareEventAt("2026-10-11T19:21:20Z", "cursor", CollectionMethodHook, "file.modified", "file")
+	write.Event.ID = "cursor-write"
+	write = withCall(write, id, "Write", nil, nil)
+	write.File = &FileInfo{Path: "/home/dev/.cursor/projects/app/agent-tools/82a0.txt", Operation: "create"}
+	search := shareEventAt("2026-10-11T19:21:21Z", "cursor", CollectionMethodHook, "tool.invoked", "tool")
+	search.Event.ID = "cursor-search"
+	search = withCall(search, id, "WebSearch", map[string]interface{}{"search_term": "weather NYC"}, map[string]interface{}{"results": "Sunny, 68F"})
+	stop := shareEventAt("2026-10-11T19:21:25Z", "cursor", CollectionMethodHook, "tool.completed", "tool")
+	stop.Event.ID = "cursor-stop"
+
+	messages := shareMessages([]Event{write, search, stop}, shareTestOpts)
+	want := "assistant/tool_call,assistant/tool_call,assistant/tool_result"
+	if got := partsOf(t, messages); strings.Join(got, ",") != want {
+		t.Fatalf("parts = %v, want %s", got, want)
+	}
+	writeCall := messages[0].Parts[0].Content.(*TraceToolCallContentV1)
+	searchCall := messages[1].Parts[0].Content.(*TraceToolCallContentV1)
+	result := messages[2].Parts[0].Content.(*TraceToolResultContentV1)
+	if writeCall.ToolName != "Write" || searchCall.ToolName != "WebSearch" {
+		t.Fatalf("calls = %q, %q; want Write, WebSearch", writeCall.ToolName, searchCall.ToolName)
+	}
+	if searchCall.CallID == writeCall.CallID || result.CallID != searchCall.CallID {
+		t.Fatalf("call ids: write %q, search %q, result %q", writeCall.CallID, searchCall.CallID, result.CallID)
+	}
+	if !strings.Contains(result.Output, "Sunny, 68F") {
+		t.Fatalf("result output = %q", result.Output)
+	}
+}
+
 func TestShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
 	// Claude Code logs each prompt from the UserPromptSubmit hook and from the OTLP export, with
 	// different event ids and the same prompt.id. The export copy may carry no text.

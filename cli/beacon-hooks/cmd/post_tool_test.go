@@ -199,6 +199,54 @@ func TestRunPostToolEmitsCursorMCPGenAIFields(t *testing.T) {
 	}
 }
 
+// Cursor's postToolUse carries the result as a JSON-encoded string under tool_output; without
+// reading it a WebSearch was recorded as a call with nothing it returned.
+func TestRunPostToolRecordsCursorToolOutput(t *testing.T) {
+	setupHookConfigDirs(t)
+	platformFlag = "cursor"
+	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
+	t.Setenv("BEACON_ENDPOINT_LOG", logPath)
+
+	runHookWithInput(t, runPostTool, map[string]interface{}{
+		"conversation_id": "conv-web",
+		"hook_event_name": "postToolUse",
+		"tool_name":       "WebSearch",
+		"tool_input":      map[string]interface{}{"search_term": "weather NYC today"},
+		"tool_output":     `{"results":"Sunny, 68F in New York City"}`,
+		"tool_use_id":     "call_web",
+		"cwd":             "/repo",
+	})
+
+	event := lastEndpointEvent(t, logPath)
+	genAI, _ := event["gen_ai"].(map[string]interface{})
+	tool, _ := genAI["tool"].(map[string]interface{})
+	call, _ := tool["call"].(map[string]interface{})
+	result, _ := call["result"].(map[string]interface{})
+	if result["results"] != "Sunny, 68F in New York City" {
+		t.Fatalf("gen_ai.tool.call.result = %#v, want the parsed tool_output", call["result"])
+	}
+	if call["id"] != "call_web" {
+		t.Fatalf("gen_ai.tool.call.id = %#v, want call_web", call["id"])
+	}
+
+	runHookWithInput(t, runPostTool, map[string]interface{}{
+		"conversation_id": "conv-web",
+		"hook_event_name": "postToolUse",
+		"tool_name":       "WebFetch",
+		"tool_input":      map[string]interface{}{"url": "https://example.com"},
+		"tool_output":     "plain page text",
+		"cwd":             "/repo",
+	})
+	event = lastEndpointEvent(t, logPath)
+	genAI, _ = event["gen_ai"].(map[string]interface{})
+	tool, _ = genAI["tool"].(map[string]interface{})
+	call, _ = tool["call"].(map[string]interface{})
+	result, _ = call["result"].(map[string]interface{})
+	if result["result"] != "plain page text" {
+		t.Fatalf("gen_ai.tool.call.result = %#v, want the plain tool_output", call["result"])
+	}
+}
+
 func TestRunPostToolSuppressesCursorCloudReadPostToolDuplicate(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "cursor"

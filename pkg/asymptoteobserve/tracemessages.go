@@ -288,6 +288,8 @@ func classifyTraceMessage(event TraceEventV1) traceMessageClass {
 		return traceMessageAgentText
 	case category == "approval" || strings.HasPrefix(action, "approval.") || strings.HasPrefix(action, "policy."):
 		return traceMessageApproval
+	case action == "tool.completed" && tracePayloadlessTurnEnd(event):
+		return traceMessageSkip
 	case strings.HasPrefix(action, "tool.") || strings.HasPrefix(action, "command.") ||
 		strings.HasPrefix(action, "file.") || action == "mcp.tool_invoked" || action == "mcp.tool_call" ||
 		category == "tool" || category == "command" || category == "file":
@@ -297,6 +299,44 @@ func classifyTraceMessage(event TraceEventV1) traceMessageClass {
 		return traceMessageError
 	}
 	return traceMessageSystem
+}
+
+// tracePayloadlessTurnEnd reports the Stop hook's "Agent response completed": a tool.completed that
+// names no call and carries no tool, command, file or MCP payload. It marks the end of the agent's
+// turn, not a tool, and as a tool it showed as an empty "Used tool" with no output.
+func tracePayloadlessTurnEnd(event TraceEventV1) bool {
+	return strings.TrimSpace(event.ToolCallID) == "" && event.Tool == nil && event.Command == nil &&
+		event.File == nil && event.MCP == nil
+}
+
+// traceToolFamily groups tool kinds that one call can be reported as: an edit tool's call and the
+// file write it produced are one call. "" is a kind that says nothing (other).
+func traceToolFamily(kind string) string {
+	switch kind {
+	case TraceToolKindEdit, TraceToolKindWrite, TraceToolKindDelete:
+		return "file"
+	case TraceToolKindOther:
+		return ""
+	}
+	return kind
+}
+
+// callKey is the key an event's call is held under. Usually the runtime's call id, but a runtime can
+// report a second, different tool under the id of the call it serves: Cursor records the file it
+// writes a WebSearch's output to as a Write carrying the WebSearch's tool_use_id. When the call
+// already held under the id is plainly another kind of tool, this event's call is keyed apart, so
+// the WebSearch keeps its own call and result instead of being folded into the Write.
+func (b *traceMessageBuilder) callKey(callID string, event TraceEventV1, toolName string) string {
+	call := b.calls[callID]
+	if callID == "" || call == nil {
+		return callID
+	}
+	held := traceToolFamily(call.ToolKind)
+	this := traceToolFamily(TraceToolKind(toolName, event.Action, event.Category, event.MCP != nil))
+	if held == "" || this == "" || held == this {
+		return callID
+	}
+	return callID + "#" + normalizeToolName(toolName)
 }
 
 // traceToolInvocation reports an event that names a tool call before it runs.
@@ -452,8 +492,8 @@ func (b *traceMessageBuilder) appendText(event TraceEventV1, role, kind, partTyp
 }
 
 func (b *traceMessageBuilder) addTool(event TraceEventV1) {
-	callID := strings.TrimSpace(event.ToolCallID)
 	toolName := traceMessageToolName(event)
+	callID := b.callKey(strings.TrimSpace(event.ToolCallID), event, toolName)
 	invocation := traceToolInvocation(event)
 	explicit := invocation
 	completion := !invocation && traceToolCompletion(event)
