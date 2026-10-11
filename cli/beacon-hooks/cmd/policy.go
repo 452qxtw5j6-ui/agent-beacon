@@ -254,9 +254,10 @@ func policyDenyFor(reason string, phase policycontract.Phase) *policyDenial {
 
 // policyDenyResponse returns the runtime-specific hook response object that
 // denies the tool call. A nil return means the platform has no confirmed
-// object-shaped deny. It is phase-independent: a platform with a confirmed deny
-// shape honors a deny in every phase the seam runs in, so a provider deny is
-// never silently dropped for a platform we enforce on.
+// object-shaped deny. A platform with a confirmed deny shape must honor a deny in
+// every phase the seam runs in, so a provider deny is never silently dropped for a
+// platform we enforce on -- which means the object follows the phase wherever the
+// runtime reads a different one per event (Claude Code, Qwen Code, Muse Code).
 func policyDenyResponse(reason string, phase policycontract.Phase) map[string]interface{} {
 	switch {
 	case platformFlag == "cursor":
@@ -293,24 +294,35 @@ func policyDenyResponse(reason string, phase policycontract.Phase) map[string]in
 	// that works without changing that -- the same reasoning as OpenHands above.
 	case platformFlag == goosePlatform:
 		return map[string]interface{}{"decision": "block", "reason": reason}
-	// Qwen Code shares Claude Code's deny shape exactly: `hookSpecificOutput.permissionDecision`
-	// with a `permissionDecisionReason`, both required by its PreToolUse contract. The
-	// `hookEventName` stays "PreToolUse" in both phases the seam runs in, matching the existing
-	// claude behavior -- Qwen's PermissionRequest event reads a differently shaped
-	// `hookSpecificOutput.decision` object, so a deny raised from that phase is not honored there.
-	// Stated rather than hidden: the seam fails open, so the cost is a deny that does not take
-	// effect on one of two phases, never a tool call blocked for the wrong reason.
-	// DeepSeek Harness shares Claude Code's deny shape because its bridge exists to run Claude Code
-	// hooks: the decoder reads `hookSpecificOutput.permissionDecision` as allow/deny/ask and
-	// `permissionDecisionReason` as the reason, and maps a deny onto the harness's own
-	// `tools/pre-execute` rejection with that reason handed to the model.
+	// Claude Code and Qwen Code answer the two phases the seam runs in with two different objects,
+	// and each reads only its own. PreToolUse takes `hookSpecificOutput.permissionDecision` with a
+	// `permissionDecisionReason`; PermissionRequest takes `hookSpecificOutput.decision` with
+	// `behavior: "deny"` and a `message` that Claude is told as the reason
+	// (https://code.claude.com/docs/en/hooks, "PermissionRequest decision control"). Sending the
+	// PreToolUse object from the permission phase is not a weaker deny, it is no deny: the runtime
+	// finds no `decision` and the permission flow carries on to the person, while emitPolicyDenied
+	// has already recorded the call as enforced. Exit code 2 is no fallback either -- Claude Code
+	// documents it as ignored on PermissionRequest.
+	//
+	// That gap is not hypothetical on Claude Code. The PreToolUse matcher Beacon installs names a
+	// fixed list of tools while PermissionRequest matches every tool, so a tool outside the list
+	// reaches the seam only in the permission phase.
+	//
+	// Qwen Code's PermissionRequestHookOutput reads the same `decision.behavior` and `message` and
+	// does not check hookEventName; the name is set anyway so one object is right for both.
+	case platformFlag == "claude" || platformFlag == "qwen":
+		return claudePolicyDenyResponse(reason, phase)
+	// DeepSeek Harness shares Claude Code's PreToolUse deny shape because its bridge exists to run
+	// Claude Code hooks: the decoder reads `hookSpecificOutput.permissionDecision` as
+	// allow/deny/ask and `permissionDecisionReason` as the reason, and maps a deny onto the
+	// harness's own `tools/pre-execute` rejection with that reason handed to the model.
 	//
 	// `hookEventName` must equal the firing event or the whole hookSpecificOutput block is
 	// discarded -- the bridge passes the point name as expectedEventName precisely to stop a hook
 	// answering for an event that is not running. "PreToolUse" is correct in the only phase that
 	// can reach this on dsh: Beacon registers no permission-request hook there, because the bridge
 	// exposes no such event.
-	case platformFlag == "claude" || platformFlag == "qwen" || platformFlag == dshPlatform:
+	case platformFlag == dshPlatform:
 		return map[string]interface{}{
 			"hookSpecificOutput": map[string]interface{}{
 				"hookEventName":            "PreToolUse",
@@ -341,10 +353,10 @@ func policyDenyResponse(reason string, phase policycontract.Phase) map[string]in
 	// than blocking a call for the wrong reason. Returning nil would give up the case where the
 	// inference is right for no safety gain.
 	//
-	// hookEventName is derived from the phase rather than hardcoded, unlike the claude/qwen branch
-	// above, because Muse requires it to match the firing event and Beacon binds each phase to a
-	// distinct Muse event in the hooks file it writes. That is what lets a deny raised from the
-	// PermissionRequest phase be honored here, where on Qwen it cannot be.
+	// hookEventName is derived from the phase rather than hardcoded, because Muse requires it to
+	// match the firing event and Beacon binds each phase to a distinct Muse event in the hooks file
+	// it writes. Unlike Claude Code above, the binary's strings name one object for both events, so
+	// only the event name follows the phase.
 	case platformFlag == "muse":
 		return map[string]interface{}{
 			"hookSpecificOutput": map[string]interface{}{
@@ -355,6 +367,33 @@ func policyDenyResponse(reason string, phase policycontract.Phase) map[string]in
 		}
 	default:
 		return nil
+	}
+}
+
+// claudePolicyDenyResponse is the Claude Code (and Qwen Code) deny for the phase the seam is
+// answering.
+//
+// The permission phase gets the PermissionRequest `decision` object, and every other phase the
+// PreToolUse object -- pre-tool is the phase the seam runs in on every runtime, so an unrecognized
+// phase degrades to the common case, the same fallback museHookEventNameForPhase takes.
+func claudePolicyDenyResponse(reason string, phase policycontract.Phase) map[string]interface{} {
+	if phase == policycontract.PhasePermissionRequest {
+		return map[string]interface{}{
+			"hookSpecificOutput": map[string]interface{}{
+				"hookEventName": "PermissionRequest",
+				"decision": map[string]interface{}{
+					"behavior": "deny",
+					"message":  reason,
+				},
+			},
+		}
+	}
+	return map[string]interface{}{
+		"hookSpecificOutput": map[string]interface{}{
+			"hookEventName":            "PreToolUse",
+			"permissionDecision":       "deny",
+			"permissionDecisionReason": reason,
+		},
 	}
 }
 

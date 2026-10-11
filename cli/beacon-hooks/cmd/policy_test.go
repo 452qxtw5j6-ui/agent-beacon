@@ -119,21 +119,54 @@ func TestPreToolPolicyAllowProceedsNormally(t *testing.T) {
 func TestPermissionRequestPolicyDenyClaude(t *testing.T) {
 	// Regression: Claude is a confirmed-deny platform, so a provider deny on the
 	// permission-request hook must be honored (not silently allowed) just like on
-	// pre-tool.
+	// pre-tool. Claude Code's PermissionRequest reads only
+	// hookSpecificOutput.decision.behavior, so the PreToolUse permissionDecision
+	// object would be ignored there while the event still claimed enforcement.
 	logPath := setupPolicyTest(t, "claude", denyResponse)
 	out := runHookWithInput(t, runPermissionRequest, map[string]interface{}{
 		"session_id": "s-claude-perm",
-		"tool_name":  "Bash",
-		"tool_input": map[string]interface{}{"command": "claude --dangerously-skip-permissions"},
+		"tool_name":  "NotebookEdit",
+		"tool_input": map[string]interface{}{"notebook_path": "/tmp/n.ipynb"},
 	})
 	hso, ok := out["hookSpecificOutput"].(map[string]interface{})
 	if !ok {
 		t.Fatalf("claude permission-request deny = %#v, want hookSpecificOutput", out)
 	}
-	if hso["permissionDecision"] != "deny" {
-		t.Fatalf("hookSpecificOutput = %#v, want permissionDecision=deny", hso)
+	if hso["hookEventName"] != "PermissionRequest" {
+		t.Fatalf("hookEventName = %v, want PermissionRequest", hso["hookEventName"])
+	}
+	if _, ok := hso["permissionDecision"]; ok {
+		t.Fatalf("hookSpecificOutput = %#v carries the PreToolUse permissionDecision", hso)
+	}
+	decision, ok := hso["decision"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("hookSpecificOutput = %#v, want a decision object", hso)
+	}
+	if decision["behavior"] != "deny" || decision["message"] != "blocked by test" {
+		t.Fatalf("decision = %#v, want behavior=deny message=blocked by test", decision)
 	}
 	assertDenialEvent(t, logPath)
+}
+
+func TestPreToolPolicyDenyClaudeKeepsPreToolUseShape(t *testing.T) {
+	// The permission-phase object must not leak into pre-tool, where Claude Code
+	// reads permissionDecision and ignores a decision object.
+	setupPolicyTest(t, "claude", denyResponse)
+	out := runHookWithInput(t, runPreTool, map[string]interface{}{
+		"session_id": "s-claude-pre",
+		"tool_name":  "Bash",
+		"tool_input": map[string]interface{}{"command": "codex --full-auto"},
+	})
+	hso, ok := out["hookSpecificOutput"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("claude pre-tool deny = %#v, want hookSpecificOutput", out)
+	}
+	if hso["hookEventName"] != "PreToolUse" {
+		t.Fatalf("hookEventName = %v, want PreToolUse", hso["hookEventName"])
+	}
+	if _, ok := hso["decision"]; ok {
+		t.Fatalf("hookSpecificOutput = %#v carries the PermissionRequest decision object", hso)
+	}
 }
 
 func TestPermissionRequestPolicyDenyDevin(t *testing.T) {
