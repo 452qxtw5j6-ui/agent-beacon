@@ -115,6 +115,9 @@ func TraceEventFromEvent(event Event, fallbackID string, number int) TraceEventV
 		Model:         NormalizeModelName(event.Model),
 		SourceEventID: id,
 	}
+	if event.Prompt != nil {
+		te.PromptID = strings.TrimSpace(event.Prompt.ID)
+	}
 	if event.Trace != nil {
 		te.Trace = &TraceEventTraceV1{ID: event.Trace.ID, SpanID: event.Trace.SpanID, ParentSpanID: event.Trace.ParentSpanID}
 	}
@@ -191,7 +194,8 @@ func TraceEventType(event Event) string {
 		return "user_message"
 	case action == "agent.reasoning" || strings.Contains(action, "reasoning"):
 		return "agent_reasoning"
-	case action == "agent.message" || action == "assistant.message":
+	case action == "agent.message" || action == "assistant.message" || action == "agent.response":
+		// OpenCode records the assistant's text as agent.response.
 		return "agent_message"
 	case strings.HasPrefix(action, "tool.invoked") || action == "tool.started":
 		return "tool_call"
