@@ -67,6 +67,18 @@ func TestLogPermissionRemediationMatchesThePlatformThatFailed(t *testing.T) {
 		}
 	}
 
+	// A user-mode log is private; the mode remediation must never advise making it world-writable.
+	if runtime.GOOS != "windows" {
+		userAction := actionForCheck(diagnostics.Check{
+			Name:     "runtime_log_permissions",
+			Target:   "/home/someone/.beacon/endpoint/logs/runtime.jsonl",
+			Evidence: "not_writable",
+		}, lifecycle.RuntimeLogSource{EffectiveUserMode: true})
+		if userAction != "chmod 600 /home/someone/.beacon/endpoint/logs/runtime.jsonl" {
+			t.Fatalf("the user-mode remediation is %q; want owner-only chmod 600", userAction)
+		}
+	}
+
 	if got := action("runtime_log_missing"); got != "beacon endpoint doctor --fix" {
 		t.Fatalf("missing-log remediation = %q", got)
 	}

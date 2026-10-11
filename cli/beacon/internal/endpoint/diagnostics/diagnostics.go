@@ -197,6 +197,12 @@ func checkLogPermissions(path string, userMode bool) Check {
 			}
 		}
 	}
+	// A user-mode log is private on purpose: Beacon creates it 0600, since it holds that user's
+	// prompts and command output and every process that writes it runs as them. Owner-only is the
+	// healthy state there, not a readability problem.
+	if userMode && mode&0200 != 0 {
+		return Check{Name: "runtime_log_permissions", Target: path, Status: StatusOK, Severity: SeverityInfo, Message: fmt.Sprintf("mode %o", mode), Evidence: fmt.Sprintf("mode_%o", mode)}
+	}
 	if mode&0044 == 0 {
 		return Check{Name: "runtime_log_permissions", Target: path, Status: StatusWarn, Severity: SeverityLow, Message: fmt.Sprintf("runtime log may not be readable by Wazuh: %o", mode), Evidence: "not_group_or_world_readable"}
 	}

@@ -29,7 +29,10 @@ var endpointSequence asymptoteobserve.Sequencer
 const (
 	defaultEndpointRotateBytes    = 10 * 1024 * 1024
 	defaultEndpointRotateArchives = 5
-	endpointRuntimeFileMode       = 0666
+	// endpointRuntimeFileMode is the shared (system-mode) log's mode. A log inside the current
+	// user's home is private instead; asymptoteobserve.RuntimeLogModes decides, identically in all
+	// three writers.
+	endpointRuntimeFileMode = asymptoteobserve.SharedRuntimeLogFileMode
 )
 
 // Logger provides structured JSON logging for hook events
@@ -474,7 +477,8 @@ func firstEnv(keys ...string) string {
 var writeEndpointJSON = writeEndpointJSONFile
 
 func writeEndpointJSONFile(path string, event map[string]interface{}) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(path)
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return err
 	}
 	data, err := json.Marshal(sanitizeEndpointMap(event))
@@ -642,12 +646,13 @@ func truncateEndpoint(value string, limit int) string {
 	return asymptoteobserve.TruncateString(value, limit)
 }
 
-// Keep this rotation contract mirrored with the endpoint CLI and beaconjson exporter.
+// Keep this rotation and file-mode contract mirrored with the endpoint CLI and beaconjson exporter.
 func appendEndpointJSONL(path string, line []byte, rotateBytes int64, rotateArchives int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(path)
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return err
 	}
-	lock, err := openEndpointRuntimeFile(path+".lock", os.O_CREATE|os.O_RDWR)
+	lock, err := openEndpointRuntimeFileAs(path+".lock", path, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return err
 	}
@@ -681,6 +686,14 @@ func appendEndpointJSONL(path string, line []byte, rotateBytes int64, rotateArch
 }
 
 func openEndpointRuntimeFile(path string, flag int) (*os.File, error) {
+	return openEndpointRuntimeFileAs(path, path, flag)
+}
+
+// openEndpointRuntimeFileAs opens path (the log or its lock) with the mode logPath calls for, and
+// settles its mode with asymptoteobserve.SettleRuntimeLogFileMode: a new file gets that mode
+// whatever the umask, and an existing one is only ever narrowed toward it, by its owner.
+func openEndpointRuntimeFileAs(path, logPath string, flag int) (*os.File, error) {
+	fileMode, _, _ := asymptoteobserve.RuntimeLogModes(logPath)
 	existed := true
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
@@ -688,11 +701,11 @@ func openEndpointRuntimeFile(path string, flag int) (*os.File, error) {
 		}
 		existed = false
 	}
-	f, err := os.OpenFile(path, flag, endpointRuntimeFileMode)
+	f, err := os.OpenFile(path, flag, fileMode)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, endpointRuntimeFileMode); err != nil && !existed {
+	if err := asymptoteobserve.SettleRuntimeLogFileMode(path, logPath, !existed); err != nil {
 		_ = f.Close()
 		return nil, err
 	}
@@ -726,7 +739,11 @@ func rotateEndpointLogIfNeeded(path string, maxSize int64, archives int, nextWri
 			return err
 		}
 	}
-	return os.Rename(path, path+".1")
+	if err := os.Rename(path, path+".1"); err != nil {
+		return err
+	}
+	asymptoteobserve.TightenPrivateRuntimeLogArchives(path, archives)
+	return nil
 }
 
 func removeOverflowEndpointArchives(path string, archives int) error {

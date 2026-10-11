@@ -1155,6 +1155,12 @@ func actionForCheck(check diagnostics.Check, runtimeLog lifecycle.RuntimeLogSour
 		case "acl_unreadable":
 			return "inspect the access control list on " + check.Target
 		}
+		if runtimeLog.EffectiveUserMode {
+			// A user-mode log is written only by processes running as its owner, so owner
+			// read/write is the whole fix. Advising 666 here would hand the user's prompts and
+			// command output to every local account.
+			return "chmod 600 " + check.Target
+		}
 		return "chmod 666 " + check.Target
 	case "runtime_log_source":
 		if runtimeLog.RequestedUserMode && !runtimeLog.EffectiveUserMode {

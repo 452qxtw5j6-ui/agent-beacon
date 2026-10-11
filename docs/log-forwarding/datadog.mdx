@@ -187,7 +187,7 @@ When everything is wired up, Beacon events appear under `service:beacon-endpoint
 
 If Datadog status shows `permission denied`, the Agent cannot read the runtime log. The Datadog Agent usually runs as `_dd-agent`.
 
-For local user testing, either grant `_dd-agent` access to the user-mode log path or use system mode instead. For MDM deployment, use system mode so the Agent tails `/var/log/beacon-agent/runtime.jsonl`.
+A user-mode log is private to its user (0600), so the Agent cannot read it by default. For MDM deployment, use system mode so the Agent tails `/var/log/beacon-agent/runtime.jsonl`. For local user testing, either use system mode or grant `_dd-agent` an inheriting read ACL on `~/.beacon/endpoint/logs` (on macOS, `chmod +a "user:_dd-agent allow list,search,read,file_inherit" ~/.beacon/endpoint/logs`; on Linux, `setfacl -m u:dd-agent:rx` and `setfacl -d -m u:dd-agent:r` on the directory plus `setfacl -m u:dd-agent:r` on the log) and traverse access to its parent directories. Beacon keeps such a grant working across appends and rotation.
 
 If Log Explorer is empty:
 
