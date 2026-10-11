@@ -103,3 +103,95 @@ func TestResolveMatchesEquivalentPaths(t *testing.T) {
 		t.Fatalf("rooted path: %+v", d)
 	}
 }
+
+// The user-wide off switch overrides every project; on or unset leaves project entries deciding.
+func TestGlobalOffIsAKillSwitch(t *testing.T) {
+	repo := t.TempDir()
+	s := Settings{Projects: []Project{{Path: repo, Enabled: true, Visibility: "direct"}}}
+	if d := Resolve(s, repo); !d.Enabled || d.Source != "project" {
+		t.Fatalf("unset = %+v", d)
+	}
+	s.SetGlobal(GlobalOff)
+	if d := Resolve(s, repo); d.Enabled || d.Source != "user" || d.Overridden != repo {
+		t.Fatalf("off = %+v", d)
+	}
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	if d := ForHook(path, repo); d.Enabled {
+		t.Fatalf("ForHook under the kill switch = %+v", d)
+	}
+	s.SetGlobal(GlobalOn)
+	off := Settings{Auto: s.Auto, Projects: []Project{{Path: repo, Enabled: false}}}
+	if d := Resolve(off, repo); d.Enabled || d.Source != "project" {
+		t.Fatalf("project off under global on = %+v", d)
+	}
+}
+
+// A file written before the switch had three states (enabled only) still reads.
+func TestLoadReadsTheOldFormat(t *testing.T) {
+	dir := t.TempDir()
+	repo := t.TempDir()
+	for _, tc := range []struct {
+		body string
+		want string
+	}{
+		{`{"schema_version":"beacon.share_settings.v1","auto":{"enabled":true,"visibility":"private"}}`, GlobalOn},
+		{`{"schema_version":"beacon.share_settings.v1","auto":{"enabled":false},"projects":[{"path":"` + filepath.ToSlash(repo) + `","enabled":true}]}`, GlobalUnset},
+	} {
+		path := filepath.Join(dir, FileName)
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Load(path)
+		if err != nil || s.Global() != tc.want {
+			t.Fatalf("%s: global = %q (err %v), want %q", tc.body, s.Global(), err, tc.want)
+		}
+		if tc.want == GlobalUnset {
+			if d := Resolve(s, repo); !d.Enabled || d.Source != "project" {
+				t.Fatalf("old project entry = %+v", d)
+			}
+		}
+	}
+}
+
+// A repository's opt-out marker wins over the user's own entry for the same directory. A closer
+// directory decides over a farther one: a user entry for a subdirectory enables it even when a
+// parent's marker says off, and a subdirectory's off marker disables it under a parent's entry.
+func TestMarkerOffWinsAtItsDirectoryAndTheClosestDecides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	repo := t.TempDir()
+	sub := filepath.Join(repo, "service")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Projects: []Project{{Path: repo, Enabled: true}}}
+	if err := SaveMarker(repo, Marker{Auto: Auto{Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := Resolve(s, repo); d.Enabled || d.Source != "marker" || d.Overridden != repo {
+		t.Fatalf("user entry plus off marker = %+v", d)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	if d := ForHook(path, sub); d.Enabled {
+		t.Fatalf("hook decision under the repository's opt-out = %+v", d)
+	}
+	// A user entry for the subdirectory is closer than the parent's marker.
+	child := Settings{Projects: []Project{{Path: sub, Enabled: true}}}
+	if d := Resolve(child, sub); !d.Enabled || d.Source != "project" || d.Project != sub {
+		t.Fatalf("child entry under a parent's off marker = %+v", d)
+	}
+	// And a subdirectory's off marker is closer than the parent's entry.
+	if err := os.Remove(MarkerPath(repo)); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMarker(sub, Marker{Auto: Auto{Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := Resolve(s, sub); d.Enabled || d.Source != "marker" || d.Project != sub {
+		t.Fatalf("child off marker under a parent's entry = %+v", d)
+	}
+}

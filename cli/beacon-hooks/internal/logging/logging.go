@@ -172,7 +172,9 @@ func (l *Logger) requestShareOnce(event map[string]interface{}) {
 	if !decision.Enabled {
 		return
 	}
-	first, err := activesession.MarkShareRequested(activesession.DefaultPath(), name, id, time.Now())
+	recordPath := activesession.DefaultPath()
+	markedAt := time.Now()
+	first, err := activesession.MarkShareRequested(recordPath, name, id, markedAt)
 	if err != nil || !first {
 		return
 	}
@@ -188,7 +190,12 @@ func (l *Logger) requestShareOnce(event map[string]interface{}) {
 	if branch, _ := event["branch"].(string); branch != "" {
 		fields["branch"] = branch
 	}
-	_ = l.EndpointEventWithFidelity(shareauto.ActionShareRequested, "session", "info", "Auto-share requested for this session", asymptoteobserve.FidelityInferred, fields)
+	if err := l.EndpointEventWithFidelity(shareauto.ActionShareRequested, "session", "info", "Auto-share requested for this session", asymptoteobserve.FidelityInferred, fields); err != nil {
+		// The request was not written (a read-only log, a sandbox): take the mark back so the next
+		// hook of the session asks again, rather than leave the session marked and never requested.
+		// Like the rest of this path it stays silent and never fails the hook.
+		_ = activesession.UnmarkShareRequested(recordPath, name, id, markedAt)
+	}
 }
 
 // recordActiveSession notes the event's session as the one its runtime is running in its working
@@ -460,7 +467,11 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-func writeEndpointJSON(path string, event map[string]interface{}) error {
+// writeEndpointJSON appends one endpoint event to the runtime log. A variable so a test can make one
+// write fail.
+var writeEndpointJSON = writeEndpointJSONFile
+
+func writeEndpointJSONFile(path string, event map[string]interface{}) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}

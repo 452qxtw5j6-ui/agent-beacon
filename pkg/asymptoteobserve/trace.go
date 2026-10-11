@@ -35,6 +35,7 @@ type TraceSummaryV1 struct {
 	Session            *TraceSessionV1       `json:"session,omitempty"`
 	Trace              *TraceIdentityV1      `json:"trace,omitempty"`
 	Repository         *TraceRepositoryV1    `json:"repository,omitempty"`
+	Project            *TraceProjectV1       `json:"project,omitempty"`
 	Namespace          *TraceNamespaceV1     `json:"namespace,omitempty"`
 	Model              *TraceModelV1         `json:"model,omitempty"`
 	TokenUsage         *TraceUsageV1         `json:"token_usage,omitempty"`
@@ -64,6 +65,12 @@ type TraceRepositoryV1 struct {
 	Branch    string `json:"branch,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Path      string `json:"path,omitempty"`
+}
+
+// TraceProjectV1 names the project a trace worked in: the name of its directory (the repository's
+// root, or else the session's working directory), never a path.
+type TraceProjectV1 struct {
+	Name string `json:"name,omitempty"`
 }
 
 type TraceNamespaceV1 struct {
@@ -107,29 +114,32 @@ type TraceContentSummaryV1 struct {
 }
 
 type TraceEventV1 struct {
-	ID            string             `json:"id"`
-	Number        int                `json:"number"`
-	Timestamp     string             `json:"timestamp"`
-	Type          string             `json:"type"`
-	Action        string             `json:"action"`
-	Category      string             `json:"category,omitempty"`
-	Fidelity      string             `json:"fidelity,omitempty"`
-	Trace         *TraceEventTraceV1 `json:"trace,omitempty"`
-	ToolCallID    string             `json:"tool_call_id,omitempty"`
-	Actor         string             `json:"actor,omitempty"`
-	Title         string             `json:"title,omitempty"`
-	Summary       string             `json:"summary,omitempty"`
-	Content       *TraceContentV1    `json:"content,omitempty"`
-	Tool          *TraceToolV1       `json:"tool,omitempty"`
-	Command       *TraceCommandV1    `json:"command,omitempty"`
-	File          *TraceFileV1       `json:"file,omitempty"`
-	MCP           *TraceMCPV1        `json:"mcp,omitempty"`
-	Approval      *TraceApprovalV1   `json:"approval,omitempty"`
-	Policy        *TracePolicyV1     `json:"policy,omitempty"`
-	Error         *TraceErrorV1      `json:"error,omitempty"`
-	Model         string             `json:"model,omitempty"`
-	Usage         *TraceUsageV1      `json:"usage,omitempty"`
-	SourceEventID string             `json:"source_event_id"`
+	ID         string             `json:"id"`
+	Number     int                `json:"number"`
+	Timestamp  string             `json:"timestamp"`
+	Type       string             `json:"type"`
+	Action     string             `json:"action"`
+	Category   string             `json:"category,omitempty"`
+	Fidelity   string             `json:"fidelity,omitempty"`
+	Trace      *TraceEventTraceV1 `json:"trace,omitempty"`
+	ToolCallID string             `json:"tool_call_id,omitempty"`
+	// PromptID is prompt.id: the runtime's name for the turn the event belongs to, from its prompt
+	// through everything done for it.
+	PromptID      string           `json:"prompt_id,omitempty"`
+	Actor         string           `json:"actor,omitempty"`
+	Title         string           `json:"title,omitempty"`
+	Summary       string           `json:"summary,omitempty"`
+	Content       *TraceContentV1  `json:"content,omitempty"`
+	Tool          *TraceToolV1     `json:"tool,omitempty"`
+	Command       *TraceCommandV1  `json:"command,omitempty"`
+	File          *TraceFileV1     `json:"file,omitempty"`
+	MCP           *TraceMCPV1      `json:"mcp,omitempty"`
+	Approval      *TraceApprovalV1 `json:"approval,omitempty"`
+	Policy        *TracePolicyV1   `json:"policy,omitempty"`
+	Error         *TraceErrorV1    `json:"error,omitempty"`
+	Model         string           `json:"model,omitempty"`
+	Usage         *TraceUsageV1    `json:"usage,omitempty"`
+	SourceEventID string           `json:"source_event_id"`
 }
 
 type TraceEventTraceV1 struct {

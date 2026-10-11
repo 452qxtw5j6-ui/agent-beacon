@@ -735,35 +735,7 @@ func findSource(sources []eventSource, archive int) (eventSource, bool) {
 }
 
 func normalizeDashboardEvent(event *schema.Event) {
-	metricName := metricEventName(event)
-	if event.Event.Category == "" && metricName != "" {
-		event.Event.Category = "metric"
-	}
-	if event.Event.Category == "" {
-		event.Event.Category = inferEventCategory(event.Event.Action)
-	}
-	metricName = metricEventName(event)
-	if event.Event.Category == "metric" && (event.Event.Action == "" || event.Event.Action == "metric.observed") {
-		event.Event.Action = metricName
-		if event.Event.Action == "" {
-			event.Event.Action = "metric.observed"
-		}
-	}
-}
-
-func metricEventName(event *schema.Event) string {
-	if event == nil {
-		return ""
-	}
-	if event.Raw != nil {
-		if value, ok := event.Raw["metric_name"].(string); ok {
-			return strings.TrimSpace(value)
-		}
-	}
-	if event.Event.Category == "metric" {
-		return strings.TrimSpace(event.Message)
-	}
-	return ""
+	asymptoteobserve.NormalizeTraceEvent(event)
 }
 
 func normalizeLimit(limit int) int {
@@ -883,27 +855,6 @@ func matchesCommand(event schema.Event, command string) bool {
 		return true
 	}
 	return false
-}
-
-func inferEventCategory(action string) string {
-	switch {
-	case strings.HasPrefix(action, "prompt."):
-		return "prompt"
-	case strings.HasPrefix(action, "command."):
-		return "command"
-	case strings.HasPrefix(action, "file."):
-		return "file"
-	case strings.HasPrefix(action, "mcp."):
-		return "mcp"
-	case strings.HasPrefix(action, "approval.") || strings.HasPrefix(action, "policy."):
-		return "approval"
-	case strings.HasPrefix(action, "metric."):
-		return "metric"
-	case strings.HasPrefix(action, "tool."):
-		return "tool"
-	default:
-		return ""
-	}
 }
 
 func matchesFreeText(record EventRecord, query string) bool {

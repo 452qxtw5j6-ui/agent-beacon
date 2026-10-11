@@ -24,7 +24,7 @@ import (
 
 // `beacon share --follow` keeps a shared trace current while its session runs: it re-reads the
 // session every --interval and uploads what changed, until the session records its end or the
-// command is interrupted. Each poll is local; a request is made only when the session's messages
+// command is interrupted. Each poll is local; a request is made only when the session's events
 // changed since the last upload, and it goes through shareUpload, the same align-and-resume path
 // as `beacon share refresh`.
 
@@ -32,7 +32,7 @@ const (
 	shareFollowDefaultInterval = 10 * time.Second
 	shareFollowMinInterval     = time.Second
 	// shareFollowFinalRetries bounds how many more times --follow tries to upload a session's last
-	// messages after the session ended, one interval apart, before it gives up with an error.
+	// events after the session ended, one interval apart, before it gives up with an error.
 	shareFollowFinalRetries = 3
 	// shareFollowMaxReadFailures is how many polls in a row may fail to read the session, after
 	// the first upload, before --follow gives up with an error.
@@ -74,7 +74,7 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 	defer stop()
 	out, errOut := cmd.OutOrStdout(), cmd.ErrOrStderr()
 	if !shareOpts.jsonOutput {
-		fmt.Fprintf(errOut, "Following %s session %s, uploading new messages every %s. Ctrl+C stops.\n", subject.session.Harness, subject.session.ID, interval)
+		fmt.Fprintf(errOut, "Following %s session %s, uploading new events every %s. Ctrl+C stops.\n", subject.session.Harness, subject.session.ID, interval)
 	}
 	var (
 		lastPrint     string
@@ -112,7 +112,7 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 			if readErr != nil {
 				readFailures++
 				if readFailures >= shareFollowMaxReadFailures {
-					return fmt.Errorf("stopped following: the session could not be read %d times in a row (%s holds %d messages): %w", readFailures, last.SharedURL, last.MessageCount, readErr)
+					return fmt.Errorf("stopped following: the session could not be read %d times in a row (%s holds %d events): %w", readFailures, last.SharedURL, last.EventCount, readErr)
 				}
 				if msg := readErr.Error(); msg != lastReadWarn {
 					fmt.Fprintf(errOut, "warning: could not read the session, retrying in %s: %v\n", interval, readErr)
@@ -123,7 +123,7 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 			}
 		}
 		if err == nil && fingerprint != lastPrint {
-			// Every upload that sends messages records a session.shared refresh, so a session
+			// Every upload that sends events records a session.shared refresh, so a session
 			// being followed never looks out of date locally; it is at most one per interval.
 			opts := shareUploadOptions{Record: true}
 			if uploads == 0 {
@@ -171,12 +171,12 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 			if err != nil || fingerprint == lastPrint {
 				break
 			}
-			// The session ended with messages beacon.sh does not have yet. There is no next poll
+			// The session ended with events beacon.sh does not have yet. There is no next poll
 			// to catch up on, so retry a few times and then fail rather than report a trace that
 			// is missing its end.
 			finalFailures++
 			if finalFailures > shareFollowFinalRetries {
-				finalErr = fmt.Errorf("the session ended, but its last messages were not uploaded after %d attempts (%s holds %d messages): %w", finalFailures, last.SharedURL, last.MessageCount, lastErr)
+				finalErr = fmt.Errorf("the session ended, but its last events were not uploaded after %d attempts (%s holds %d events): %w", finalFailures, last.SharedURL, last.EventCount, lastErr)
 				break
 			}
 		}
@@ -196,7 +196,7 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 	return printShareFollow(out, errOut, last, false, true, ended)
 }
 
-// shareFollowState is a fingerprint of the session's messages as they would be uploaded now, and
+// shareFollowState is a fingerprint of the session's trace events as they would be uploaded now, and
 // whether the session recorded its end.
 func shareFollowState(subject shareSubject) (string, bool, error) {
 	_, events, err := shareEvents(subject)
@@ -213,7 +213,9 @@ func shareFollowState(subject shareSubject) (string, bool, error) {
 	if err != nil {
 		return "", ended, err
 	}
-	data, err := json.Marshal(payload)
+	// The events alone: the trace body carries the time it was built, which differs on every poll,
+	// and everything else in it is folded from these events.
+	data, err := json.Marshal(payload.Events)
 	if err != nil {
 		return "", ended, err
 	}
@@ -228,13 +230,13 @@ func printShareFollow(out, errOut io.Writer, result shareResult, first, final, e
 	switch {
 	case first:
 		fmt.Fprintln(out, result.SharedURL)
-		fmt.Fprintf(errOut, "%s, %d messages. External id: %s\n", result.Visibility, result.MessageCount, result.ExternalID)
+		fmt.Fprintf(errOut, "%s, %d events. External id: %s\n", result.Visibility, result.EventCount, result.ExternalID)
 	case final && ended:
-		fmt.Fprintf(errOut, "The session ended; %s holds %d messages.\n", result.SharedURL, result.MessageCount)
+		fmt.Fprintf(errOut, "The session ended; %s holds %d events.\n", result.SharedURL, result.EventCount)
 	case final:
-		fmt.Fprintf(errOut, "Stopped following; %s holds %d messages.\n", result.SharedURL, result.MessageCount)
+		fmt.Fprintf(errOut, "Stopped following; %s holds %d events.\n", result.SharedURL, result.EventCount)
 	default:
-		fmt.Fprintf(errOut, "Uploaded %d message(s); %d in total.\n", result.Uploaded, result.MessageCount)
+		fmt.Fprintf(errOut, "Uploaded %d event(s); %d in total.\n", result.Uploaded, result.EventCount)
 	}
 	return nil
 }

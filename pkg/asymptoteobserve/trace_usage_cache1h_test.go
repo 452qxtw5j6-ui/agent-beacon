@@ -1,19 +1,14 @@
-package dashboard
+package asymptoteobserve
 
-import (
-	"testing"
-
-	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
-	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
-)
+import "testing"
 
 // Trace usage carries the one-hour cache-write subset beside the write count, clamped to it, and
 // sums it with the writes it belongs to.
 func TestTraceUsageCarriesTheOneHourCacheWriteSubset(t *testing.T) {
-	event := func(total, oneHour int64) schema.Event {
+	event := func(total, oneHour int64) Event {
 		claimed := oneHour
-		return schema.Event{GenAI: &schema.GenAIInfo{Usage: &schema.GenAIUsageInfo{
-			CacheCreation: &schema.GenAIUsageCacheCreationInfo{InputTokens: &total, Ephemeral1hInputTokens: &claimed},
+		return Event{GenAI: &GenAIInfo{Usage: &GenAIUsageInfo{
+			CacheCreation: &GenAIUsageCacheCreationInfo{InputTokens: &total, Ephemeral1hInputTokens: &claimed},
 		}}}
 	}
 	first := traceUsage(event(20000, 16000))
@@ -26,13 +21,13 @@ func TestTraceUsageCarriesTheOneHourCacheWriteSubset(t *testing.T) {
 		t.Fatalf("usage = %+v, want the subset clamped to 500", second)
 	}
 	sum := TraceUsageV1{}
-	addTraceUsage(&sum, *first)
-	addTraceUsage(&sum, *second)
+	AddTraceUsage(&sum, *first)
+	AddTraceUsage(&sum, *second)
 	if sum.CacheCreationInputTokens != 20500 || sum.CacheCreation1hInputTokens != 16500 {
 		t.Fatalf("sum = %+v", sum)
 	}
-	unsplit := traceUsage(schema.Event{GenAI: &schema.GenAIInfo{Usage: &schema.GenAIUsageInfo{
-		CacheCreation: asymptoteobserve.NewCacheCreationUsage(300, nil),
+	unsplit := traceUsage(Event{GenAI: &GenAIInfo{Usage: &GenAIUsageInfo{
+		CacheCreation: NewCacheCreationUsage(300, nil),
 	}}})
 	if unsplit == nil || unsplit.CacheCreation1hInputTokens != 0 {
 		t.Fatalf("usage = %+v, want no subset when unreported", unsplit)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 // shareUploadOptions configures shareUpload.
@@ -34,8 +35,8 @@ func (e *shareRecordError) Unwrap() error { return e.err }
 // shareUpload creates or updates subject's shared trace, sending only what beacon.sh lacks. It is
 // the path every non-interactive upload takes (the pre-push hook, --follow), so it applies the same
 // rules as `beacon share refresh`: an existing trace is checked against this copy of the session
-// (alignShareSource) and only the messages after the last one beacon.sh holds are sent
-// (messagesAfter), which re-sends open calls and that last message.
+// (alignShareSource) and only the events after the last one beacon.sh holds are sent
+// (ShareEventsAfter), which re-sends that last event and any tool call still open.
 func shareUpload(ctx context.Context, client *account.ShareClient, subject shareSubject, opts shareUploadOptions) (shareResult, shareSubject, error) {
 	readAt := shareNow()
 	payload, err := buildSharePayload(subject)
@@ -46,7 +47,7 @@ func shareUpload(ctx context.Context, client *account.ShareClient, subject share
 	if err != nil {
 		return shareResult{}, subject, err
 	}
-	pending := payload.Messages
+	pending := payload.Events
 	if found {
 		if subject, payload, err = alignShareSource(subject, payload, state); err != nil {
 			return shareResult{}, subject, err
@@ -59,7 +60,7 @@ func shareUpload(ctx context.Context, client *account.ShareClient, subject share
 		if !opts.ExplicitTitle {
 			payload.Trace.Title = ""
 		}
-		pending = messagesAfter(payload.Messages, state.LastMessageID, state.MaxOrder)
+		pending = asymptoteobserve.ShareEventsAfter(payload.Events, state.LastEventID, state.MaxNumber)
 	} else if opts.Visibility != "" {
 		payload.Trace.Visibility = opts.Visibility
 	}
@@ -67,26 +68,27 @@ func shareUpload(ctx context.Context, client *account.ShareClient, subject share
 	if err != nil {
 		return shareResult{}, subject, err
 	}
-	uploaded, err := client.PutMessages(ctx, payload.ExternalID, pending)
+	uploaded, err := client.PostEvents(ctx, payload.ExternalID, asymptoteobserve.ShareEventsBatchV1{Events: pending})
 	if err != nil {
-		return shareResult{}, subject, fmt.Errorf("upload messages to %s: %w", trace.URL, err)
+		return shareResult{}, subject, fmt.Errorf("upload events to %s: %w", trace.URL, err)
 	}
 	result := shareResult{
 		TraceID:       trace.ID,
 		ExternalID:    payload.ExternalID,
 		SharedURL:     trace.URL,
 		Visibility:    trace.Visibility,
-		AgentID:       payload.Trace.AgentID,
-		MessageCount:  trace.MessageCount,
+		Harness:       payload.harness(),
+		EventCount:    trace.EventCount,
 		Uploaded:      len(pending),
 		SelectedBy:    subject.selectedBy,
 		SharedThrough: readAt,
 	}
 	if found {
-		result.MessageCount = state.MessageCount
+		result.EventCount = state.EventCount
+		result.sharedAt = state.CreatedAt
 	}
 	if uploaded.Batches > 0 {
-		result.MessageCount = uploaded.MessageCount
+		result.EventCount = uploaded.EventCount
 	}
 	if opts.Record {
 		if err := recordShareEvent(subject.session, result, found); err != nil {

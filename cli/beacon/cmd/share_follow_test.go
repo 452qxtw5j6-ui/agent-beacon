@@ -104,11 +104,11 @@ func TestShareFollowUploadsNewMessagesUntilTheSessionEnds(t *testing.T) {
 	if requestsAt[3] != requestsAt[2] {
 		t.Errorf("an unchanged poll made requests: %v", srv.requests[requestsAt[2]:requestsAt[3]])
 	}
-	messages := len(srv.messages)
+	events := len(srv.events)
 	srv.mu.Unlock()
 	// The fixture's four, the second answer, the new prompt, and the session's end.
-	if messages != 7 {
-		t.Fatalf("server has %d messages, want 7", messages)
+	if events != 7 {
+		t.Fatalf("server has %d events, want 7", events)
 	}
 	lines := strings.Split(strings.TrimSpace(stdout), "\n")
 	var final struct {
@@ -128,8 +128,12 @@ func TestShareFollowUploadsNewMessagesUntilTheSessionEnds(t *testing.T) {
 		if _, ok := r.Raw["shared_through"].(string); !ok {
 			t.Fatalf("record %d has no shared_through: %v", i, r.Raw)
 		}
-		if _, first := r.Raw["shared_at"]; first != (i == 0) {
-			t.Fatalf("record %d shared_at present = %v", i, first)
+		// Every record names the share date; the refreshes take it from the trace's creation on
+		// beacon.sh, so it never moves past the first upload.
+		sharedAt, _ := r.Raw["shared_at"].(string)
+		first, _ := records[0].Raw["shared_at"].(string)
+		if sharedAt == "" || sharedAt > first {
+			t.Fatalf("record %d shared_at = %q, first %q", i, sharedAt, first)
 		}
 	}
 }
@@ -207,7 +211,7 @@ func TestShareFollowRetriesTheFinalUploadThenFails(t *testing.T) {
 	t.Cleanup(func() { shareFollowWait = prevWait })
 
 	_, stderr, err := runShareCommand(t, "--follow", "--cwd", env.projectDir, "--log-path", env.logPath)
-	if err == nil || !strings.Contains(err.Error(), "last messages were not uploaded") {
+	if err == nil || !strings.Contains(err.Error(), "last events were not uploaded") {
 		t.Fatalf("follow err = %v\n%s", err, stderr)
 	}
 	// One wait before the end, then one per retry.
@@ -252,8 +256,8 @@ func TestShareFollowRetriesTheFinalUploadThenFails(t *testing.T) {
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	if len(srv.messages) != 5 {
-		t.Fatalf("server has %d messages, want the fixture's four and the end", len(srv.messages))
+	if len(srv.events) != 5 {
+		t.Fatalf("server has %d events, want the fixture's four and the end", len(srv.events))
 	}
 }
 
@@ -299,8 +303,8 @@ func TestShareFollowKeepsGoingWhenTheFirstRecordFails(t *testing.T) {
 	}
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
-	if len(srv.messages) != 5 {
-		t.Fatalf("server has %d messages, want 5", len(srv.messages))
+	if len(srv.events) != 5 {
+		t.Fatalf("server has %d events, want 5", len(srv.events))
 	}
 }
 

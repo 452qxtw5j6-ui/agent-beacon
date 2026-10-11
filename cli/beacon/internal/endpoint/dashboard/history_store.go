@@ -31,7 +31,7 @@ import (
 // store cannot answer a query.
 //
 // The store must answer the same question the JSONL scan answers. Every event is stored, in log
-// order, and projected by the same code (traceEventFromRecord and traceAggregate), so trace
+// order, and projected by the same code (asymptoteobserve.TraceEventFromEvent and TraceBuilder), so trace
 // membership, event numbers, summaries and search results match the JSONL path for the same log.
 
 const (
@@ -41,7 +41,7 @@ const (
 	// historyDerivationVersion covers everything computed from a stored line: trace keys, event
 	// numbers, types, summaries and search text. Bump it when that projection changes; the next
 	// catch-up recomputes it from the stored lines, so history survives the change.
-	historyDerivationVersion = 11 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split; 5: sharing goes stale on newer activity and carries a refresh command; 6: staleness compares against what a share covered (shared_through); 7: a share's own events (its command, the reply about it) do not make it stale; 8: only when the session holds the share call; 9: and the turn-end event after it; 10: events the share projection skips never count; 11: a share call is beacon share in command position
+	historyDerivationVersion = 12 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split; 5: agent.response is an agent message; 6: the summary names its project; 7-11 were the sharing-staleness steps on a parallel branch; 12: sharing goes stale on activity after what a share covered (shared_through), ignoring a share's own events and events the share projection skips, and carries a refresh command
 
 	defaultHistoryRetentionDays = 90
 	// maxHistoryRetentionDays is 100 years: a retention this long or longer means nothing expires.

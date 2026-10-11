@@ -137,10 +137,9 @@ func TestShareAutoProjectScopeAndStatus(t *testing.T) {
 	}
 }
 
-// A user-wide disable turns off projects enabled with --project too: their entries are checked
-// before the user-wide switch, so leaving one on would keep publishing after "off for every new
-// session".
-func TestShareAutoGlobalDisableTurnsOffProjects(t *testing.T) {
+// The user-wide off switch overrides projects enabled with --project without rewriting their
+// entries, so turning auto-share back on restores exactly what was there.
+func TestShareAutoGlobalDisableOverridesProjects(t *testing.T) {
 	path := shareAutoTestEnv(t, true, managedprivacy.Standard)
 	project := t.TempDir()
 	if _, _, err := runShareAuto(t, "enable", "--project", project); err != nil {
@@ -153,19 +152,70 @@ func TestShareAutoGlobalDisableTurnsOffProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("disable: %v", err)
 	}
-	if !strings.Contains(stdout, "Auto-share is off for every new session") || !strings.Contains(stdout, "Turned off for the project "+project) {
+	if !strings.Contains(stdout, "Auto-share is off for every new session") || !strings.Contains(stdout, "overrides 1 project setting") || !strings.Contains(stdout, project) {
 		t.Fatalf("stdout = %q", stdout)
 	}
 	settings, _ := shareauto.Load(path)
-	if entry, ok := settings.Project(project); !ok || entry.Enabled {
-		t.Fatalf("project entry = %+v %v, want kept and off", entry, ok)
+	if entry, ok := settings.Project(project); !ok || !entry.Enabled || settings.Global() != shareauto.GlobalOff {
+		t.Fatalf("settings = %+v, want the project entry untouched and the switch off", settings)
 	}
 	// What the hook adapter decides: no session.share_requested is written in the project.
 	if d := shareauto.ForHook(path, filepath.Join(project, "sub")); d.Enabled {
-		t.Fatalf("hook decision after a global disable = %+v", d)
+		t.Fatalf("hook decision under the off switch = %+v", d)
 	}
 	stdout, _, err = runShareAuto(t, "status", "--project", project)
-	if err != nil || !strings.Contains(stdout, "Auto-share in "+project+": off") {
+	if err != nil || !strings.Contains(stdout, "Auto-share in "+project+": off") || !strings.Contains(stdout, "Every session: off") || !strings.Contains(stdout, "overridden by the off switch") {
+		t.Fatalf("status = %q (%v)", stdout, err)
+	}
+	// Turning it back on restores the project.
+	if _, _, err := runShareAuto(t, "enable"); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if d := shareauto.ForHook(path, project); !d.Enabled || d.Source != "project" {
+		t.Fatalf("project after re-enable = %+v", d)
+	}
+}
+
+// Opting a project in while the off switch is set clears the switch back to unset.
+func TestShareAutoProjectEnableClearsTheOffSwitch(t *testing.T) {
+	path := shareAutoTestEnv(t, true, managedprivacy.Standard)
+	project, other := t.TempDir(), t.TempDir()
+	if _, _, err := runShareAuto(t, "disable"); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	stdout, _, err := runShareAuto(t, "enable", "--project", project)
+	if err != nil {
+		t.Fatalf("enable --project: %v", err)
+	}
+	if !strings.Contains(stdout, "now cleared") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	settings, _ := shareauto.Load(path)
+	if settings.Global() != shareauto.GlobalUnset {
+		t.Fatalf("global = %q, want unset", settings.Global())
+	}
+	if !shareauto.ForHook(path, project).Enabled || shareauto.ForHook(path, other).Enabled {
+		t.Fatal("want the project on and other directories off")
+	}
+}
+
+// A repository's committed opt-out holds for someone who had enabled the project, and status says
+// the repository opted out.
+func TestShareAutoRepositoryOptOutOverridesAProjectEnable(t *testing.T) {
+	path := shareAutoTestEnv(t, true, managedprivacy.Standard)
+	project := t.TempDir()
+	if _, _, err := runShareAuto(t, "enable", "--project", project); err != nil {
+		t.Fatalf("enable --project: %v", err)
+	}
+	// A teammate commits an opt-out, which the pull brings in.
+	if err := shareauto.SaveMarker(project, shareauto.Marker{Auto: shareauto.Auto{Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := shareauto.ForHook(path, project); d.Enabled {
+		t.Fatalf("hook decision = %+v, want the repository's opt-out", d)
+	}
+	stdout, _, err := runShareAuto(t, "status", "--project", project)
+	if err != nil || !strings.Contains(stdout, ": off") || !strings.Contains(stdout, "disabled by the repository file") || !strings.Contains(stdout, "overrides your setting") {
 		t.Fatalf("status = %q (%v)", stdout, err)
 	}
 }
