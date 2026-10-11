@@ -56,14 +56,14 @@
             "icon": "cloud-arrow-up",
             "pages": [
               "deployment/hosting-options",
-              "deployment/open-source"
+              "deployment/open-source",
+              "deployment/managed"
             ]
           },
           {
             "group": "Beacon Cloud",
             "icon": "cloud",
             "pages": [
-              "deployment/managed",
               "cloud/devices",
               "cloud/sessions",
               "deployment/managed-mcp",
@@ -74,6 +74,24 @@
                   "cloud/lenses/creating-lenses",
                   "cloud/lenses/managing-lenses",
                   "cloud/lenses/lenses-mcp"
+                ]
+              },
+              {
+                "group": "Inventory",
+                "root": "guides/inventory",
+                "pages": [
+                  "inventory/agent-harnesses",
+                  "inventory/mcp-servers",
+                  "inventory/skills"
+                ]
+              },
+              {
+                "group": "Detections",
+                "root": "detections/index",
+                "pages": [
+                  "detections/yaml-schema",
+                  "detections/standard",
+                  "detections/engine"
                 ]
               },
               "manage/profile"
@@ -106,30 +124,6 @@
                 ]
               },
               "concepts/faq"
-            ]
-          },
-          {
-            "group": "Manage Beacon",
-            "icon": "sliders",
-            "pages": [
-              {
-                "group": "Inventory",
-                "root": "guides/inventory",
-                "pages": [
-                  "inventory/agent-harnesses",
-                  "inventory/mcp-servers",
-                  "inventory/skills"
-                ]
-              },
-              {
-                "group": "Detections",
-                "root": "detections/index",
-                "pages": [
-                  "detections/yaml-schema",
-                  "detections/standard",
-                  "detections/engine"
-                ]
-              }
             ]
           },
           {
