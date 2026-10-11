@@ -21,6 +21,14 @@ import (
 // relative to the session's directory or the home directory, and Beacon's own bookkeeping events
 // (heartbeats, metric datapoints, the session.shared record itself) are left out.
 
+// ShareInfo is the sharing request an event carries. Today only session.share_requested sets it:
+// the hook adapter writes that event once per session when auto-share is on, and Beacon Cloud,
+// receiving it through forwarding, publishes the session as a shared trace with this visibility
+// ("" means the server default, direct).
+type ShareInfo struct {
+	Visibility string `json:"visibility,omitempty"`
+}
+
 // ShareSchemaVersion names the wire contract.
 const ShareSchemaVersion = "beacon.share.v1"
 
@@ -538,7 +546,7 @@ func classifyShareEvent(event Event) shareEventClass {
 	action := strings.ToLower(strings.TrimSpace(event.Event.Action))
 	category := strings.ToLower(strings.TrimSpace(event.Event.Category))
 	switch {
-	case action == "" || action == "session.shared":
+	case action == "" || action == "session.shared" || action == "session.share_requested":
 		return shareSkip
 	case category == "metric" || category == "inventory" || category == "health" || category == "telemetry" ||
 		strings.HasPrefix(action, "endpoint.") || strings.HasPrefix(action, "telemetry.") ||
@@ -1325,7 +1333,7 @@ func ShareMetadataFromEventsWithOptions(events []Event, opts ShareOptions) Share
 	seen := map[string]bool{}
 	for _, item := range items {
 		event := item.event
-		if strings.EqualFold(event.Event.Action, "session.shared") {
+		if strings.EqualFold(event.Event.Action, "session.shared") || strings.EqualFold(event.Event.Action, "session.share_requested") {
 			continue
 		}
 		if meta.AgentID == "" {

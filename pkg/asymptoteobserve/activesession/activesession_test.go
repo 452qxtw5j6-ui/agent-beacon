@@ -123,3 +123,27 @@ func TestDamagedRecordIsReplaced(t *testing.T) {
 		t.Fatalf("doc = %s", data)
 	}
 }
+
+func TestMarkShareRequestedOncePerSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	first, err := MarkShareRequested(path, "claude_code", "s1", now)
+	if err != nil || !first {
+		t.Fatalf("first = %v, %v", first, err)
+	}
+	again, err := MarkShareRequested(path, "claude_code", "s1", now.Add(time.Hour))
+	if err != nil || again {
+		t.Fatalf("again = %v, %v", again, err)
+	}
+	other, _ := MarkShareRequested(path, "codex_cli", "s1", now)
+	if !other {
+		t.Fatal("another runtime's session with the same id was deduplicated")
+	}
+	// Active-session writes keep the marks.
+	if err := Record(path, "claude_code", "s1", "/d", now); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := MarkShareRequested(path, "claude_code", "s1", now); again {
+		t.Fatal("mark lost after a Record")
+	}
+}

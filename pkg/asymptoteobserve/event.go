@@ -647,6 +647,7 @@ type Event struct {
 	Run           *RunInfo               `json:"run,omitempty"`
 	Session       *SessionInfo           `json:"session,omitempty"`
 	Handoff       *HandoffInfo           `json:"handoff,omitempty"`
+	Share         *ShareInfo             `json:"share,omitempty"`
 	Trace         *TraceInfo             `json:"trace,omitempty"`
 	JSONRPC       *JSONRPCInfo           `json:"jsonrpc,omitempty"`
 	Network       *NetworkInfo           `json:"network,omitempty"`

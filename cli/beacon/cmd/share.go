@@ -109,7 +109,8 @@ you; public lists the trace in Discover for anyone, and asks for confirmation fi
 a session updates the same trace and keeps its visibility unless --visibility is given.
 
 Sharing needs ` + "`beacon login`" + ` (with the traces:write permission) or a Beacon API key in --key or
-BEACON_API_KEY. Nothing is uploaded by hooks or in the background; only this command shares.`,
+BEACON_API_KEY. Hooks never upload anything; ` + "`beacon share auto`" + ` asks Beacon Cloud to publish new sessions
+from the events it already receives.`,
 	Args:         cobra.NoArgs,
 	SilenceUsage: true,
 	RunE:         func(cmd *cobra.Command, args []string) error { return shareJSONErrors(cmd, runShare(cmd)) },

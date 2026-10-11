@@ -17,6 +17,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/activesession"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/filelock"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/shareauto"
 )
 
 // endpointSequence numbers the endpoint events emitted by this hook process, in the order
@@ -138,7 +139,56 @@ func (l *Logger) EndpointEventWithFidelity(action, category, severity, message, 
 		return err
 	}
 	recordActiveSession(event)
+	l.requestShareOnce(event)
 	return nil
+}
+
+// requestShareOnce writes one session.share_requested event for the event's session when the person
+// turned auto-share on for its working directory (`beacon share auto enable`). It is the first event
+// of the session the hooks see -- SessionStart where the runtime has one -- and never more than one
+// per session, deduplicated under a lock in the active-session record.
+//
+// The event is only written to the local runtime log. Beacon Cloud forwarding ships it like any
+// other line, and beacon.sh publishes the session when it receives it; without forwarding it is an
+// inert record. Nothing here touches the network. It is event.fidelity=inferred because Beacon
+// originated it: no runtime reported a share request.
+func (l *Logger) requestShareOnce(event map[string]interface{}) {
+	info, _ := event["event"].(map[string]interface{})
+	if action, _ := info["action"].(string); action == shareauto.ActionShareRequested {
+		return
+	}
+	session, _ := event["session"].(map[string]interface{})
+	harness, _ := event["harness"].(map[string]interface{})
+	if session == nil || harness == nil {
+		return
+	}
+	id, _ := session["id"].(string)
+	dir, _ := session["working_directory"].(string)
+	name, _ := harness["name"].(string)
+	if id == "" || dir == "" || name == "" {
+		return
+	}
+	decision := shareauto.ForHook(shareauto.DefaultPath(), dir)
+	if !decision.Enabled {
+		return
+	}
+	first, err := activesession.MarkShareRequested(activesession.DefaultPath(), name, id, time.Now())
+	if err != nil || !first {
+		return
+	}
+	fields := map[string]interface{}{
+		"session": map[string]interface{}{"id": id, "working_directory": dir},
+	}
+	if visibility := decision.Visibility; visibility == "public" || visibility == "direct" || visibility == "private" {
+		fields["share"] = map[string]interface{}{"visibility": visibility}
+	}
+	if repo, _ := event["repository"].(string); repo != "" {
+		fields["repository"] = repo
+	}
+	if branch, _ := event["branch"].(string); branch != "" {
+		fields["branch"] = branch
+	}
+	_ = l.EndpointEventWithFidelity(shareauto.ActionShareRequested, "session", "info", "Auto-share requested for this session", asymptoteobserve.FidelityInferred, fields)
 }
 
 // recordActiveSession notes the event's session as the one its runtime is running in its working

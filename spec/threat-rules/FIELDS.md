@@ -144,6 +144,7 @@ Regenerate with `beacon rules fields --markdown > spec/threat-rules/FIELDS.md`.
 | `e.session.id` | string |
 | `e.session.working_directory` | string |
 | `e.severity` | string |
+| `e.share.visibility` | string |
 | `e.system_context.kind` | string |
 | `e.system_context.skills` | list(asymptoteobserve.SkillRefInfo) |
 | `e.system_context.source` | string |

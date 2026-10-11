@@ -91,7 +91,7 @@ func logSessionForPrefix(logPath, prefix, harness string) (string, error) {
 // after the fact (sharing it, linking it to a commit). Those are stamped when Beacon wrote them, so
 // counting them would move an old session to the top of "most recent" the moment it is shared.
 func beaconBookkeeping(action string) bool {
-	return action == "session.shared" || action == "session.commit_linked"
+	return action == "session.shared" || action == "session.share_requested" || action == "session.commit_linked"
 }
 
 // LogSessions lists the sessions in Beacon's runtime log, newest first, narrowed by filter the way
