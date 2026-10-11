@@ -60,35 +60,36 @@ An agent asked to "share this session" runs `beacon share` from its own shell, w
 
 ## What is uploaded
 
-A shared trace is made of messages. Each Beacon event of the session becomes at most one message:
+A shared trace is a `beacon.trace.v1` trace: the same projection of the session's Beacon events that the local [dashboard](/cli/dashboard) and [lenses](/concepts/lenses) read. It has two parts:
 
-| Event | Message |
-|-------|---------|
-| Prompt | A user message with the prompt text |
-| Assistant text, reasoning | An assistant message with a text or thinking part |
-| Tool invocation | An assistant message with a `tool_call` part: the tool, its kind (`terminal_command`, `read`, `edit`, `write`, `grep`, `glob`, `web_search`, `web_fetch`, `task`, `todo`, `mcp`, ...), its arguments, command, file path and diff |
-| Tool completion | An assistant message with a `tool_result` part: the output, `success` or `error`, the exit code and duration where the runtime reported them |
-| Approval, policy decision, session lifecycle, commit link | A system message with a `system_event` part |
-| Failure that is not a tool's | A system message with an `error` part |
+- A **summary**: the runtime and its version, the session id, the title, when the session started and ended, the models, token usage, the project name and repository, and how much content was retained.
+- The **events**, in order. Each Beacon event of the session becomes one trace event with a stable `id`, its `number`, `timestamp`, `type` (`user_message`, `agent_message`, `agent_reasoning`, `tool_call`, `tool_result`, `command`, `file`, `mcp`, `approval`, `token_usage`, `session`, `error`, ...) and the fields that event carried: prompt or answer text, the tool with its arguments and result, the command with its exit code and output, the file path and diff, the MCP server and tool, the approval or policy decision, the model and token usage, and the `tool_call_id` and `prompt_id` that tie a call to its result and an action to its prompt.
 
-When a runtime reports one tool call twice, before and after it runs, the two become a call and a result that share one call id. A call reported by more than one capture path is written once. Beacon's own bookkeeping (heartbeats, inventory, metric datapoints) is not uploaded.
+beacon.sh derives the chat view from those events: a tool invocation and its completion become one call and its result, and a call reported by more than one capture path is shown once. Lenses run on a shared trace with the same data they get locally. Beacon's own bookkeeping and status telemetry (heartbeats, inventory, metric datapoints without token usage, the `session.shared` record) is not uploaded.
 
 Before anything leaves the machine:
 
 - Every event goes through the same secret redaction and size limits the runtime log applies.
 - Paths under the session's directory are written relative to it, and your home directory becomes `~`, in file paths, commands, output and diffs.
-- The repository remote (from the session's events, or else the `origin` remote in the session's directory, read locally) is sent without credentials, and the project name is the repository's or the directory's name, never a path. The name of your home directory is not used as a project name.
+- The session's working directory and the repository path are left out of the summary. The repository remote (from the session's events, or else the `origin` remote in the session's directory, read locally) is sent without credentials, and `project.name` is the repository's or the directory's name, never a path. The name of your home directory is not used as a project name.
+- A session started from a [handoff](/cli/handoff) names the session it continues (`related_to`, with `relationship_type` `handoff`), and a subagent's session names its parent's (`subagent`), by their external ids.
 - Token usage is the session's total as [`beacon token-usage`](/cli/token-usage) counts it. Cost is sent only when the runtime reported one, never a list-price estimate.
 
 beacon.sh redacts every string again on its side. Redaction catches common credential shapes, not everything sensitive, so read `--print` before sharing a session that touched secrets.
 
-`--print` (or `--dry-run`) prints exactly that payload as JSON, the trace metadata and every message, and sends nothing:
+`--print` (or `--dry-run`) prints exactly that payload as JSON and sends nothing: the external id the requests go to, `trace` (the body of `PUT /v1/traces/{external_id}`) and `events` (every event the `POST /v1/traces/{external_id}/events/batch` requests would carry, at most 1,000 per request):
 
 ```json
 {
   "external_id": "claude_code:5f0c1d2e-...",
-  "trace": { "schema_version": "beacon.share.v1", "agent_id": "claude_code", "title": "Fix the login test", "...": "..." },
-  "messages": [ { "id": "...", "order": 1, "role": "user", "text": "...", "parts": [ ... ] } ]
+  "trace": {
+    "schema_version": "beacon.trace.v1",
+    "summary": { "harness": { "name": "claude_code" }, "project": { "name": "app" }, "...": "..." },
+    "title": "Fix the login test",
+    "source": "cli",
+    "provenance": { "source": "cli", "generated_at": "...", "beacon_version": "..." }
+  },
+  "events": [ { "id": "...", "number": 1, "timestamp": "...", "type": "user_message", "action": "prompt.submitted", "content": { "text": "...", "...": "..." } } ]
 }
 ```
 
@@ -102,11 +103,11 @@ beacon.sh redacts every string again on its side. Redaction catches common crede
 
 A public share asks for confirmation. Without a terminal to ask on, it is refused unless you pass `--yes`.
 
-Sharing a session again updates the same trace: each session has one stable external id (`<runtime>:<session-id>`), and every message has a stable id, so nothing is duplicated. A re-share keeps the trace's visibility unless you pass `--visibility`. Change a trace's visibility by sharing it again with `--visibility`, or from the beacon.sh dashboard, where you can also delete it.
+Sharing a session again updates the same trace: each session has one stable external id (`<runtime>:<session-id>`), and every event has a stable id (its Beacon `event.id`), so nothing is duplicated. A re-share keeps the trace's visibility unless you pass `--visibility`. Change a trace's visibility by sharing it again with `--visibility`, or from the beacon.sh dashboard, where you can also delete it.
 
 ## Refresh
 
-`beacon share refresh` uploads only the messages a shared session has gained since it was last uploaded. beacon.sh reports the last message it has, and the messages after it are sent; when that message is not in the session as Beacon reads it now, every message is re-sent, which changes nothing that was already there. The trace's visibility is not changed.
+`beacon share refresh` uploads only the events a shared session has gained since it was last uploaded. beacon.sh reports the last event it has, and the events after it are sent, together with that event and everything from the earliest tool call it holds without a result. When that event is not in the session as Beacon reads it now, every event is re-sent, which changes nothing that was already there. The trace's summary is updated; its visibility is not changed.
 
 ```bash
 beacon share refresh claude_code:5f0c1d2e-aaaa-4bbb-8ccc-000000000001
@@ -133,10 +134,10 @@ After an upload, `beacon share` writes one `session.shared` event to the runtime
 The link goes to stdout and a summary to stderr. `--json` prints one document:
 
 ```json
-{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","agent_id":"claude_code","message_count":42,"uploaded":42,"selected_by":"env"}}
+{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","harness":"claude_code","event_count":42,"uploaded":42,"selected_by":"env"}}
 ```
 
-`uploaded` is how many messages this run sent. On failure, `--json` prints `{"ok":false,"error":"..."}` and the command exits non-zero.
+`event_count` is how many events the trace holds on beacon.sh, and `uploaded` how many this run sent. On failure, `--json` prints `{"ok":false,"error":"..."}` and the command exits non-zero.
 
 ## Flags
 
