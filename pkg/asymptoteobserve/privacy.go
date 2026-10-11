@@ -54,9 +54,24 @@ var quotedValues = [][2]string{
 	{"\\\\`", redactInEscapedQuotes("`")}, {"`", redactInQuotes("`")},
 }
 
-// quotedRules builds one rule per quotedValues entry from prefix, the pattern before the opening
-// quote.
-func quotedRules(prefix string, keep func(string) bool) []redactionRule {
+// quotedKind says what comes before a quoted value: a secret-named label or a secret-named flag.
+type quotedKind int
+
+const (
+	quotedAssignment quotedKind = iota
+	quotedFlag
+)
+
+// quotedRules builds one rule per quotedValues entry for the given kind of prefix.
+//
+// It takes the kind rather than the prefix pattern itself: static analysis reads a call whose
+// argument is a constant naming a credential (the pattern spells out "password") as returning that
+// credential, and these rules hold patterns, not secrets.
+func quotedRules(kind quotedKind, keep func(string) bool) []redactionRule {
+	prefix := `\b` + redactLabel + redactSeparator
+	if kind == quotedFlag {
+		prefix = redactFlag
+	}
 	rules := make([]redactionRule, 0, len(quotedValues))
 	for _, quoted := range quotedValues {
 		rules = append(rules, redactionRule{regexp.MustCompile(`(?i)(` + prefix + quoted[0] + `)(?P<value>` + quoted[1] + `)`), "${1}" + redactedValue, keep})
@@ -133,7 +148,7 @@ var redactionRules = concatRules([]redactionRule{
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
 	// rule never starts at a quote, so it leaves a value the quoted rule already replaced alone.
-}, quotedRules(`\b`+redactLabel+redactSeparator, isAuthScheme), []redactionRule{
+}, quotedRules(quotedAssignment, isAuthScheme), []redactionRule{
 	// A quoted label with a bare value is JSON (or a YAML or Python mapping) holding a number, a
 	// literal or a structure. The replacement is quoted the way the label is, so the text still
 	// parses where something decodes it again (string-encoded tool arguments do); null, true, false
@@ -142,7 +157,7 @@ var redactionRules = concatRules([]redactionRule{
 	{regexp.MustCompile(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`), "${1}" + redactedValue, isAuthScheme},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`, and quoted, the way agents
 	// usually write arguments: `--password "x y"`, `--token='x'`.
-}, quotedRules(redactFlag, nil), []redactionRule{
+}, quotedRules(quotedFlag, nil), []redactionRule{
 	{regexp.MustCompile(`(?i)(` + redactFlag + `)([^\s"'-][^\s"']*)`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
 	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}", nil},
