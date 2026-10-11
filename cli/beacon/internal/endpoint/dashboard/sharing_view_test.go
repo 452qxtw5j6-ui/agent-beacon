@@ -178,6 +178,8 @@ func TestShareFromInsideTheSessionIsNotStale(t *testing.T) {
 		`{"timestamp":"2026-06-11T10:00:10Z","event":{"id":"e4","action":"tool.completed","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"tool":{"name":"Bash"},"gen_ai":{"tool":{"call":{"id":"call-share"}}}}`,
 		`{"timestamp":"2026-06-11T10:00:11Z","event":{"id":"e5","action":"command.executed","category":"command"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"command":{"command":"beacon share --current"}}`,
 		`{"timestamp":"2026-06-11T10:00:15Z","event":{"id":"e6","action":"agent.message","category":"agent"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"message":"Shared: https://beacon.sh/s/in1"}`,
+		// Claude Code's Stop hook ends the turn.
+		`{"timestamp":"2026-06-11T10:00:16Z","event":{"id":"e6s","action":"tool.completed","category":"tool"},"harness":{"name":"claude_code","collection_method":"hook"},"session":{"id":"in1"},"prompt":{"id":"p1"},"message":"Agent response completed"}`,
 	}
 	check := func(t *testing.T, lines []string, want string) {
 		t.Helper()
@@ -207,6 +209,12 @@ func TestShareFromInsideTheSessionIsNotStale(t *testing.T) {
 	t.Run("later tool call", func(t *testing.T) {
 		check(t, append(append([]string{}, inside...),
 			`{"timestamp":"2026-06-11T10:05:00Z","event":{"id":"e7","action":"tool.invoked","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"tool":{"name":"Edit","path":"main.go"},"gen_ai":{"tool":{"call":{"id":"call-edit"}}}}`,
+		), "stale")
+	})
+	t.Run("turn end after a later prompt", func(t *testing.T) {
+		check(t, append(append([]string{}, inside...),
+			`{"timestamp":"2026-06-11T10:05:00Z","event":{"id":"e9","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p3","text":"one more thing"}}`,
+			`{"timestamp":"2026-06-11T10:05:30Z","event":{"id":"e10","action":"tool.completed","category":"tool"},"harness":{"name":"claude_code","collection_method":"hook"},"session":{"id":"in1"},"prompt":{"id":"p3"},"message":"Agent response completed"}`,
 		), "stale")
 	})
 	t.Run("reply after later work", func(t *testing.T) {

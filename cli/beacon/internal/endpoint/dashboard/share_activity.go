@@ -90,12 +90,16 @@ func isShareCallEvent(event schema.Event) bool {
 	return event.Tool != nil && isBeaconShareCommand(event.Tool.Command)
 }
 
-// isAssistantOutput is an event that only carries the agent's own output or what it cost: no
-// prompt, tool call, command or file activity.
+// isAssistantOutput is an event that only carries the agent's own output, what it cost, or the end
+// of its turn: no prompt, tool call, command or file activity. Turn ends include Claude Code's Stop
+// hook ("Agent response completed": tool.completed with no tool call id and no tool, command or
+// file payload) and the plugin runtimes' agent.response / agent.response.completed.
 func isAssistantOutput(event schema.Event) bool {
 	switch event.Event.Action {
-	case "agent.message", "agent.reasoning", "token.usage":
+	case "agent.message", "agent.reasoning", "token.usage", "agent.response", "agent.response.completed":
 		return true
+	case "tool.completed":
+		return isPayloadlessTurnEnd(event)
 	}
 	if event.Command != nil || event.Tool != nil || event.File != nil || event.MCP != nil {
 		return false
@@ -148,4 +152,16 @@ func shareRelevantRecord(record EventRecord) EventRecord {
 		}
 	}
 	return EventRecord{ID: record.ID, Line: record.Line, Event: slim, Parsed: record.Parsed}
+}
+
+// isPayloadlessTurnEnd is a completion event that names no tool call: no call id and no tool,
+// command, file or MCP payload, which is how a turn-end hook (Claude Code's Stop) records itself.
+func isPayloadlessTurnEnd(event schema.Event) bool {
+	if asymptoteobserve.ToolCallID(&event) != "" || event.Command != nil || event.File != nil || event.MCP != nil {
+		return false
+	}
+	if event.Tool != nil && (event.Tool.Name != "" || event.Tool.Command != "" || event.Tool.Path != "") {
+		return false
+	}
+	return true
 }
