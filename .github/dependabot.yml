@@ -1,0 +1,56 @@
+# Dependabot security updates only.
+#
+# open-pull-requests-limit: 0 turns off version-update PRs. Security-update PRs
+# are not subject to that limit, so Dependabot still opens a fix PR whenever a
+# new alert lands. The security-updates groups bundle every fix that is ready
+# for one ecosystem and directory into a single PR.
+#
+# Requires Dependabot alerts and Dependabot security updates to be turned on
+# under Settings -> Code security.
+#
+# Not listed: the root package.json (kept dependency-free, no lockfile) and
+# plugins/* (no dependencies or lockfiles, only peer dependencies).
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directories:
+      - /beacon-sandbox
+      - /cli/beacon
+      - /cli/beacon-hooks
+      - /collector-builder/exporter/beaconjsonexporter
+      - /pkg/asymptoteobserve
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      go-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directories:
+      - /browser-extension
+      - /packages/asymptote-sdk-js
+      - /cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
