@@ -21,7 +21,9 @@ const (
 	DefaultRotateBytes    = 10 * 1024 * 1024
 	DefaultRotateArchives = 5
 	RotateBytes           = DefaultRotateBytes
-	runtimeFileMode       = 0666
+	// runtimeFileMode is the shared (system-mode) log's mode. A log inside the current user's home
+	// is private instead; asymptoteobserve.RuntimeLogModes decides, identically in all three writers.
+	runtimeFileMode = asymptoteobserve.SharedRuntimeLogFileMode
 )
 
 type Options struct {
@@ -157,11 +159,13 @@ func SystemLogWritableByUsers(dir string) (bool, error) {
 	return interactiveUsersCanWrite(dir)
 }
 
-// EnsureRuntimeFile creates the shared runtime log with the shared writable
-// mode without appending an event, for doctor --fix and setup flows that
-// pre-create the log so user-run hooks can append to it later.
+// EnsureRuntimeFile creates the runtime log without appending an event, for doctor --fix and setup
+// flows that pre-create the log so hooks can append to it later. The shared system log gets the
+// shared writable mode; a log in the current user's home is private (see
+// asymptoteobserve.RuntimeLogModes).
 func EnsureRuntimeFile(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(path)
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return err
 	}
 	f, err := openRuntimeFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
@@ -193,11 +197,13 @@ func SanitizeEvent(event schema.Event, maxBytes int) schema.Event {
 	return asymptoteobserve.SanitizeEvent(event, maxBytes)
 }
 
+// Keep this rotation and file-mode contract mirrored with the hook adapter and beaconjson exporter.
 func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int, guard *RetentionGuard) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(path)
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return err
 	}
-	lock, err := openRuntimeFile(path+".lock", os.O_CREATE|os.O_RDWR)
+	lock, err := openRuntimeFileAs(path+".lock", path, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return err
 	}
@@ -251,6 +257,15 @@ func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int
 }
 
 func openRuntimeFile(path string, flag int) (*os.File, error) {
+	return openRuntimeFileAs(path, path, flag)
+}
+
+// openRuntimeFileAs opens path (the log or its lock) with the mode logPath calls for. The chmod
+// runs on an existing file too: it repairs a umask-narrowed shared log, and it tightens a private
+// log left world-writable by an older release (same owner, so it succeeds). A failed chmod on an
+// existing file is ignored -- a hook appending to a shared log it does not own cannot chmod it.
+func openRuntimeFileAs(path, logPath string, flag int) (*os.File, error) {
+	fileMode, _, _ := asymptoteobserve.RuntimeLogModes(logPath)
 	existed := true
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
@@ -258,11 +273,11 @@ func openRuntimeFile(path string, flag int) (*os.File, error) {
 		}
 		existed = false
 	}
-	f, err := os.OpenFile(path, flag, runtimeFileMode)
+	f, err := os.OpenFile(path, flag, fileMode)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, runtimeFileMode); err != nil && !existed {
+	if err := os.Chmod(path, fileMode); err != nil && !existed {
 		_ = f.Close()
 		return nil, err
 	}
@@ -300,7 +315,11 @@ func rotateIfNeeded(path string, maxSize int64, archives int, nextWriteBytes int
 		}
 	}
 	rotated := path + ".1"
-	return os.Rename(path, rotated)
+	if err := os.Rename(path, rotated); err != nil {
+		return err
+	}
+	asymptoteobserve.TightenPrivateRuntimeLogArchives(path, archives)
+	return nil
 }
 
 // needsRotation reports whether appending nextWriteBytes to path would take it past maxSize, which

@@ -65,7 +65,8 @@ func (w jsonlWriter) append(event beaconEvent) error {
 			data = stamped
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(w.path), 0755); err != nil {
+	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(w.path)
+	if err := os.MkdirAll(filepath.Dir(w.path), dirMode); err != nil {
 		return err
 	}
 	return appendJSONL(w.path, append(data, '\n'), w.rotateBytes, w.rotateArchives)
@@ -199,17 +200,21 @@ func sanitizeTyped[T any](input *T, sanitize func(map[string]interface{}) map[st
 	return &out
 }
 
-// The collector usually runs as root, while agent hooks append to the same
-// runtime log as the console user, so shared runtime files must stay
-// writable by both regardless of which process creates them first.
-const runtimeFileMode = 0666
+// In system mode the collector runs as root, while agent hooks append to the
+// same runtime log as the console user, so the shared runtime files must stay
+// writable by both regardless of which process creates them first. A user-mode
+// collector writes a log inside its user's home, which is private (0600 in a
+// 0700 directory): asymptoteobserve.RuntimeLogModes decides from the path,
+// identically in all three writers.
+const runtimeFileMode = asymptoteobserve.SharedRuntimeLogFileMode
 
-// Keep this rotation contract mirrored with the endpoint CLI and hook writer.
+// Keep this rotation and file-mode contract mirrored with the endpoint CLI and hook writer.
 func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(path)
+	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return err
 	}
-	lock, err := openRuntimeFile(path+".lock", os.O_CREATE|os.O_RDWR)
+	lock, err := openRuntimeFileAs(path+".lock", path, os.O_CREATE|os.O_RDWR)
 	if err != nil {
 		return err
 	}
@@ -237,6 +242,13 @@ func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int
 }
 
 func openRuntimeFile(path string, flag int) (*os.File, error) {
+	return openRuntimeFileAs(path, path, flag)
+}
+
+// openRuntimeFileAs opens path (the log or its lock) with the mode logPath calls for. The chmod
+// runs on an existing file too, which tightens a private log an older release left world-writable.
+func openRuntimeFileAs(path, logPath string, flag int) (*os.File, error) {
+	fileMode, _, _ := asymptoteobserve.RuntimeLogModes(logPath)
 	existed := true
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
@@ -244,11 +256,11 @@ func openRuntimeFile(path string, flag int) (*os.File, error) {
 		}
 		existed = false
 	}
-	f, err := os.OpenFile(path, flag, runtimeFileMode)
+	f, err := os.OpenFile(path, flag, fileMode)
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, runtimeFileMode); err != nil && !existed {
+	if err := os.Chmod(path, fileMode); err != nil && !existed {
 		_ = f.Close()
 		return nil, err
 	}
@@ -282,7 +294,11 @@ func rotateIfNeeded(path string, maxSize int64, archives int, nextWriteBytes int
 			return err
 		}
 	}
-	return os.Rename(path, path+".1")
+	if err := os.Rename(path, path+".1"); err != nil {
+		return err
+	}
+	asymptoteobserve.TightenPrivateRuntimeLogArchives(path, archives)
+	return nil
 }
 
 func removeOverflowArchives(path string, archives int) error {
