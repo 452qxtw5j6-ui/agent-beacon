@@ -61,12 +61,27 @@
             ]
           },
           {
-            "group": "Beacon Cloud",
+            "group": "Set Up Beacon Cloud",
             "icon": "cloud",
             "pages": [
               "cloud/devices",
+              "manage/profile",
+              {
+                "group": "Enterprise Onboarding",
+                "root": "manage/onboarding",
+                "pages": [
+                  "manage/connect-okta",
+                  "manage/connect-slack",
+                  "manage/configure-s3-data-connector"
+                ]
+              }
+            ]
+          },
+          {
+            "group": "Use Beacon Cloud",
+            "icon": "magnifying-glass-chart",
+            "pages": [
               "cloud/sessions",
-              "deployment/managed-mcp",
               {
                 "group": "Lenses",
                 "pages": [
@@ -94,7 +109,7 @@
                   "detections/engine"
                 ]
               },
-              "manage/profile"
+              "deployment/managed-mcp"
             ]
           },
           {
