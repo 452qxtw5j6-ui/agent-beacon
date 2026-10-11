@@ -36,6 +36,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // maxRefusalsKept bounds the refusals a confinement remembers by path; the count is exact.
@@ -546,15 +547,45 @@ func (c *Confinement) snapshotDir() (string, error) {
 	parent := c.scratchParent
 	if parent == "" {
 		parent = os.TempDir()
-	} else if err := os.MkdirAll(parent, 0o700); err != nil {
-		return "", fmt.Errorf("create SQLite snapshot directory: %w", err)
+	} else {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return "", fmt.Errorf("create SQLite snapshot directory: %w", err)
+		}
+		removeStaleSnapshotDirs(parent, time.Now())
 	}
-	dir, err := os.MkdirTemp(parent, "beacon-backfill-sqlite-")
+	dir, err := os.MkdirTemp(parent, snapshotDirPrefix)
 	if err != nil {
 		return "", fmt.Errorf("create SQLite snapshot directory: %w", err)
 	}
 	c.scratch = dir
 	return dir, nil
+}
+
+const snapshotDirPrefix = "beacon-backfill-sqlite-"
+
+// staleSnapshotAge is how old a snapshot directory left in the scratch parent must be before a
+// later sweep removes it. A sweep cleans up its own copies when it ends normally, but a run killed
+// mid-copy (Ctrl+C, an installer timeout) cannot, and its copies are private user data. The age
+// keeps a concurrent sweep in another process from losing the directory it is reading.
+const staleSnapshotAge = time.Hour
+
+// removeStaleSnapshotDirs deletes snapshot directories older than staleSnapshotAge under parent.
+// Only the configured scratch parent is swept, never os.TempDir().
+func removeStaleSnapshotDirs(parent string, now time.Time) {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), snapshotDirPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || now.Sub(info.ModTime()) < staleSnapshotAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(parent, entry.Name()))
+	}
 }
 
 func copyInto(path string, src io.Reader) (int64, error) {
