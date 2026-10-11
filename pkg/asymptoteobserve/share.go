@@ -67,9 +67,13 @@ type ShareTraceV1 struct {
 	RelationshipType string `json:"relationship_type,omitempty"`
 }
 
-// ShareRelationshipHandoff relates a trace to the session it was handed off from: the session's
-// first prompt carried the handoff marker (session.handoff).
-const ShareRelationshipHandoff = "handoff"
+// Relationship types of related_to. Handoff relates a trace to the session it was handed off from
+// (the session's first prompt carried the handoff marker, session.handoff); subagent relates a
+// subagent's session to its parent's.
+const (
+	ShareRelationshipHandoff  = "handoff"
+	ShareRelationshipSubagent = "subagent"
+)
 
 // ShareRelation is the trace a session continues, from its first session.handoff event: the source
 // session's ShareExternalID and ShareRelationshipHandoff, or two empty strings. The handoff is the
@@ -163,6 +167,46 @@ type ShareOptions struct {
 	BeaconVersion string
 	// GeneratedAt is the provenance timestamp; zero means now.
 	GeneratedAt time.Time
+}
+
+// ShareEventsAfter is what a re-share or refresh uploads of a bundle's events, given the last event
+// beacon.sh holds (ShareTraceStateV1.LastEventID, or with no id its MaxNumber): the events after it,
+// re-sending that last event and every event from the earliest tool call it holds without a
+// completion, since a call still open on the server is the part of a trace most likely to have
+// been rewritten (a call recorded before its result arrives). Events are upserted by id, so a
+// re-send is harmless. When lastID is not among events, or neither watermark applies, every event is
+// returned.
+func ShareEventsAfter(events []TraceEventV1, lastID string, maxNumber int) []TraceEventV1 {
+	end := -1
+	switch {
+	case lastID != "":
+		for i, event := range events {
+			if event.ID == lastID {
+				end = i
+				break
+			}
+		}
+	case maxNumber > 0 && maxNumber <= len(events):
+		end = maxNumber - 1
+	}
+	if end < 0 {
+		return events
+	}
+	uploaded := events[:end+1]
+	completed := map[string]bool{}
+	for _, event := range uploaded {
+		if event.ToolCallID != "" && !traceToolInvocation(event) && traceToolCompletion(event) {
+			completed[event.ToolCallID] = true
+		}
+	}
+	start := end
+	for i, event := range uploaded {
+		if event.ToolCallID != "" && traceToolInvocation(event) && !completed[event.ToolCallID] {
+			start = i
+			break
+		}
+	}
+	return events[start:]
 }
 
 // ShareProjects reports whether a shared trace carries event: false for Beacon's bookkeeping about

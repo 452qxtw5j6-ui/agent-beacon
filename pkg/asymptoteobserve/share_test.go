@@ -1014,3 +1014,44 @@ func TestTraceBuilderNamesTheProject(t *testing.T) {
 		t.Fatalf("project = %+v", p)
 	}
 }
+
+func TestShareEventsAfterResendsTheLastEventAndOpenCalls(t *testing.T) {
+	ev := func(id, action, callID string) TraceEventV1 {
+		return TraceEventV1{ID: id, Action: action, ToolCallID: callID}
+	}
+	events := []TraceEventV1{
+		ev("p1", "prompt.submitted", ""),
+		ev("c1", "tool.invoked", "a"),
+		ev("r1", "tool.completed", "a"),
+		ev("c2", "tool.invoked", "b"),
+		ev("m1", "agent.response", ""),
+		ev("r2", "tool.completed", "b"),
+		ev("m2", "agent.response", ""),
+	}
+	ids := func(in []TraceEventV1) string {
+		var out []string
+		for _, e := range in {
+			out = append(out, e.ID)
+		}
+		return strings.Join(out, ",")
+	}
+	cases := []struct {
+		last string
+		max  int
+		want string
+	}{
+		{"r1", 0, "r1,c2,m1,r2,m2"},
+		{"m1", 0, "c2,m1,r2,m2"},
+		{"r2", 0, "r2,m2"},
+		{"m2", 0, "m2"},
+		{"gone", 0, "p1,c1,r1,c2,m1,r2,m2"},
+		{"", 3, "r1,c2,m1,r2,m2"},
+		{"", 0, "p1,c1,r1,c2,m1,r2,m2"},
+		{"", 99, "p1,c1,r1,c2,m1,r2,m2"},
+	}
+	for _, tc := range cases {
+		if got := ids(ShareEventsAfter(events, tc.last, tc.max)); got != tc.want {
+			t.Errorf("after %q/%d = %s, want %s", tc.last, tc.max, got, tc.want)
+		}
+	}
+}
