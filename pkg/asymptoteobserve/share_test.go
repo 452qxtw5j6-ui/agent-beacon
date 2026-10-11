@@ -943,3 +943,30 @@ func TestTraceMessageRoundTrip(t *testing.T) {
 		t.Fatalf("message JSON drifted:\n got %s\nwant %s", got, want)
 	}
 }
+
+func TestShareEventIDAndBundleLeaveTheCallersTraceAlone(t *testing.T) {
+	event := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "tool.invoked", "tool")
+	event.Event.ID = ""
+	event.Trace = &TraceInfo{}
+	event.Tool = &ToolInfo{Name: "Bash"}
+	event.GenAI = &GenAIInfo{Tool: &GenAIToolInfo{Name: "Bash", Call: &GenAIToolCallInfo{ID: "toolu_1"}}}
+	events := []Event{event}
+
+	id := ShareEventID(events[0])
+	if id == "" {
+		t.Fatal("no id")
+	}
+	bundle := BuildShareBundle(events, shareTestOpts)
+	if got := events[0].Trace; got == nil || got.ID != "" || got.SpanID != "" {
+		t.Fatalf("caller's trace = %+v", got)
+	}
+	if len(bundle.Events) != 1 || bundle.Events[0].ID != id {
+		t.Fatalf("events = %+v", bundle.Events)
+	}
+	if tr := bundle.Events[0].Trace; tr != nil && (tr.ID != "" || tr.SpanID != "") {
+		t.Fatalf("bundle event trace = %+v", tr)
+	}
+	if len(bundle.Spans) != 0 {
+		t.Fatalf("spans = %+v", bundle.Spans)
+	}
+}

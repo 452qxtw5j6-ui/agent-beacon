@@ -169,9 +169,12 @@ func ShareEventID(event Event) string {
 	if id := strings.TrimSpace(event.Event.ID); id != "" {
 		return id
 	}
+	// Clone before deriving: AttachDerivedTrace writes through the event's trace pointer, which the
+	// caller's event shares.
+	event = cloneEvent(event)
 	event.Event.ID = ""
 	AttachDerivedTrace(&event)
-	event = SanitizeEvent(cloneEvent(event), 64*1024)
+	event = SanitizeEvent(event, 64*1024)
 	data, err := json.Marshal(event)
 	if err != nil {
 		return eventUUID("share", event.Timestamp+"\x00"+event.Event.Action+"\x00"+event.Message)
@@ -227,8 +230,9 @@ func BuildShareBundle(events []Event, opts ShareOptions) TraceBundleV1 {
 		if !ShareProjects(original) {
 			continue
 		}
-		id := ShareEventID(original)
-		event := scrub.event(SanitizeEvent(cloneEvent(original), 1<<30))
+		clone := cloneEvent(original)
+		id := ShareEventID(clone)
+		event := scrub.event(SanitizeEvent(clone, 1<<30))
 		NormalizeTraceEvent(&event)
 		te := TraceEventFromEvent(event, id, 0)
 		if te.Tool != nil && te.Tool.Arguments == nil {
