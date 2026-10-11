@@ -1208,14 +1208,65 @@ func (s pathScrubber) text(value string) string {
 		return ""
 	}
 	if s.work != "" {
-		value = strings.ReplaceAll(value, s.work+"/", "./")
-		value = strings.ReplaceAll(value, s.work+`\`, `.\`)
-		value = strings.ReplaceAll(value, s.work, ".")
+		value = replacePathPrefix(value, s.work, ".")
 	}
 	if s.home != "" {
-		value = strings.ReplaceAll(value, s.home, "~")
+		value = replacePathPrefix(value, s.home, "~")
 	}
 	return value
+}
+
+// replacePathPrefix replaces prefix with repl only where prefix is a whole path: the character
+// before it cannot continue a path, and the one after it ends the path or starts its next
+// segment. A bare substring match would turn /home/alex into ~ex for a home of /home/al.
+func replacePathPrefix(value, prefix, repl string) string {
+	if prefix == "" || !strings.Contains(value, prefix) {
+		return value
+	}
+	var b strings.Builder
+	rest := value
+	for {
+		i := strings.Index(rest, prefix)
+		if i < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		end := i + len(prefix)
+		consumed := len(value) - len(rest)
+		before := consumed + i
+		if (before == 0 || !continuesPath(value[before-1], true)) &&
+			(end == len(rest) || !continuesPath(rest[end], false) || endsSentence(rest[end:])) {
+			b.WriteString(rest[:i])
+			b.WriteString(repl)
+		} else {
+			b.WriteString(rest[:end])
+		}
+		rest = rest[end:]
+	}
+}
+
+// endsSentence reports whether tail is punctuation closing the sentence a path ends, such as
+// the "." in "saved to /home/al.", rather than a longer name such as /home/al.bak.
+func endsSentence(tail string) bool {
+	if tail == "" || (tail[0] != '.' && tail[0] != '-' && tail[0] != '~') {
+		return false
+	}
+	return len(tail) == 1 || !continuesPath(tail[1], false)
+}
+
+// continuesPath reports whether c would make a match part of a longer path. Before a match a
+// separator also counts, because /srv/home/al is not /home/al; after it a separator starts the
+// next segment of the same path.
+func continuesPath(c byte, before bool) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '.', c == '_', c == '-', c == '~':
+		return true
+	case c == '/', c == '\\':
+		return before
+	}
+	return false
 }
 
 func (s pathScrubber) args(args map[string]interface{}) map[string]interface{} {
