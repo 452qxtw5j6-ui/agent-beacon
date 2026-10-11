@@ -264,6 +264,7 @@ func Connect(ctx context.Context, opts ConnectOptions) (_ *ConnectResult, err er
 		return nil, err
 	}
 
+	dropStaged := false
 	if previous != nil {
 		previousMode, _ := managedprivacy.Normalize(previous.PrivacyMode)
 		if previousMode != privacyMode {
@@ -276,11 +277,11 @@ func Connect(ctx context.Context, opts ConnectOptions) (_ *ConnectResult, err er
 			if err := os.MkdirAll(dataDir, 0o700); err != nil {
 				return nil, err
 			}
-			// The buffer held lines in the old mode; drop the old staged copy with it. The
-			// backfill staged below replaces it in the new mode.
-			if err := RemoveBackfill(logPath); err != nil {
-				return nil, fmt.Errorf("could not remove the staged session backfill: %w", err)
-			}
+			// The buffer held lines in the old mode; the old staged copy goes with it. It stays
+			// linked until the restage below renames the new-mode copy over it, so that copy
+			// always gets a new inode for the inode-fingerprinted backfill source. Removing it
+			// first would free the inode for the restage to reuse.
+			dropStaged = true
 		}
 	}
 	// Staged before the forwarder (re)starts, so on a first connect the runtime source's connection
@@ -295,6 +296,12 @@ func Connect(ctx context.Context, opts ConnectOptions) (_ *ConnectResult, err er
 			fmt.Fprintf(out, "Session backfill was not staged: %v\n", err)
 		} else {
 			backfill = &staged
+		}
+	}
+	if dropStaged && (backfill == nil || backfill.Events == 0) {
+		// Nothing replaced the old-mode copy, so delete it rather than ship it.
+		if err := RemoveBackfill(logPath); err != nil {
+			return nil, fmt.Errorf("could not remove the staged session backfill: %w", err)
 		}
 	}
 	if err := writeFileAtomic(configPath, []byte(rendered), 0o644); err != nil {

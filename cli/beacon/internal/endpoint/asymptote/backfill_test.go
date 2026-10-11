@@ -236,6 +236,32 @@ func TestPrivacyModeChangeRestagesTheBackfillInTheNewMode(t *testing.T) {
 	}
 }
 
+func TestPrivacyModeChangeWithNothingToRestageDropsTheOldStagedBackfill(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	isolateVectorDiscovery(t)
+	fd := newFakeDashboard(t)
+	fwd := &fakeForwarder{supported: true}
+	opts := connectOptions(t, fd, fwd, fakeVector(t, "0.56.0", 0))
+	writeLines(t, opts.LogPath, backfillTestLine(time.Now().UTC().Format(time.RFC3339), "poll", "fresh"))
+	opts.Backfill = &ConnectBackfill{}
+	if _, err := Connect(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	staged := BackfillLogPath(opts.LogPath)
+	if _, err := os.Stat(staged); err != nil {
+		t.Fatalf("first connect did not stage: %v", err)
+	}
+	// The window now holds nothing, so no new-mode copy replaces the old one.
+	opts.Backfill = &ConnectBackfill{Options: BackfillOptions{Since: time.Now().Add(time.Hour)}}
+	opts.PrivacyMode = "metadata-only"
+	if _, err := Connect(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatal("a privacy mode change left the old-mode staged backfill for the forwarder to ship")
+	}
+}
+
 func TestDisconnectRemovesTheStagedBackfill(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	isolateVectorDiscovery(t)
