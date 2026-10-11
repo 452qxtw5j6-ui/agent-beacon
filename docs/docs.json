@@ -64,7 +64,13 @@
             "group": "Beacon Cloud",
             "icon": "cloud",
             "pages": [
-              "cloud/devices",
+              {
+                "group": "Onboarding",
+                "pages": [
+                  "cloud/devices",
+                  "manage/profile"
+                ]
+              },
               "cloud/sessions",
               "deployment/managed-mcp",
               {
@@ -93,8 +99,7 @@
                   "detections/standard",
                   "detections/engine"
                 ]
-              },
-              "manage/profile"
+              }
             ]
           },
           {
