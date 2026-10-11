@@ -384,6 +384,13 @@ func TestShareRemoteURL(t *testing.T) {
 		"ssh://git@host:22/acme/repo":              "ssh://host:22/acme/repo",
 		"https://github.com/acme/repo?token=abc":   "https://github.com/acme/repo",
 		"":                                         "",
+		"github.com:acme/repo.git":                 "github.com:acme/repo.git",
+		"/home/alice/src/foo":                      "",
+		"../foo.git":                               "",
+		"~/src/foo":                                "",
+		"file:///Users/alice/repos/foo":            "",
+		`C:\Users\alice\repo`:                      "",
+		"./a:b":                                    "",
 	}
 	for in, want := range cases {
 		if got := ShareRemoteURL(in); got != want {

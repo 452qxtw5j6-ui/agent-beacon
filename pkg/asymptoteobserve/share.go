@@ -1445,38 +1445,50 @@ func ShareTitle(text string) string {
 	return strings.TrimSpace(string(runes[:ShareTitleMaxRunes-1])) + "…"
 }
 
-// ShareRemoteURL removes credentials, query and fragment from a git remote URL, and the login of an
-// scp-style remote, so a token embedded in an https remote never leaves the machine.
+// ShareRemoteURL returns a git remote worth publishing: a network remote with its credentials,
+// query and fragment removed, and the login of an scp-style remote dropped, so a token embedded in
+// an https remote never leaves the machine. A local remote (a path, or a file:// URL) is dropped
+// whole: it names a directory on this disk, often under the home directory, and identifies no
+// repository anyone else can open.
 func ShareRemoteURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return ""
 	}
 	if scheme := strings.Index(raw, "://"); scheme >= 0 {
+		if strings.EqualFold(raw[:scheme], "file") {
+			return ""
+		}
 		rest := raw[scheme+3:]
+		host, path := rest, ""
 		if slash := strings.Index(rest, "/"); slash >= 0 {
-			host, path := rest[:slash], rest[slash:]
-			if at := strings.LastIndex(host, "@"); at >= 0 {
-				host = host[at+1:]
-			}
-			if cut := strings.IndexAny(path, "?#"); cut >= 0 {
-				path = path[:cut]
-			}
-			return raw[:scheme+3] + host + path
+			host, path = rest[:slash], rest[slash:]
 		}
-		if at := strings.LastIndex(rest, "@"); at >= 0 {
-			rest = rest[at+1:]
+		if at := strings.LastIndex(host, "@"); at >= 0 {
+			host = host[at+1:]
 		}
-		return raw[:scheme+3] + rest
+		if host == "" {
+			return ""
+		}
+		if cut := strings.IndexAny(path, "?#"); cut >= 0 {
+			path = path[:cut]
+		}
+		return raw[:scheme+3] + host + path
 	}
-	if at := strings.Index(raw, "@"); at >= 0 {
-		colon := strings.Index(raw, ":")
-		slash := strings.Index(raw, "/")
-		if colon > at && (slash < 0 || colon < slash) {
-			return raw[at+1:]
-		}
+	// scp-style [user@]host:path. The colon must come before any slash, and a one-letter host is a
+	// Windows drive (C:\repo), not a machine.
+	colon := strings.Index(raw, ":")
+	if colon <= 0 || strings.ContainsAny(raw[:colon], `/\`) {
+		return ""
 	}
-	return raw
+	host := raw[:colon]
+	if at := strings.LastIndex(host, "@"); at >= 0 {
+		host = host[at+1:]
+	}
+	if len(host) < 2 {
+		return ""
+	}
+	return host + raw[colon:]
 }
 
 // ShareBranch is a branch name worth reporting: "HEAD", which runtimes record for a detached
