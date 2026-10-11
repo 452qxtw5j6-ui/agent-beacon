@@ -50,7 +50,16 @@ var (
 	gitShareUploadBudget = gitShareBudget - gitShareNotesReserve - gitShareNoteWriteBudget
 	// gitShareUpload is shareUpload; tests replace it.
 	gitShareUpload = shareUpload
+	// gitShareLogSessions lists the sessions in the runtime log; tests replace it to count reads.
+	gitShareLogSessions = func(logPath string) ([]handoff.Session, error) {
+		return handoff.LogSessions(logPath, handoff.Filter{})
+	}
 )
+
+// gitShareMaxResolve bounds how many linked sessions one push tries to find on this machine,
+// counting the ones that are not here (teammates' sessions), so a note full of them cannot use up
+// the budget.
+const gitShareMaxResolve = 50
 
 // gitAllowShareHosts admits the configured Beacon service's host besides beacon.sh.
 func gitAllowShareHosts() {
@@ -178,19 +187,38 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 		// must not use up a slot that one of this person's sessions needs. Resolving reads only
 		// the local stores, inside the upload budget.
 		sources := handoffSources(handoff.StoreDirs{})
-		for _, link := range toShare {
-			if ctx.Err() != nil || len(subjects) >= gitShareMaxSessions {
+		logPath := shareLogPath()
+		var inLog map[string]bool // read once, on the first link the stores do not have
+		for i, link := range toShare {
+			if ctx.Err() != nil || len(subjects) >= gitShareMaxSessions || i >= gitShareMaxResolve {
 				break
 			}
 			harness, err := handoff.ParseHarness(link.Harness)
 			if err != nil {
 				continue
 			}
-			subject, err := resolveShareID(sources, harness, link.SessionID)
-			if err != nil || subject.session.ID != link.SessionID {
+			if session, err := handoff.Find(sources, harness, link.SessionID); err == nil {
+				if session.ID == link.SessionID {
+					subjects = append(subjects, linkedSubject{link: link, subject: shareSubject{session: session}})
+				}
+				continue
+			}
+			if inLog == nil {
+				inLog = map[string]bool{}
+				if sessions, err := gitShareLogSessions(logPath); err == nil {
+					for _, s := range sessions {
+						inLog[s.Harness+"\x00"+s.ID] = true
+					}
+				}
+			}
+			if !inLog[harness+"\x00"+link.SessionID] {
 				continue // a teammate's session, or one this machine no longer has
 			}
-			subjects = append(subjects, linkedSubject{link: link, subject: subject})
+			session, events, found, err := handoff.LogSession(logPath, link.SessionID, harness)
+			if err != nil || !found || session.ID != link.SessionID || session.Harness != harness {
+				continue
+			}
+			subjects = append(subjects, linkedSubject{link: link, subject: shareSubject{session: session, fromLog: true, logEvents: events}})
 		}
 	}
 	if len(subjects) > 0 {
