@@ -55,13 +55,24 @@ type Confinement struct {
 	// snapshots maps a database path to its copy, so a store that opens one database several times
 	// copies it once.
 	snapshots map[string]string
+	// scratchParent is where snapshot directories are made; empty means os.TempDir().
+	scratchParent string
+	// oversized lists databases refused as too large to snapshot, until TakeOversized.
+	oversized []string
+}
+
+// Options configures a confinement.
+type Options struct {
+	// ScratchDir is the parent of the private directory SQLite snapshots are copied into. It
+	// should be root-owned and on disk; empty means os.TempDir().
+	ScratchDir string
 }
 
 var active atomic.Pointer[Confinement]
 
 // Confine confines every read through this package to home, admitting only files owned by uid (a
 // negative uid skips the ownership check), until Release. Only one confinement can be active.
-func Confine(home string, uid int) (*Confinement, error) {
+func Confine(home string, uid int, opts Options) (*Confinement, error) {
 	home = strings.TrimSpace(home)
 	if home == "" || !filepath.IsAbs(home) {
 		return nil, fmt.Errorf("confine session reads: home %q is not an absolute path", home)
@@ -71,7 +82,7 @@ func Confine(home string, uid int) (*Confinement, error) {
 	if err != nil {
 		return nil, fmt.Errorf("confine session reads to %s: %w", home, err)
 	}
-	c := &Confinement{home: home, root: root, uid: uid}
+	c := &Confinement{home: home, root: root, uid: uid, scratchParent: opts.ScratchDir}
 	if !active.CompareAndSwap(nil, c) {
 		_ = root.Close()
 		return nil, errors.New("confine session reads: a confinement is already active")
@@ -325,14 +336,78 @@ func WalkDir(root string, fn fs.WalkDirFunc) error {
 // Unconfined it is path itself. Confined, the driver cannot be trusted with the user's path: it
 // opens it, and its -wal and -shm files, by name, following any symlink, and in read-only mode it
 // still creates a -shm file beside the database. So the database and its -wal file are read through
-// the confinement into a private directory, and the driver opens that copy; DropSnapshots removes
-// it. A WAL file that is refused is left out, which loses at most the writes not yet checkpointed.
+// the confinement into the confinement's private scratch directory, and the driver opens that copy;
+// DropSnapshots removes it. A WAL file that is refused is left out, which loses at most the writes
+// not yet checkpointed.
+//
+// The copy is checked for consistency (see snapshotFingerprint) and retried while the runtime keeps
+// changing the store underneath it. A database that does not settle, or that with its WAL is larger
+// than MaxSnapshotBytes, is refused like an unreadable store; an oversized one is also reported by
+// TakeOversized so the backfill can name the sync command that reads it in place.
 func SQLitePath(path string) (string, error) {
 	c := active.Load()
 	if c == nil {
 		return path, nil
 	}
 	return c.snapshotSQLite(path)
+}
+
+// MaxSnapshotBytes caps a database plus its WAL that a confined read copies. The whole backfill
+// writes at most 24 MiB of events and a runtime at most 12 MiB, so a store past this size is mostly
+// data the window does not need (Cursor's global state.vscdb carries editor state for every
+// workspace and can reach gigabytes). Copying it would cost that much disk under the system base
+// directory for a few megabytes of events; the user's own sync reads it in place instead.
+const MaxSnapshotBytes = 512 << 20
+
+// Snapshot tuning, variables so tests can make them small or observe the copy.
+var (
+	maxSnapshotBytes int64 = MaxSnapshotBytes
+	// snapshotAttempts is how many times a copy is retried while the store keeps changing.
+	snapshotAttempts = 4
+	// betweenSnapshotCopies runs after the database is copied and before its WAL is; a test seam
+	// for a checkpoint landing between the two copies.
+	betweenSnapshotCopies = func(string) {}
+)
+
+// errSnapshotUnstable reports a store that changed during every copy attempt.
+var errSnapshotUnstable = errors.New("changed during every copy attempt")
+
+// snapshotFingerprint is what a copy of a database and its WAL must not see change.
+//
+// A WAL database copied as two files is consistent as long as the WAL was not restarted between
+// the copies: a checkpoint only writes into the database pages the WAL still holds and overrides,
+// and frames appended after the database was copied are either complete (a newer, consistent
+// state) or fail their checksum and are ignored. A restart rewrites the WAL header with new salts
+// and a new checkpoint sequence, so the 32-byte header catches it. A rollback-journal database is
+// rewritten in place on every commit, which bumps the file change counter at offset 24 of its
+// header; the size catches truncation by a checkpoint or a VACUUM.
+type snapshotFingerprint struct {
+	dbSize    int64
+	dbCounter [4]byte
+	walExists bool
+	walHeader [32]byte
+}
+
+func (c *Confinement) fingerprint(db *os.File, path string) (snapshotFingerprint, error) {
+	var fp snapshotFingerprint
+	info, err := db.Stat()
+	if err != nil {
+		return fp, err
+	}
+	fp.dbSize = info.Size()
+	if _, err := db.ReadAt(fp.dbCounter[:], 24); err != nil && !errors.Is(err, io.EOF) {
+		return fp, err
+	}
+	wal, err := c.open("open", path+"-wal")
+	if err != nil {
+		return fp, nil
+	}
+	defer wal.Close()
+	fp.walExists = true
+	if _, err := wal.ReadAt(fp.walHeader[:], 0); err != nil && !errors.Is(err, io.EOF) {
+		return fp, err
+	}
+	return fp, nil
 }
 
 func (c *Confinement) snapshotSQLite(path string) (string, error) {
@@ -356,37 +431,125 @@ func (c *Confinement) snapshotSQLite(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	target, err := os.MkdirTemp(dir, "db-")
-	if err != nil {
-		return "", err
-	}
-	copyPath := filepath.Join(target, filepath.Base(path))
-	if err := copyInto(copyPath, src); err != nil {
-		return "", err
-	}
-	if wal, err := c.open("open", path+"-wal"); err == nil {
-		err = copyInto(copyPath+"-wal", wal)
-		_ = wal.Close()
+	for attempt := 0; attempt < snapshotAttempts; attempt++ {
+		before, err := c.fingerprint(src, path)
+		if err != nil {
+			return "", c.failed("open", path, err)
+		}
+		size := before.dbSize
+		if before.walExists {
+			if wal, err := c.root.Stat(mustRel(c, path+"-wal")); err == nil {
+				size += wal.Size()
+			}
+		}
+		if size > maxSnapshotBytes {
+			return "", c.oversize(path, size)
+		}
+		target, err := os.MkdirTemp(dir, "db-")
 		if err != nil {
 			return "", err
 		}
+		copyPath := filepath.Join(target, filepath.Base(path))
+		copied, err := c.copySnapshot(src, path, copyPath)
+		if errors.Is(err, errSnapshotTooLarge) {
+			_ = os.RemoveAll(target)
+			return "", c.oversize(path, copied)
+		}
+		if err != nil {
+			_ = os.RemoveAll(target)
+			return "", c.failed("open", path, err)
+		}
+		after, err := c.fingerprint(src, path)
+		if err == nil && after == before {
+			c.mu.Lock()
+			if c.snapshots == nil {
+				c.snapshots = map[string]string{}
+			}
+			c.snapshots[path] = copyPath
+			c.mu.Unlock()
+			return copyPath, nil
+		}
+		_ = os.RemoveAll(target)
 	}
-	c.mu.Lock()
-	if c.snapshots == nil {
-		c.snapshots = map[string]string{}
-	}
-	c.snapshots[path] = copyPath
-	c.mu.Unlock()
-	return copyPath, nil
+	return "", c.refuse("open", path, errSnapshotUnstable.Error())
 }
 
+// mustRel is rel for a path already known to be inside the home.
+func mustRel(c *Confinement, path string) string {
+	rel, _ := c.rel(path)
+	return rel
+}
+
+var errSnapshotTooLarge = errors.New("snapshot over the size limit")
+
+// copySnapshot copies the database and then its WAL, if there is one the confinement admits,
+// stopping once the two together pass maxSnapshotBytes. It reports how many bytes it copied.
+func (c *Confinement) copySnapshot(src *os.File, path, copyPath string) (int64, error) {
+	remaining := maxSnapshotBytes
+	n, err := copyInto(copyPath, io.NewSectionReader(src, 0, remaining+1))
+	if err != nil {
+		return n, err
+	}
+	if n > remaining {
+		return n, errSnapshotTooLarge
+	}
+	remaining -= n
+	betweenSnapshotCopies(path)
+	wal, err := c.open("open", path+"-wal")
+	if err != nil {
+		return n, nil
+	}
+	defer wal.Close()
+	w, err := copyInto(copyPath+"-wal", io.NewSectionReader(wal, 0, remaining+1))
+	n += w
+	if err != nil {
+		return n, err
+	}
+	if w > remaining {
+		return n, errSnapshotTooLarge
+	}
+	return n, nil
+}
+
+// oversize refuses a store too large to snapshot and remembers it for TakeOversized.
+func (c *Confinement) oversize(path string, size int64) error {
+	c.mu.Lock()
+	c.oversized = append(c.oversized, path)
+	c.mu.Unlock()
+	return c.refuse("open", path, fmt.Sprintf("%.1f MiB with its WAL, over the %.1f MiB a system backfill copies", float64(size)/(1<<20), float64(maxSnapshotBytes)/(1<<20)))
+}
+
+// TakeOversized returns, and forgets, the databases refused since the last call because they were
+// too large to snapshot. The backfill calls it after each runtime to name that runtime's sync
+// command, which reads the store in place as the user. Nil when unconfined.
+func TakeOversized() []string {
+	c := active.Load()
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := c.oversized
+	c.oversized = nil
+	return out
+}
+
+// snapshotDir creates the confinement's scratch directory: a fresh 0700 directory under the
+// configured parent (Options.ScratchDir, which the system backfill puts under the root-owned system
+// base directory rather than a possibly memory-backed /tmp), or under os.TempDir() when none is set.
 func (c *Confinement) snapshotDir() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.scratch != "" {
 		return c.scratch, nil
 	}
-	dir, err := os.MkdirTemp("", "beacon-backfill-sqlite-")
+	parent := c.scratchParent
+	if parent == "" {
+		parent = os.TempDir()
+	} else if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", fmt.Errorf("create SQLite snapshot directory: %w", err)
+	}
+	dir, err := os.MkdirTemp(parent, "beacon-backfill-sqlite-")
 	if err != nil {
 		return "", fmt.Errorf("create SQLite snapshot directory: %w", err)
 	}
@@ -394,14 +557,15 @@ func (c *Confinement) snapshotDir() (string, error) {
 	return dir, nil
 }
 
-func copyInto(path string, src *os.File) error {
+func copyInto(path string, src io.Reader) (int64, error) {
 	dst, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if _, err := io.Copy(dst, src); err != nil {
+	n, err := io.Copy(dst, src)
+	if err != nil {
 		_ = dst.Close()
-		return err
+		return n, err
 	}
-	return dst.Close()
+	return n, dst.Close()
 }

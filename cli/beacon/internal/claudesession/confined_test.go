@@ -33,7 +33,7 @@ func TestConfinedCollectSkipsWhatTheConsoleUserPlanted(t *testing.T) {
 		t.Fatalf("mkfifo: %v", err)
 	}
 
-	confined, err := sessionfs.Confine(home, os.Getuid())
+	confined, err := sessionfs.Confine(home, os.Getuid(), sessionfs.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestConfinedCollectReadsNothingThroughALinkedStore(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, ".claude"), filepath.Join(home, ".claude")); err != nil {
 		t.Fatal(err)
 	}
-	confined, err := sessionfs.Confine(home, os.Getuid())
+	confined, err := sessionfs.Confine(home, os.Getuid(), sessionfs.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,67 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 )
 
+// A store too large for the system backfill to copy is named with the sync command that reads it
+// in place, and the stores it does copy go under the system base directory, not /tmp.
+func TestSystemEndpointBackfillNamesTheSyncForAStoreTooLargeToCopy(t *testing.T) {
+	home := t.TempDir()
+	big := filepath.Join(home, ".cursor", "state.vscdb")
+	if err := os.MkdirAll(filepath.Dir(big), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sparse: past the cap by size, nearly nothing on disk, and refused before any byte is copied.
+	if err := f.Truncate(sessionfs.MaxSnapshotBytes + 1); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	small := filepath.Join(home, ".hermes", "state.db")
+	if err := os.MkdirAll(filepath.Dir(small), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(small, []byte("small"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var bigErr error
+	var smallSnap string
+	stubBackfill(t, 1<<20, 1<<20,
+		endpointBackfillRunner{Name: "Cursor", Sync: "beacon endpoint cursor sync", Run: func(endpointBackfillRun) (int, error) {
+			_, bigErr = sessionfs.SQLitePath(big)
+			return 0, bigErr
+		}},
+		endpointBackfillRunner{Name: "Hermes Agent", Sync: "beacon endpoint hermes sync", Run: func(endpointBackfillRun) (int, error) {
+			var err error
+			smallSnap, err = sessionfs.SQLitePath(small)
+			return 0, err
+		}},
+	)
+	scratch := endpointBackfillScratchDir()
+	stubConsoleUser(t, consoleUserInfo{Username: "alice", HomeDir: home}, true, nil)
+
+	var out strings.Builder
+	reportEndpointBackfill(&out, runEndpointBackfill(filepath.Join(t.TempDir(), "runtime.jsonl"), false))
+	if !os.IsNotExist(bigErr) {
+		t.Fatalf("an oversized store was opened: %v", bigErr)
+	}
+	want := "  Cursor: " + big + " is too large for a system backfill to copy; run `beacon endpoint cursor sync` as the console user to read it."
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("report does not name the sync command:\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "retry with `beacon endpoint cursor sync`") {
+		t.Fatalf("report also lists the oversized store as a failure:\n%s", out.String())
+	}
+	if !strings.HasPrefix(smallSnap, scratch+string(filepath.Separator)) {
+		t.Fatalf("snapshot %s is not under the system scratch directory %s", smallSnap, scratch)
+	}
+	if left, _ := os.ReadDir(scratch); len(left) != 0 {
+		t.Fatalf("snapshots survived the backfill: %v", left)
+	}
+}
+
 // A system backfill reads the console user's home as root, so it confines every store read to that
 // home and to files that user owns; a user backfill reads the user's own home unconfined.
 func TestSystemEndpointBackfillConfinesReadsToTheConsoleUsersHome(t *testing.T) {

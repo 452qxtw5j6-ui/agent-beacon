@@ -44,7 +44,7 @@ func mustWrite(t *testing.T, path, data string) {
 
 func confine(t *testing.T, home string, uid int) *Confinement {
 	t.Helper()
-	c, err := Confine(home, uid)
+	c, err := Confine(home, uid, Options{})
 	if err != nil {
 		t.Fatalf("Confine: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestConfinedSQLiteGoesThroughASnapshot(t *testing.T) {
 		t.Fatalf("snapshot survived DropSnapshots: %v", err)
 	}
 	c.Release()
-	if _, err := Confine(f.home, os.Getuid()); err != nil {
+	if _, err := Confine(f.home, os.Getuid(), Options{}); err != nil {
 		t.Fatalf("Release left the confinement active: %v", err)
 	} else {
 		active.Load().Release()
@@ -288,7 +288,7 @@ func TestConfinedSQLiteGoesThroughASnapshot(t *testing.T) {
 func TestOnlyOneConfinementAtATime(t *testing.T) {
 	f := newFixture(t)
 	confine(t, f.home, os.Getuid())
-	if _, err := Confine(t.TempDir(), os.Getuid()); err == nil {
+	if _, err := Confine(t.TempDir(), os.Getuid(), Options{}); err == nil {
 		t.Fatal("a second confinement replaced the first")
 	}
 }

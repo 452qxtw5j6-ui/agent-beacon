@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/cursorsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/dshsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/asymptote"
+	endpointconfig "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/config"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/factorysession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/fxsession"
@@ -134,6 +136,13 @@ var endpointBackfillRunners = func() []endpointBackfillRunner {
 	}
 }
 
+// endpointBackfillScratchDir is where a system backfill copies SQLite stores it reads as root: under
+// the root-owned system base directory, on disk, rather than a /tmp that is often memory-backed. A
+// seam for tests.
+var endpointBackfillScratchDir = func() string {
+	return filepath.Join(endpointconfig.BaseDir(false), "state", "backfill-snapshots")
+}
+
 // endpointBackfillNow is time.Now, a seam for tests.
 var endpointBackfillNow = time.Now
 
@@ -144,6 +153,9 @@ type endpointBackfillRuntimeResult struct {
 	Events  int
 	Limited bool
 	Err     error
+	// Oversized names the databases a system backfill would not copy because they are too large;
+	// Sync, run as the user, reads them in place.
+	Oversized []string
 }
 
 // endpointBackfillResult is what one backfill wrote.
@@ -206,7 +218,7 @@ func runEndpointBackfill(logPath string, userMode bool) endpointBackfillResult {
 	if err != nil {
 		return endpointBackfillResult{Skipped: fmt.Sprintf("could not read the owner of the console user's home: %v", err)}
 	}
-	confined, err := sessionfs.Confine(info.HomeDir, uid)
+	confined, err := sessionfs.Confine(info.HomeDir, uid, sessionfs.Options{ScratchDir: endpointBackfillScratchDir()})
 	if err != nil {
 		return endpointBackfillResult{Skipped: err.Error()}
 	}
@@ -227,7 +239,7 @@ func sweepEndpointBackfill(logPath string, userMode bool) endpointBackfillResult
 		// A confined (system) sweep reads SQLite stores through private snapshots; drop each
 		// runtime's before the next one runs. A no-op otherwise.
 		sessionfs.DropSnapshots()
-		runtime := endpointBackfillRuntimeResult{Name: runner.Name, Sync: runner.Sync, Events: events}
+		runtime := endpointBackfillRuntimeResult{Name: runner.Name, Sync: runner.Sync, Events: events, Oversized: sessionfs.TakeOversized()}
 		if errors.Is(err, writer.ErrBudgetSpent) || share.Refused() {
 			runtime.Limited = true
 			result.Limited = true
@@ -236,7 +248,7 @@ func sweepEndpointBackfill(logPath string, userMode bool) endpointBackfillResult
 			runtime.Err = err
 		}
 		result.Events += events
-		if events > 0 || runtime.Limited || runtime.Err != nil {
+		if events > 0 || runtime.Limited || runtime.Err != nil || len(runtime.Oversized) > 0 {
 			result.Runtimes = append(result.Runtimes, runtime)
 		}
 	}
@@ -282,7 +294,12 @@ func reportEndpointBackfill(out io.Writer, result endpointBackfillResult) {
 	}
 	fmt.Fprintln(out, line+".")
 	for _, r := range result.Runtimes {
+		for _, path := range r.Oversized {
+			fmt.Fprintf(out, "  %s: %s is too large for a system backfill to copy; run `%s` as the console user to read it.\n", r.Name, path, r.Sync)
+		}
 		switch {
+		case r.Err != nil && len(r.Oversized) > 0:
+			// The error is the collector failing to open the store named just above.
 		case r.Err != nil:
 			fmt.Fprintf(out, "  %s: %v; retry with `%s`.\n", r.Name, r.Err, r.Sync)
 		case r.Limited:
@@ -319,7 +336,7 @@ func reportEndpointBackfillRefusals(out io.Writer, result endpointBackfillResult
 	if result.Refused == 0 {
 		return
 	}
-	fmt.Fprintf(out, "  Skipped %d session store path(s) a system backfill does not read as root (links leading out of the console user's home, files that user does not own, or special files):\n", result.Refused)
+	fmt.Fprintf(out, "  Skipped %d session store path(s) a system backfill does not read as root (links leading out of the console user's home, files that user does not own, special files, or stores too large to copy):\n", result.Refused)
 	for _, example := range result.RefusedExamples {
 		fmt.Fprintf(out, "    %s\n", example)
 	}
