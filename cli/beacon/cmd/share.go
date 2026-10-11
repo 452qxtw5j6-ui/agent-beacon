@@ -127,7 +127,7 @@ func init() {
 		f.StringVar(&shareOpts.cwd, "cwd", "", "Use the most recent session that ran in this directory (default: the current directory)")
 		f.BoolVar(&shareOpts.print, "print", false, "Print the payload that would be uploaded and send nothing")
 		f.BoolVar(&shareOpts.dryRun, "dry-run", false, "Same as --print")
-		f.StringVar(&shareOpts.title, "title", "", "Title for the shared trace (default: the session's title or first prompt)")
+		f.StringVar(&shareOpts.title, "title", "", "Title for the shared trace (default for a new trace: the session's title or first prompt; an existing trace keeps its title)")
 	}
 	f := shareCmd.Flags()
 	f.StringVar(&shareOpts.session, "session", "", "Session id, or a unique prefix of at least 6 characters")
@@ -217,6 +217,7 @@ func runShare(cmd *cobra.Command) error {
 		if cmd.Flags().Changed("visibility") {
 			payload.Trace.Visibility = shareOpts.visibility
 		}
+		keepSharedTitle(cmd, &payload)
 	}
 	trace, err := client.PutTrace(ctx, payload.ExternalID, payload.Trace)
 	if err != nil {
@@ -290,6 +291,7 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 	if subject, payload, err = alignShareSource(subject, payload, state); err != nil {
 		return err
 	}
+	keepSharedTitle(cmd, &payload)
 	pending := messagesAfter(payload.Messages, state.LastMessageID, state.MaxOrder)
 	trace, err := client.PutTrace(ctx, payload.ExternalID, payload.Trace)
 	if err != nil {
@@ -449,6 +451,15 @@ func alignShareSource(subject shareSubject, payload sharePayload, state *asympto
 		}
 	}
 	return subject, payload, fmt.Errorf("%s on beacon.sh was built from a different copy of this session than Beacon can read now (its store and the runtime log name messages differently), so uploading it would duplicate every message; delete the shared trace and share it again to start over", payload.ExternalID)
+}
+
+// keepSharedTitle leaves an existing trace's title alone unless --title names a new one: the
+// derived title would otherwise replace one set with --title or renamed on beacon.sh. An omitted
+// title keeps the stored one, as an omitted visibility does.
+func keepSharedTitle(cmd *cobra.Command, payload *sharePayload) {
+	if f := cmd.Flags().Lookup("title"); f == nil || !f.Changed {
+		payload.Trace.Title = ""
+	}
 }
 
 func hasShareMessage(messages []asymptoteobserve.ShareMessageV1, id string) bool {

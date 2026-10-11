@@ -255,6 +255,9 @@ func newFakeShareServer(t *testing.T) *fakeShareServer {
 			if !created && trace.Visibility == "" {
 				trace.Visibility = f.trace.Visibility
 			}
+			if !created && trace.Title == "" {
+				trace.Title = f.trace.Title
+			}
 			if trace.Visibility == "" {
 				trace.Visibility = "direct"
 			}
@@ -533,5 +536,29 @@ func TestShareRefreshRefusesToDuplicateFromAnotherSource(t *testing.T) {
 	}
 	if len(srv.messages) != 4 {
 		t.Fatalf("server holds %d messages after a refused refresh", len(srv.messages))
+	}
+}
+
+func TestShareRefreshKeepsATitleSetEarlier(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Login fix", "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	if _, _, err := runShareCommand(t, "refresh", "claude_code:"+shareTestSession, "--log-path", env.logPath); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("re-share: %v", err)
+	}
+	if srv.trace.Title != "Login fix" {
+		t.Fatalf("title = %q, want the one set with --title", srv.trace.Title)
+	}
+	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Renamed", "--log-path", env.logPath); err != nil {
+		t.Fatal(err)
+	}
+	if srv.trace.Title != "Renamed" {
+		t.Fatalf("an explicit --title did not apply: %q", srv.trace.Title)
 	}
 }
