@@ -1280,7 +1280,8 @@ func replacePathPrefix(value, prefix, repl string) string {
 		end := i + len(prefix)
 		consumed := len(value) - len(rest)
 		before := consumed + i
-		if (before == 0 || !continuesPath(value[before-1], true)) &&
+		// A URL's "://" is not a parent directory: file:///Users/al is the path /Users/al.
+		if (before == 0 || !continuesPath(value[before-1], true) || strings.HasSuffix(value[:before], "://")) &&
 			(end == len(rest) || !continuesPath(rest[end], false) || endsSentence(rest[end:])) {
 			b.WriteString(rest[:i])
 			b.WriteString(repl)

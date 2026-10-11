@@ -491,6 +491,8 @@ func TestPathScrubberReplacesWholePathsOnly(t *testing.T) {
 		"/srv/home/al/x":                "/srv/home/al/x",
 		"open /home/al, then /home/al.": "open ~, then ~.",
 		"/home/al/src/proj/x":           "~/src/proj/x",
+		"file:///home/al/notes.txt":     "file://~/notes.txt",
+		"file:///home/alex/notes.txt":   "file:///home/alex/notes.txt",
 	}
 	for in, want := range cases {
 		if got := s.text(in); got != want {
