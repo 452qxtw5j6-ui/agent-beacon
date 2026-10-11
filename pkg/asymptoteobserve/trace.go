@@ -90,6 +90,9 @@ type TraceSharingV1 struct {
 	SharedAt        string        `json:"shared_at,omitempty"`
 	LastRefreshedAt string        `json:"last_refreshed_at,omitempty"`
 	CreatedBy       *TraceActorV1 `json:"created_by,omitempty"`
+	// RefreshCommand is the `beacon share refresh` command that uploads what a shared session
+	// gained since, for a reader to copy. Local views show it; they never run it.
+	RefreshCommand string `json:"refresh_command,omitempty"`
 }
 
 type TraceActorV1 struct {

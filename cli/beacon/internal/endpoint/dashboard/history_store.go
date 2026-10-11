@@ -41,7 +41,7 @@ const (
 	// historyDerivationVersion covers everything computed from a stored line: trace keys, event
 	// numbers, types, summaries and search text. Bump it when that projection changes; the next
 	// catch-up recomputes it from the stored lines, so history survives the change.
-	historyDerivationVersion = 4 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split
+	historyDerivationVersion = 5 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split; 5: sharing goes stale on newer activity and carries a refresh command
 
 	defaultHistoryRetentionDays = 90
 	// maxHistoryRetentionDays is 100 years: a retention this long or longer means nothing expires.

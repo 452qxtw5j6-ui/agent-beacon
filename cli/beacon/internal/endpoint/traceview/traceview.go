@@ -456,7 +456,7 @@ func (m Model) listView() string {
 		}
 		titleWidth := max(12, m.width-35)
 		line := fmt.Sprintf("%-8s  %-*s  %s", clock, titleWidth, truncate(trace.Title, titleWidth), trace.Harness.Name)
-		meta := fmt.Sprintf("           %s · %d events · %s", tracePath(trace), trace.EventCount, contentLabel(trace))
+		meta := fmt.Sprintf("           %s · %d events · %s%s", tracePath(trace), trace.EventCount, contentLabel(trace), sharingLabel(trace))
 		if i == m.selected {
 			b.WriteString(selectedStyle.Render(fit("  ❯ "+line, m.width)) + "\n")
 			b.WriteString(selectedStyle.Render(fit("    "+meta, m.width)) + "\n")
@@ -483,6 +483,9 @@ func (m Model) detailView() string {
 	b.WriteString("  " + accentStyle.Render(truncate(title, max(20, m.width-4))) + "\n")
 	b.WriteString("  " + dimStyle.Render(fmt.Sprintf("%s · %s · %s%s · filter: %s",
 		trace.Harness.Name, tracePath(trace), trace.UpdatedAt, traceUsageLabel(trace), m.filterLabel)) + "\n")
+	for _, line := range sharingLines(trace) {
+		b.WriteString("  " + dimStyle.Render(truncate(line, max(20, m.width-4))) + "\n")
+	}
 	b.WriteString("  " + ruleStyle.Render(strings.Repeat("─", max(1, m.width-4))) + "\n")
 	if m.loading {
 		b.WriteString("\n  Loading events…\n")
@@ -615,6 +618,36 @@ func tracePath(trace dashboard.TraceSummaryV1) string {
 		return trace.Repository.Path
 	}
 	return "local"
+}
+
+// sharingLabel marks a shared trace in the list: shared, or stale when the session has activity
+// newer than its last share or refresh.
+func sharingLabel(trace dashboard.TraceSummaryV1) string {
+	switch {
+	case trace.Sharing.URL == "":
+		return ""
+	case trace.Sharing.State == "stale":
+		return " · shared (stale)"
+	default:
+		return " · shared"
+	}
+}
+
+// sharingLines are the detail view's sharing lines: the link, and for a stale trace the command
+// that refreshes it, to copy. The view never shares or refreshes anything itself.
+func sharingLines(trace dashboard.TraceSummaryV1) []string {
+	if trace.Sharing.URL == "" {
+		return nil
+	}
+	state := "shared"
+	if trace.Sharing.State == "stale" {
+		state = "stale: newer local activity"
+	}
+	lines := []string{fmt.Sprintf("Shared (%s, %s): %s", firstNonEmpty(trace.Sharing.Visibility, "direct"), state, trace.Sharing.URL)}
+	if trace.Sharing.State == "stale" && trace.Sharing.RefreshCommand != "" {
+		lines = append(lines, "Refresh with: "+trace.Sharing.RefreshCommand)
+	}
+	return lines
 }
 
 func contentLabel(trace dashboard.TraceSummaryV1) string {

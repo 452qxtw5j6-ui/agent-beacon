@@ -33,6 +33,11 @@ poll, and OTLP collection paths.
   contains only lifecycle, metric, or internal events.
 - **Session detail:** open a session timeline with metadata, activity and severity
   summaries, event filters, raw JSON, and value inspectors.
+- **Sharing state:** a session shared with [`beacon share`](/cli/share) is marked
+  **Shared** in the session list and on its page, which links to the trace on
+  beacon.sh. It is marked **stale** when the session has activity newer than its
+  last share or refresh, and the page shows the `beacon share refresh …` command
+  to copy. The dashboard never shares or refreshes anything itself.
 - **Lenses:** add tabs to a session's page that show it from one angle: files
   changed with diffs, an itemized token bill, a security review, approvals, or a
   [lens you wrote](/concepts/lenses). Each lens runs in a sandboxed frame with no

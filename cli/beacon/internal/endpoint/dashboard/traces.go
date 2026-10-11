@@ -66,6 +66,35 @@ type traceAggregate struct {
 	models        map[string]bool
 	methods       map[string]bool
 	titlePriority int
+	// lastActivity is the newest timestamp of an event the session itself produced, and
+	// lastShareRecord the newest session.shared record's; a shared trace whose session has
+	// activity after its last share or refresh is stale.
+	lastActivity    string
+	lastShareRecord string
+}
+
+// shareBookkeeping is an event Beacon writes into a session's timeline about the session, rather
+// than activity of the session: it never makes a shared trace stale.
+func shareBookkeeping(action string) bool {
+	return action == "session.shared" || action == "session.share_requested" || action == "session.commit_linked"
+}
+
+func laterTimestamp(a, b string) string {
+	if b == "" {
+		return a
+	}
+	if a == "" {
+		return b
+	}
+	ta, errA := schema.ParseTimestamp(a)
+	tb, errB := schema.ParseTimestamp(b)
+	if errA != nil {
+		return b
+	}
+	if errB != nil || !tb.After(ta) {
+		return a
+	}
+	return b
 }
 
 // The local history, once the user has opted in to it, answers the same
@@ -357,6 +386,12 @@ func (a *traceAggregate) update(event schema.Event, traceEvent TraceEventV1) {
 	}
 	updateContentSummary(&a.summary.Content, event.Content)
 	a.updateRawMetadata(event.Raw)
+	switch {
+	case event.Event.Action == "session.shared":
+		a.lastShareRecord = laterTimestamp(a.lastShareRecord, event.Timestamp)
+	case !shareBookkeeping(event.Event.Action):
+		a.lastActivity = laterTimestamp(a.lastActivity, event.Timestamp)
+	}
 }
 
 func (a *traceAggregate) updateRawMetadata(raw map[string]interface{}) {
@@ -435,6 +470,14 @@ func (a *traceAggregate) finish() {
 	}
 	if a.summary.RemoteEventCount > 0 && a.summary.RemoteEventCount != a.summary.LocalEventCount {
 		a.summary.Sharing.State = "stale"
+	}
+	if a.summary.Sharing.URL != "" {
+		if a.lastShareRecord != "" && a.lastActivity != "" && laterTimestamp(a.lastShareRecord, a.lastActivity) != a.lastShareRecord {
+			a.summary.Sharing.State = "stale"
+		}
+		if a.summary.Session != nil {
+			a.summary.Sharing.RefreshCommand = asymptoteobserve.ShareRefreshCommand(a.summary.Harness.Name, a.summary.Session.ID)
+		}
 	}
 }
 

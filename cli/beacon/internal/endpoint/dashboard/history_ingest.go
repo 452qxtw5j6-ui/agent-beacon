@@ -799,18 +799,22 @@ func (f *traceFolder) finish(previous historyTraceState) error {
 // and the sets finish() reads. finish() runs on a copy each time a summary is read, so it never
 // feeds back into the running state.
 type traceAggregateState struct {
-	Summary       TraceSummaryV1 `json:"summary"`
-	Models        []string       `json:"models,omitempty"`
-	Methods       []string       `json:"methods,omitempty"`
-	TitlePriority int            `json:"title_priority"`
+	Summary         TraceSummaryV1 `json:"summary"`
+	Models          []string       `json:"models,omitempty"`
+	Methods         []string       `json:"methods,omitempty"`
+	TitlePriority   int            `json:"title_priority"`
+	LastActivity    string         `json:"last_activity,omitempty"`
+	LastShareRecord string         `json:"last_share_record,omitempty"`
 }
 
 func (a *traceAggregate) state() traceAggregateState {
 	return traceAggregateState{
-		Summary:       a.summary,
-		Models:        sortedKeys(a.models),
-		Methods:       sortedKeys(a.methods),
-		TitlePriority: a.titlePriority,
+		Summary:         a.summary,
+		Models:          sortedKeys(a.models),
+		Methods:         sortedKeys(a.methods),
+		TitlePriority:   a.titlePriority,
+		LastActivity:    a.lastActivity,
+		LastShareRecord: a.lastShareRecord,
 	}
 }
 
@@ -820,11 +824,13 @@ func decodeTraceAggregate(raw string) (*traceAggregate, error) {
 		return nil, err
 	}
 	agg := &traceAggregate{
-		summary:       state.Summary,
-		spans:         map[string]*TraceSpanV1{},
-		models:        map[string]bool{},
-		methods:       map[string]bool{},
-		titlePriority: state.TitlePriority,
+		summary:         state.Summary,
+		spans:           map[string]*TraceSpanV1{},
+		models:          map[string]bool{},
+		methods:         map[string]bool{},
+		titlePriority:   state.TitlePriority,
+		lastActivity:    state.LastActivity,
+		lastShareRecord: state.LastShareRecord,
 	}
 	for _, model := range state.Models {
 		agg.models[model] = true

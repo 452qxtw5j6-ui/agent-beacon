@@ -334,3 +334,24 @@ func TestEventDetailsIncludesStructuredData(t *testing.T) {
 		}
 	}
 }
+
+func TestSharingLabelsAndRefreshHint(t *testing.T) {
+	local := dashboard.TraceSummaryV1{Sharing: dashboard.TraceSharingV1{State: "local_only"}}
+	if sharingLabel(local) != "" || sharingLines(local) != nil {
+		t.Fatal("a local trace shows sharing")
+	}
+	shared := dashboard.TraceSummaryV1{Sharing: dashboard.TraceSharingV1{State: "shared", Visibility: "direct", URL: "https://beacon.sh/s/x", RefreshCommand: "beacon share refresh claude_code:s"}}
+	if got := sharingLabel(shared); got != " · shared" {
+		t.Fatalf("label = %q", got)
+	}
+	if lines := sharingLines(shared); len(lines) != 1 || !strings.Contains(lines[0], "https://beacon.sh/s/x") {
+		t.Fatalf("lines = %q", lines)
+	}
+	shared.Sharing.State = "stale"
+	if got := sharingLabel(shared); got != " · shared (stale)" {
+		t.Fatalf("label = %q", got)
+	}
+	if lines := sharingLines(shared); len(lines) != 2 || lines[1] != "Refresh with: beacon share refresh claude_code:s" {
+		t.Fatalf("lines = %q", lines)
+	}
+}
