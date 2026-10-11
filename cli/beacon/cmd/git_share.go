@@ -16,6 +16,9 @@ import (
 // push had hung.
 var gitShareBudget = 10 * time.Second
 
+// gitPushNotes is gitlink.PushNotes; tests replace it to see the deadline the hook gives it.
+var gitPushNotes = gitlink.PushNotes
+
 var gitNotesPushCmd = &cobra.Command{
 	Use:   "push [<remote>]",
 	Short: "Share this repository's commit links with a remote (default the branch's remote, or origin)",
@@ -143,17 +146,18 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 		}
 		if stdin != "" {
 			// Sharing sessions is held to the clock (uploads, then writing their URLs into the
-			// notes), and the notes ref is then pushed on a fresh gitShareNotesReserve, so the
-			// links, with whatever URLs were recorded, still reach the remote in time.
+			// notes), and the notes ref is then pushed with what is left of the hook's budget, never
+			// less than gitShareNotesReserve, so the links, with whatever URLs were recorded, still
+			// reach the remote in time.
 			if _, err := gitShareSessionsOnPush(ctx, repo, args[0], stdin, visibility); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "beacon: linked sessions were not all shared: %s\n", gitlink.ErrorSummary(err))
 			}
-			pushCtx, cancelPush := context.WithTimeout(context.Background(), gitShareNotesReserve)
+			pushCtx, cancelPush := gitShareAfterContext(ctx, 0, gitShareNotesReserve)
 			defer cancelPush()
 			ctx = pushCtx
 		}
 	}
-	if _, err := gitlink.PushNotes(ctx, repo, args[0]); err != nil {
+	if _, err := gitPushNotes(ctx, repo, args[0]); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "beacon: commit links were not shared with %s: %s\n", args[0], gitlink.ErrorSummary(err))
 	}
 	return nil
