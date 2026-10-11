@@ -167,43 +167,57 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 			toShare = append(toShare, link)
 		}
 	}
-	if len(toShare) > gitShareMaxSessions {
-		toShare = toShare[:gitShareMaxSessions]
-	}
 	var shareErr error
+	type linkedSubject struct {
+		link    gitlink.Link
+		subject shareSubject
+	}
+	var subjects []linkedSubject
 	if len(toShare) > 0 {
+		// Resolve first, cap after: a teammate's session, or one this machine no longer has,
+		// must not use up a slot that one of this person's sessions needs. Resolving reads only
+		// the local stores, inside the upload budget.
+		sources := handoffSources(handoff.StoreDirs{})
+		for _, link := range toShare {
+			if ctx.Err() != nil || len(subjects) >= gitShareMaxSessions {
+				break
+			}
+			harness, err := handoff.ParseHarness(link.Harness)
+			if err != nil {
+				continue
+			}
+			subject, err := resolveShareID(sources, harness, link.SessionID)
+			if err != nil || subject.session.ID != link.SessionID {
+				continue // a teammate's session, or one this machine no longer has
+			}
+			subjects = append(subjects, linkedSubject{link: link, subject: subject})
+		}
+	}
+	if len(subjects) > 0 {
 		client, err := newShareClient()
 		if err != nil {
 			report.Skipped = "no Beacon credential"
 		} else {
-			sources := handoffSources(handoff.StoreDirs{})
-			for _, link := range toShare {
+			for _, ls := range subjects {
 				if ctx.Err() != nil {
 					break
 				}
-				harness, err := handoff.ParseHarness(link.Harness)
-				if err != nil {
-					continue
-				}
-				subject, err := resolveShareID(sources, harness, link.SessionID)
-				if err != nil || subject.session.ID != link.SessionID {
-					continue // a teammate's session, or one this machine no longer has
-				}
-				result, _, err := gitShareUpload(ctx, client, subject, shareUploadOptions{Visibility: visibility, Record: true})
+				key := ls.link.Key()
+				result, _, err := gitShareUpload(ctx, client, ls.subject, shareUploadOptions{Visibility: visibility, Record: true})
 				if err != nil && result.SharedURL == "" {
 					if shareErr == nil {
-						shareErr = fmt.Errorf("%s: %w", link.Key(), err)
+						shareErr = fmt.Errorf("%s: %w", key, err)
 					}
 					continue
 				}
 				if gitlink.ValidShareURL(result.SharedURL) {
-					urls[link.Key()] = result.SharedURL
-					report.Shared = append(report.Shared, link.Key())
+					urls[key] = result.SharedURL
+					report.Shared = append(report.Shared, key)
 				}
 			}
 		}
 	}
-	if ctx.Err() != nil && shareErr == nil && len(report.Shared) < len(toShare) {
+	if ctx.Err() != nil && shareErr == nil && len(report.Shared) < len(subjects) {
 		shareErr = errors.New("ran out of time before every linked session was shared; the next push shares the rest")
 	}
 	cancelUploads()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,5 +304,47 @@ func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
 	want := "beacon:claude_code/sess-fast https://beacon.sh/s/fast01\nbeacon:claude_code/sess-slow"
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
 		t.Fatalf("note %q, want %q", note, want)
+	}
+}
+
+// The per-push cap counts only sessions this machine has: links to teammates' or pruned sessions
+// ahead of one's own do not use up its slots.
+func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
+	root, _ := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	var uploaded []string
+	prevUpload := gitShareUpload
+	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
+		uploaded = append(uploaded, subject.session.ID)
+		return shareResult{SharedURL: "https://beacon.sh/s/mine01"}, subject, nil
+	}
+	t.Cleanup(func() { gitShareUpload = prevUpload })
+
+	var lines []string
+	for i := 0; i < gitShareMaxSessions+2; i++ {
+		lines = append(lines, fmt.Sprintf("beacon:claude_code/teammate-%02d", i))
+	}
+	lines = append(lines, "beacon:claude_code/"+shareTestSession)
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", strings.Join(lines, "\n"), sha)
+	repo, err := gitlink.OpenRepo(context.Background(), gitlink.Git{Dir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitShareSessionsOnPush(context.Background(), repo, "origin", "refs/heads/main "+sha+" refs/heads/main "+old+"\n", ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(uploaded) != 1 || uploaded[0] != shareTestSession {
+		t.Fatalf("uploaded %v, want only this machine's session", uploaded)
+	}
+	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); !strings.Contains(note, "beacon:claude_code/"+shareTestSession+" https://beacon.sh/s/mine01") {
+		t.Fatalf("note %q lacks the URL", note)
 	}
 }
