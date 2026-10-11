@@ -24,7 +24,7 @@ function reqBody(prompt: string, conversationId: string | null): string {
 }
 
 function run(name: string, prompt: string, conversationId: string | null, chunkSize = 7): TurnParser {
-  const parser = chatgptAdapter.createParser(1);
+  const parser = chatgptAdapter.createParser('req-0001');
   parser.onRequest('https://chatgpt.com/backend-api/f/conversation', 'POST', reqBody(prompt, conversationId));
   const body = fixture(name);
   for (let i = 0; i < body.length; i += chunkSize) parser.onChunk(body.slice(i, i + chunkSize));

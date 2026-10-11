@@ -14,7 +14,7 @@ const URL = `/api/organizations/org-x/chat_conversations/${CONV}/completion`;
 
 /** Feed a body through a fresh parser in tiny, boundary-crossing chunks. */
 function run(name: string, prompt: string, chunkSize = 7): TurnParser {
-  const parser = claudeAdapter.createParser(1);
+  const parser = claudeAdapter.createParser('req-0001');
   parser.onRequest(URL, 'POST', JSON.stringify({ prompt, conversation_id: CONV }));
   const body = fixture(name);
   for (let i = 0; i < body.length; i += chunkSize) parser.onChunk(body.slice(i, i + chunkSize));
@@ -140,7 +140,7 @@ describe('claude adapter -- one-hour cache writes', () => {
 
 describe('claude adapter -- partial stream usage', () => {
   it('reports no output tokens when the stream aborts before message_delta', () => {
-    const parser = claudeAdapter.createParser(1);
+    const parser = claudeAdapter.createParser('req-0001');
     parser.onRequest(URL, 'POST', JSON.stringify({ prompt: 'hi', conversation_id: CONV }));
     const body = fixture('with-usage');
     parser.onChunk(body.slice(0, body.indexOf('event: message_delta')));

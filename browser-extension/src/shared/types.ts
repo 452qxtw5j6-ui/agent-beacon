@@ -79,25 +79,19 @@ export const DEFAULT_SETTINGS: Settings = {
 
 // ---- Messaging between MAIN interceptor → ISOLATED content → service worker ----
 
-/** Emitted by the MAIN-world interceptor via window.postMessage. */
+/**
+ * Emitted by the MAIN-world interceptor over its private MessagePort (see
+ * src/shared/channel.ts). `reqId` is a random, unguessable id per teed request.
+ */
 export type InterceptEvent =
-  | { kind: 'request'; reqId: number; url: string; method: string; body: string | null }
-  | { kind: 'chunk'; reqId: number; chunk: string }
-  | { kind: 'done'; reqId: number }
-  | { kind: 'error'; reqId: number; message: string };
-
-export const BEACON_MSG = '__beacon_intercept__' as const;
-
-/** Envelope posted on window by the interceptor. */
-export interface BeaconWindowMessage {
-  source: typeof BEACON_MSG;
-  event: InterceptEvent;
-}
+  | { kind: 'request'; reqId: string; url: string; method: string; body: string | null }
+  | { kind: 'chunk'; reqId: string; chunk: string }
+  | { kind: 'done'; reqId: string }
+  | { kind: 'error'; reqId: string; message: string };
 
 /** Sent from the content script to the service worker. */
 export interface RelayMessage {
   type: 'BEACON_RAW';
   host: string;
-  tabId?: number;
   event: InterceptEvent;
 }

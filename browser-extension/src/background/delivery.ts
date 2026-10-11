@@ -8,6 +8,7 @@ import type { ChatTurn, Settings } from '../shared/types.js';
 import { turnToEnvelope } from '../shared/normalize.js';
 import type { LogsEnvelope } from '../shared/otlp.js';
 import type { BrowserIdentity } from '../shared/browser-identity.js';
+import { isAllowedEndpoint } from '../shared/validate.js';
 
 const QUEUE_KEY = 'delivery_queue';
 const ALARM = 'beacon_flush';
@@ -74,6 +75,10 @@ export async function flush(): Promise<void> {
     let anyFailed = false;
 
     for (const item of queue) {
+      // Checked again at send time, not only when settings are saved: an item
+      // queued by an older build, or a tampered queue, must not reach anything
+      // but the local collector. Such an item is dropped, not retried.
+      if (!isAllowedEndpoint(item.endpoint)) continue;
       const ok = await post(item);
       if (!ok) {
         item.attempts += 1;
@@ -90,10 +95,13 @@ export async function flush(): Promise<void> {
 }
 
 async function post(item: QueueItem): Promise<boolean> {
+  if (!isAllowedEndpoint(item.endpoint)) return false;
   try {
     const res = await fetch(item.endpoint, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      // A loopback listener must not be able to bounce chat content elsewhere.
+      redirect: 'error',
       body: JSON.stringify(item.envelope),
     });
     return res.ok;
