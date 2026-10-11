@@ -513,6 +513,15 @@ func (b *TraceBuilder) Fold(event Event, traceEvent TraceEventV1) {
 			a.summary.Repository.Branch = event.Branch
 		}
 	}
+	if a.summary.Project == nil {
+		dir := strings.TrimSpace(event.Repository)
+		if dir == "" && event.Session != nil {
+			dir = strings.TrimSpace(event.Session.WorkingDirectory)
+		}
+		if name := traceProjectName(dir); name != "" {
+			a.summary.Project = &TraceProjectV1{Name: name}
+		}
+	}
 	if event.Model != "" {
 		model := NormalizeModelName(event.Model)
 		if model != "" {
@@ -591,6 +600,17 @@ func newTraceSummary(id string, event Event) TraceSummaryV1 {
 		summary.Trace = &TraceIdentityV1{ID: event.Trace.ID}
 	}
 	return summary
+}
+
+// traceProjectName is the last segment of a directory, or "" for a path with no name of its own
+// (a root, ".", "~").
+func traceProjectName(dir string) string {
+	name := lastPathSegment(dir)
+	switch name {
+	case "", ".", "..", "~":
+		return ""
+	}
+	return name
 }
 
 func (b *TraceBuilder) updateRawMetadata(raw map[string]interface{}) {

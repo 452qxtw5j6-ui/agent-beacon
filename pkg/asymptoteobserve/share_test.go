@@ -377,9 +377,12 @@ func TestShareBundleSummary(t *testing.T) {
 	if summary.TokenUsage == nil || *summary.TokenUsage != want {
 		t.Fatalf("usage = %+v", summary.TokenUsage)
 	}
-	wantRepo := TraceRepositoryV1{RemoteURL: "https://github.com/acme/repo.git", Branch: "main", Ref: "abc123def", Path: "repo"}
+	wantRepo := TraceRepositoryV1{RemoteURL: "https://github.com/acme/repo.git", Branch: "main", Ref: "abc123def"}
 	if summary.Repository == nil || *summary.Repository != wantRepo {
 		t.Fatalf("repository = %+v", summary.Repository)
+	}
+	if summary.Project == nil || summary.Project.Name != "repo" {
+		t.Fatalf("project = %+v", summary.Project)
 	}
 	if summary.Session == nil || summary.Session.ID != "sess-1" || summary.Session.WorkingDirectory != "" {
 		t.Fatalf("session = %+v", summary.Session)
@@ -487,8 +490,8 @@ func TestShareWireTypesRoundTrip(t *testing.T) {
 	events := shareFieldEvents()
 	bundle := BuildShareBundle(events, shareTestOpts)
 	for name, value := range map[string]interface{}{
-		"trace": NewShareTrace(bundle, ShareVisibilityPublic),
-		"batch": ShareEventsBatchV1{Events: bundle.Events},
+		"trace":  NewShareTrace(bundle, ShareVisibilityPublic),
+		"batch":  ShareEventsBatchV1{Events: bundle.Events},
 		"bundle": bundle,
 	} {
 		data, err := json.Marshal(value)
@@ -515,13 +518,17 @@ func TestShareSummaryLeavesOutDetachedHeadAndTheHomeDirectoryName(t *testing.T) 
 	event.Repository = "/home/dev"
 	event.Branch = "HEAD"
 	event.Prompt = &PromptInfo{Text: "hi"}
-	if repo := BuildShareBundle([]Event{event}, shareTestOpts).Summary.Repository; repo != nil {
-		t.Fatalf("repository = %+v", repo)
+	if summary := BuildShareBundle([]Event{event}, shareTestOpts).Summary; summary.Repository != nil || summary.Project != nil {
+		t.Fatalf("repository = %+v, project = %+v", summary.Repository, summary.Project)
 	}
 	event.Session.WorkingDirectory = "/home/dev/src/app"
 	event.Repository = "/home/dev/src/app"
-	if repo := BuildShareBundle([]Event{event}, shareTestOpts).Summary.Repository; repo == nil || repo.Path != "app" || repo.Branch != "" {
-		t.Fatalf("repository = %+v", repo)
+	summary := BuildShareBundle([]Event{event}, shareTestOpts).Summary
+	if summary.Repository != nil {
+		t.Fatalf("repository = %+v", summary.Repository)
+	}
+	if summary.Project == nil || summary.Project.Name != "app" {
+		t.Fatalf("project = %+v", summary.Project)
 	}
 }
 
@@ -776,8 +783,11 @@ func TestShareBundleScrubsEveryFieldType(t *testing.T) {
 			t.Errorf("%s = %q, want %q", name, got, w)
 		}
 	}
-	if repo := bundle.Summary.Repository; repo == nil || repo.Path != "app" {
+	if repo := bundle.Summary.Repository; repo != nil && repo.Path != "" {
 		t.Errorf("repository = %+v", repo)
+	}
+	if project := bundle.Summary.Project; project == nil || project.Name != "app" {
+		t.Errorf("project = %+v", project)
 	}
 	// The caller's events are not rewritten.
 	if events[1].Command.Command != "cat /home/dev/.config/app.toml" || events[2].File.Path != "/home/dev/src/app/main.go" ||
@@ -968,5 +978,39 @@ func TestShareEventIDAndBundleLeaveTheCallersTraceAlone(t *testing.T) {
 	}
 	if len(bundle.Spans) != 0 {
 		t.Fatalf("spans = %+v", bundle.Spans)
+	}
+}
+
+func TestShareRelationComesFromTheHandoff(t *testing.T) {
+	plain := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	if related, kind := ShareRelation([]Event{plain}); related != "" || kind != "" {
+		t.Fatalf("relation = %q %q", related, kind)
+	}
+	handoff := shareEventAt("2026-10-01T10:00:01Z", "claude_code", CollectionMethodHook, "session.handoff", "session")
+	handoff.Handoff = &HandoffInfo{SourceHarness: "codex", SourceSessionID: "sess-9"}
+	related, kind := ShareRelation([]Event{plain, handoff})
+	if related != ShareExternalID("codex", "sess-9") || kind != ShareRelationshipHandoff {
+		t.Fatalf("relation = %q %q", related, kind)
+	}
+	trace := ShareTraceV1{RelatedTo: related, RelationshipType: kind}
+	data, _ := json.Marshal(trace)
+	if !strings.Contains(string(data), `"related_to":"codex_cli:sess-9","relationship_type":"handoff"`) {
+		t.Fatalf("wire = %s", data)
+	}
+}
+
+func TestTraceBuilderNamesTheProject(t *testing.T) {
+	event := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	event.Session.WorkingDirectory = "/home/dev/src/app/sub"
+	b := NewTraceBuilder("t", event)
+	b.Add(event, TraceEventFromEvent(event, "e1", 0))
+	if p := b.Summary().Project; p == nil || p.Name != "sub" {
+		t.Fatalf("project = %+v", p)
+	}
+	event.Repository = "/home/dev/src/app"
+	b = NewTraceBuilder("t", event)
+	b.Add(event, TraceEventFromEvent(event, "e1", 0))
+	if p := b.Summary().Project; p == nil || p.Name != "app" {
+		t.Fatalf("project = %+v", p)
 	}
 }

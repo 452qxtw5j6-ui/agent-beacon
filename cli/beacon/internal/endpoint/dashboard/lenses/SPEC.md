@@ -103,7 +103,8 @@ trace view uses. Its main parts:
 
 - `trace.summary`: title, `started_at`/`ended_at`, `event_count`, `harness`
   (`name`, `version`, `collection_methods`), `session`, `repository`,
-  `model`, `token_usage`, and `content.retention`.
+  `project` (`name`: the project directory's name, never a path), `model`,
+  `token_usage`, and `content.retention`.
 - `trace.events[]`, in order. Each event has `id`, `number` (1-based
   position), `timestamp`, `type`, `action`, and optional `category`,
   `fidelity` (`observed` | `inferred`), `actor`, `title`, `summary`,

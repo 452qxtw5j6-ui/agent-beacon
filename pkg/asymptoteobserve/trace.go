@@ -35,6 +35,7 @@ type TraceSummaryV1 struct {
 	Session            *TraceSessionV1       `json:"session,omitempty"`
 	Trace              *TraceIdentityV1      `json:"trace,omitempty"`
 	Repository         *TraceRepositoryV1    `json:"repository,omitempty"`
+	Project            *TraceProjectV1       `json:"project,omitempty"`
 	Namespace          *TraceNamespaceV1     `json:"namespace,omitempty"`
 	Model              *TraceModelV1         `json:"model,omitempty"`
 	TokenUsage         *TraceUsageV1         `json:"token_usage,omitempty"`
@@ -64,6 +65,12 @@ type TraceRepositoryV1 struct {
 	Branch    string `json:"branch,omitempty"`
 	Ref       string `json:"ref,omitempty"`
 	Path      string `json:"path,omitempty"`
+}
+
+// TraceProjectV1 names the project a trace worked in: the name of its directory (the repository's
+// root, or else the session's working directory), never a path.
+type TraceProjectV1 struct {
+	Name string `json:"name,omitempty"`
 }
 
 type TraceNamespaceV1 struct {

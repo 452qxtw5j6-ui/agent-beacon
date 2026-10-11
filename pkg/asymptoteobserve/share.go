@@ -61,6 +61,31 @@ type ShareTraceV1 struct {
 	Title         string            `json:"title,omitempty"`
 	Source        string            `json:"source,omitempty"`
 	Provenance    TraceProvenanceV1 `json:"provenance"`
+	// RelatedTo is the external id of the trace this one continues, and RelationshipType how
+	// (ShareRelationshipHandoff). Both are empty for a trace with no known origin.
+	RelatedTo        string `json:"related_to,omitempty"`
+	RelationshipType string `json:"relationship_type,omitempty"`
+}
+
+// ShareRelationshipHandoff relates a trace to the session it was handed off from: the session's
+// first prompt carried the handoff marker (session.handoff).
+const ShareRelationshipHandoff = "handoff"
+
+// ShareRelation is the trace a session continues, from its first session.handoff event: the source
+// session's ShareExternalID and ShareRelationshipHandoff, or two empty strings. The handoff is the
+// claim the marker made, not a verified identity, which is all related_to asserts.
+func ShareRelation(events []Event) (relatedTo, relationshipType string) {
+	for _, event := range events {
+		if event.Handoff == nil {
+			continue
+		}
+		harness := strings.TrimSpace(event.Handoff.SourceHarness)
+		session := strings.TrimSpace(event.Handoff.SourceSessionID)
+		if harness != "" && session != "" {
+			return ShareExternalID(harness, session), ShareRelationshipHandoff
+		}
+	}
+	return "", ""
 }
 
 // ShareTraceResultV1 is the response of PUT /v1/traces/{external_id}.
@@ -197,8 +222,8 @@ func ShareEventID(event Event) string {
 // once. Each event's ID is ShareEventID, so re-sharing upserts rather than duplicates.
 //
 // The summary is folded from the carried events, as the dashboard folds a trace, with these
-// differences for publication: session.working_directory is dropped, repository.path is the
-// project's directory name rather than a path (never the home directory's name, which is the local
+// differences for publication: session.working_directory and repository.path are dropped,
+// project.name is the project's directory name (never the home directory's name, which is the local
 // account's), and repository.remote_url and ref come from the session's commit links and CI run,
 // with credentials removed (ShareRemoteURL). Token usage is the plain sum of the carried events'
 // usage, as in the local view.
@@ -355,11 +380,17 @@ func shareSummaryForPublication(summary *TraceSummaryV1, events []Event, opts Sh
 	if project == "" {
 		project = shareProjectName(workDir, home)
 	}
+	if project = traceProjectName(project); project != "" {
+		summary.Project = &TraceProjectV1{Name: project}
+	} else {
+		summary.Project = nil
+	}
 	repo := summary.Repository
 	if repo == nil {
 		repo = &TraceRepositoryV1{}
 	}
-	repo.Path = project
+	// A local path, even rewritten, names nothing a reader elsewhere can open.
+	repo.Path = ""
 	repo.Branch = ShareBranch(repo.Branch)
 	if repo.Branch == "" {
 		repo.Branch = branch
