@@ -553,7 +553,8 @@ func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject,
 //
 //  1. BEACON_SESSION_ID (with BEACON_HARNESS), which the Claude Code hook exports to the agent's
 //     shell. Skipped under --cwd, which names another directory, and when --harness names another
-//     runtime (a Codex started from a Claude Code shell inherits Claude's variables). An id that is
+//     runtime (a Codex started from a Claude Code shell inherits Claude's variables), and refused
+//     without --harness when something here contradicts them (shareEnvContradiction). An id that is
 //     set but cannot be found, or set with a missing or unknown BEACON_HARNESS, is an error rather
 //     than a reason to share some other session.
 //  2. The session a Beacon hook last saw in the directory, from the active-session record.
@@ -580,6 +581,14 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 				subject, err := resolveShareID(sources, envHarness, id)
 				if err != nil {
 					return shareSubject{}, fmt.Errorf("%s=%s names this session, but it cannot be read yet: %w", shareSessionEnv, id, err)
+				}
+				// Without --harness the variables are only a claim: a runtime started from a Claude
+				// Code shell (Codex, OpenCode, Cursor) inherits them, and sharing them would publish
+				// the parent's session. Refuse when anything here contradicts them.
+				if harness == "" {
+					if err := shareEnvContradiction(sources, dir, subject); err != nil {
+						return shareSubject{}, err
+					}
 				}
 				subject.selectedBy = "env"
 				return subject, nil
@@ -611,6 +620,44 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 	subject, err := resolveShareLog(candidate.session)
 	subject.selectedBy = "recent"
 	return subject, err
+}
+
+// shareEnvContradiction is the error when the session BEACON_SESSION_ID names may not be the one
+// this command runs inside: it ran in another directory (neither this one nor a parent of it), or
+// another runtime has worked in this directory since that session was last active, which is what an
+// agent started from that session's shell looks like. Refusing is safer than guessing which
+// session to publish; --harness or --session settles it.
+func shareEnvContradiction(sources []handoff.Source, dir string, subject shareSubject) error {
+	session := subject.session
+	advice := "pass --harness <runtime> for the runtime you are in, or --session <id>"
+	if session.Directory != "" && !handoff.DirectoryWithin(dir, session.Directory) {
+		return fmt.Errorf("%s=%s names %s session %s, which ran in %s, not in %s or a directory above it; a runtime started from that session's shell inherits its variables: %s",
+			shareSessionEnv, session.ID, session.Harness, session.ID, session.Directory, dir, advice)
+	}
+	newer := func(harness, id string, at time.Time) error {
+		return fmt.Errorf("%s=%s names %s session %s, but %s session %s worked in %s more recently (%s); a runtime started from a %s shell inherits its variables: %s",
+			shareSessionEnv, session.ID, session.Harness, session.ID, harness, id, dir, at.Local().Format(time.RFC3339), session.Harness, advice)
+	}
+	if entries, err := activesession.Read(shareActiveSessionsPath()); err == nil {
+		now := shareNow()
+		for _, e := range entries {
+			if !handoff.SameDirectory(e.WorkingDirectory, dir) || now.Sub(e.LastSeen) > shareActiveMaxAge {
+				continue
+			}
+			name, err := handoff.ParseHarness(e.Harness)
+			if err != nil || name == session.Harness || !e.LastSeen.After(session.UpdatedAt) {
+				continue
+			}
+			return newer(name, e.SessionID, e.LastSeen)
+		}
+	}
+	candidates, _ := shareCandidateList(sources, "", dir, 0)
+	for _, c := range candidates {
+		if c.session.Harness != session.Harness && c.session.UpdatedAt.After(session.UpdatedAt) {
+			return newer(c.session.Harness, c.session.ID, c.session.UpdatedAt)
+		}
+	}
+	return nil
 }
 
 // shareActiveIsNewest reports whether the active-session entry may stand for this directory's
@@ -680,10 +727,9 @@ func shareActiveSession(dir, harness string) (activesession.Entry, bool) {
 	if err != nil {
 		return activesession.Entry{}, false
 	}
-	dir = activesession.CleanDir(dir)
 	now := shareNow()
 	for _, e := range entries {
-		if e.WorkingDirectory != dir || now.Sub(e.LastSeen) > shareActiveMaxAge {
+		if !handoff.SameDirectory(e.WorkingDirectory, dir) || now.Sub(e.LastSeen) > shareActiveMaxAge {
 			continue
 		}
 		name, err := handoff.ParseHarness(e.Harness)
