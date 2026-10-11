@@ -166,3 +166,40 @@ func TestGitSetupShareSessionsRules(t *testing.T) {
 		t.Fatalf("status:\n%s", out)
 	}
 }
+
+// Called straight from a hook manager (gitlink.HookCall), without Beacon's block to copy and
+// replay stdin, the pre-push hook must leave stdin to the steps after it (`git lfs pre-push`),
+// and still finds the pushed commits from HEAD and the remote's tracking branches.
+func TestGitPrePushWithoutTheBlockLeavesStdinAlone(t *testing.T) {
+	root, remote := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	t.Setenv(gitlink.HookStdinEnv, "")
+
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", "beacon:claude_code/"+shareTestSession, sha)
+	if _, err := runGit(t, "setup", "--cwd", root, "--share-sessions"); err != nil {
+		t.Fatal(err)
+	}
+	stdin := "refs/heads/main " + sha + " refs/heads/main " + old + "\n"
+	reader := strings.NewReader(stdin)
+	rootCmd.SetIn(reader)
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var stderr bytes.Buffer
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil || stderr.Len() != 0 {
+		t.Fatalf("pre-push: %v %q", err, stderr.String())
+	}
+	if reader.Len() != len(stdin) {
+		t.Fatalf("the hook read %d bytes of stdin that the next step needs", len(stdin)-reader.Len())
+	}
+	want := "beacon:claude_code/" + shareTestSession + " https://beacon.sh/s/k3xabc"
+	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
+		t.Fatalf("remote note %q, want the session shared from HEAD", note)
+	}
+}

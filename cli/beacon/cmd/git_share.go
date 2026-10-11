@@ -129,10 +129,18 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 	// A hook has no terminal to ask for credentials on; git's own push has already authenticated,
 	// and a credential helper answers the same way for this one.
 	repo.Git = repo.Git.WithExtraEnv("GIT_TERMINAL_PROMPT=0")
-	// git's stdin (the refs being pushed) is read only when sessions are shared; the hook block
-	// hands Beacon a copy and replays the original to the rest of the repository's hook.
+	// git's stdin (the refs being pushed) is read only when sessions are shared, and only when
+	// Beacon's hook block passed a copy in (it replays the original to the rest of the hook).
+	// Called any other way, stdin belongs to whatever runs after Beacon, so the pushed commits are
+	// worked out from HEAD and the remote's tracking branches instead.
 	if enabled, visibility := gitlink.ShareSessionsConfig(ctx, repo); enabled {
-		if stdin := readHookStdin(cmd.InOrStdin()); stdin != "" {
+		stdin := ""
+		if os.Getenv(gitlink.HookStdinEnv) == "1" {
+			stdin = readHookStdin(cmd.InOrStdin())
+		} else {
+			stdin = gitlink.HeadPushLine(ctx, repo, args[0])
+		}
+		if stdin != "" {
 			// Sharing sessions gets the budget less what pushing the notes ref needs, so the links
 			// (with whatever URLs it recorded) still reach the remote.
 			shareCtx, cancelShare := context.WithTimeout(ctx, gitShareBudget-gitShareNotesReserve)
