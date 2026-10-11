@@ -317,6 +317,13 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 	prevOpts := shareOpts
 	shareOpts = shareOptions{logPath: env.logPath}
 	t.Cleanup(func() { shareOpts = prevOpts })
+	logReads := 0
+	prevLogSessions := gitShareLogSessions
+	gitShareLogSessions = func(logPath string) ([]handoff.Session, error) {
+		logReads++
+		return prevLogSessions(logPath)
+	}
+	t.Cleanup(func() { gitShareLogSessions = prevLogSessions })
 	var uploaded []string
 	prevUpload := gitShareUpload
 	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
@@ -343,6 +350,9 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 	}
 	if len(uploaded) != 1 || uploaded[0] != shareTestSession {
 		t.Fatalf("uploaded %v, want only this machine's session", uploaded)
+	}
+	if logReads != 1 {
+		t.Fatalf("runtime log read %d times for the teammates' links, want once", logReads)
 	}
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); !strings.Contains(note, "beacon:claude_code/"+shareTestSession+" https://beacon.sh/s/mine01") {
 		t.Fatalf("note %q lacks the URL", note)
