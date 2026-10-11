@@ -682,3 +682,33 @@ func TestShareReadsTheLogWhenTheStoreCannotBeRead(t *testing.T) {
 		t.Fatalf("--session err = %v, want the store's permission error", err)
 	}
 }
+
+func TestShareRefusesAnAmbiguousPrefix(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	twin := shareTestSession[:8] + "-ffff-4fff-8fff-000000000002"
+	stubHandoffSources(t, stubHandoffSource{
+		harness: handoff.HarnessClaude,
+		sessions: []handoff.Session{
+			{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+			{Harness: handoff.HarnessClaude, ID: twin, Directory: env.projectDir, UpdatedAt: time.Now()},
+		},
+		events: shareFixtureEvents(env.projectDir),
+	})
+	// Only one of the two is in the runtime log.
+	shareFixtureInLog(t, env)
+	for _, args := range [][]string{
+		{"--session", shareTestSession[:8]},
+		{"refresh", shareTestSession[:8]},
+	} {
+		_, _, err := runShareCommand(t, append(args, "--log-path", env.logPath)...)
+		var ambiguous *handoff.AmbiguousError
+		if !errors.As(err, &ambiguous) {
+			t.Fatalf("share %v: err = %v, want the ambiguity", args, err)
+		}
+	}
+	if len(srv.requests) != 0 {
+		t.Fatalf("requests = %v", srv.requests)
+	}
+}
