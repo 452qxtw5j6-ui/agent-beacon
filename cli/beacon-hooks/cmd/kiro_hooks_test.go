@@ -98,8 +98,8 @@ func TestKiroEnvelopeResolvesThroughTheSharedReaders(t *testing.T) {
 
 // The property this whole suppression exists for. On Kiro a hook's stdout is not a response
 // object: on exit 0 it is *added to the agent's context* for SessionStart and UserPromptSubmit and
-// ignored everywhere else. Beacon's shared commands all finish by writing `{}` or
-// `{"permission":"allow"}`, so without the suppression an observing hook would be pasting text in
+// ignored everywhere else. Beacon's shared commands all finish by writing a JSON
+// object such as `{}`, so without the suppression an observing hook would be pasting text in
 // front of the model at the start of every session and before every prompt.
 func TestKiroHooksWriteNothingToStdout(t *testing.T) {
 	for _, tc := range []struct {

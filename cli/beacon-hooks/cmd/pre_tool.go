@@ -27,13 +27,16 @@ func init() {
 	rootCmd.AddCommand(preToolCmd)
 }
 
-// allowResponse is the standard allow response for preToolUse.
-var allowResponse = map[string]interface{}{"permission": "allow"}
+// cursorPreToolResponse is Cursor's answer to an observed pre-tool event. Cursor and goose are the
+// only runtimes an observing pre-tool hook answers with an allow, because on both it is the only
+// answer that lets a call proceed and neither reads it as a pre-approval; see preToolResponse and
+// gooseBlockingEventResponse.
+var cursorPreToolResponse = map[string]interface{}{"permission": "allow"}
 
 func runPreTool(cmd *cobra.Command, args []string) {
 	input, err := readStdinJSON()
 	if err != nil {
-		outputJSON(preToolResponse())
+		writePreToolResponse()
 		return
 	}
 
@@ -104,7 +107,15 @@ func runPreTool(cmd *cobra.Command, args []string) {
 	} else {
 		emitPreToolDecision(logger, input, sessionID, "approval.allowed", "allow", "Pre-tool observed", asymptoteobserve.FidelityInferred)
 	}
-	outputJSON(preToolResponse())
+	writePreToolResponse()
+}
+
+// writePreToolResponse writes preToolResponse, or nothing at all when the runtime's no-opinion
+// answer is silence.
+func writePreToolResponse() {
+	if response := preToolResponse(); response != nil {
+		outputJSON(response)
+	}
 }
 
 func emitCursorPreHook(logger *logging.Logger, input map[string]interface{}, sessionID string) bool {
@@ -159,10 +170,48 @@ func emitPreToolDecision(logger *logging.Logger, input map[string]interface{}, s
 	emitHookEventWithFidelity(logger, action, "approval", "info", reason, fidelity, input, fields)
 }
 
+// preToolResponse is what an observing pre-tool hook tells the runtime: it must leave the tool call
+// exactly where the runtime's own permission flow would put it. A nil return means write nothing.
+//
+// The rule every branch below follows is that a telemetry hook never answers "allow" where the
+// runtime reads that as a pre-approval, because an observing hook that approved would silently
+// disarm the user's own confirmation prompts for every tool call. A provider deny from the policy
+// seam is not this function's business; policyDenyFor answers that in each runtime's deny shape.
 func preToolResponse() map[string]interface{} {
-	if platformFlag == "antigravity" || platformFlag == "grok" {
-		return map[string]interface{}{"decision": "allow"}
+	// Antigravity gets no output at all. Its documented PreToolUse contract
+	// (https://antigravity.google/docs/hooks/) makes `decision` a required field, and its values
+	// are all opinions: "allow" "automatically allows the tool execution", which is exactly the
+	// bypass this function exists to avoid; "ask" prompts for every call, which would add prompts
+	// the user never configured; and an object with no decision -- `{}` -- is read as a deny with
+	// no reason, which would block every tool call (reported by integrators, e.g.
+	// spacesheep-dev/sessionpipe#50). A hook that prints nothing leaves the call to Antigravity's
+	// own permission settings; PrismorSec/prismor#603 checked that live and prints nothing for the
+	// calls it lets through for the same reason. Silence is therefore the only no-opinion answer
+	// this runtime has.
+	if platformFlag == "antigravity" {
+		return nil
 	}
+	// Cursor answers allow, because it has no other answer that lets a call proceed. Its hooks reference (https://cursor.com/docs/agent/hooks)
+	// does not mark `permission` optional on preToolUse, beforeShellExecution or beforeReadFile,
+	// says a response that "doesn't match the hook's schema blocks the action", and lists "no
+	// output" among the failures that let an action through, so `{}` risks blocking every call
+	// and silence is read the same as allow. "ask" is not an alternative: beforeReadFile does not
+	// accept it, and on the cloud agent's beforeShellExecution there is no person to answer it.
+	// What makes allow an observing answer here is that Cursor does not treat it as a
+	// pre-approval: Cursor staff confirmed on the forum (topics 144244 and 161342, the latter
+	// May 2026) that only a hook's "deny" is enforced, and that "allow" does not override the
+	// user's allowlist or approval mode -- a command the allowlist would prompt for still prompts.
+	// If Cursor ever makes hook verdicts authoritative, this branch must be revisited:
+	// TestPreToolResponseAllowsOnlyWhereAllowIsNotAPreApproval exists to make that a one-line decision.
+	if platformFlag == "cursor" {
+		return cursorPreToolResponse
+	}
+	// Grok Build reads a top-level `decision` and treats a response without one as no objection,
+	// passing the call to Grok's own permission gate; exit 0 is success and only "deny"/"block" or
+	// exit 2 stops a call (agenticcontrolplane.com/integrations/grok-build; gartnera/lite-sandbox#69
+	// notes a hook "allow" does not skip Grok's approval prompt today). `{}` carries no decision,
+	// so it asserts nothing about the call -- unlike "allow", which would start approving on the
+	// user's behalf the day Grok honors it.
 	// Qwen Code belongs with claude here, and the reason is a security property rather than a
 	// convention. Qwen's PreToolUse contract reads a decision from
 	// `hookSpecificOutput.permissionDecision`, where "allow" means *run the tool without the usual
@@ -204,10 +253,14 @@ func preToolResponse() map[string]interface{} {
 	// runtime appends a hook's stdout to the model's context. The empty object is still the right
 	// value to hand back -- Kimi Code's decoder reads an object with no `permissionDecision` as no
 	// opinion, so it is what the suppression would fall back to if that ever changed.
-	if platformFlag == "claude" || platformFlag == "qwen" || isDevinLikePlatform(platformFlag) || platformFlag == "hermes" || platformFlag == "vscode" || platformFlag == "muse" || platformFlag == openHandsPlatform || platformFlag == kiroPlatform || platformFlag == dshPlatform || platformFlag == kimiPlatform {
-		return emptyResponse
-	}
-	return allowResponse
+	//
+	// Every other runtime gets the empty object as well, and that includes the ones that reach
+	// pre-tool with no installer writing the hook (Codex CLI, GitHub Copilot CLI, Factory Droid,
+	// Cline, a hand-written config). Those runtimes read their own decision keys --
+	// `hookSpecificOutput.permissionDecision` on the Claude-shaped ones, where "allow" is a
+	// pre-approval -- and a default that answered allow would be one key rename away from the Qwen
+	// bypass. No decision is the safe default; a runtime that needs more must be named above.
+	return emptyResponse
 }
 
 func emitPreToolObserved(logger *logging.Logger, input map[string]interface{}, sessionID string) {
