@@ -213,7 +213,7 @@ func installHook(dir, hook, beaconPath string) (HookReport, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return report, err
 	}
-	block := hookBlock(scriptName)
+	block := hookBlock(hook)
 	var next string
 	switch {
 	case os.IsNotExist(err) || strings.TrimSpace(string(existing)) == "":
@@ -291,12 +291,64 @@ func checkHookEditable(path string) error {
 	return nil
 }
 
-func hookBlock(scriptName string) string {
+func hookBlock(hook string) string {
+	scriptName := HookScriptPrefix + hook
+	if !hookReadsStdin(hook) {
+		return hookBlockStart + "\n" +
+			`if [ -x "$(git rev-parse --git-path hooks)/` + scriptName + `" ]; then` + "\n" +
+			`  "$(git rev-parse --git-path hooks)/` + scriptName + `" "$@"` + "\n" +
+			"fi\n" +
+			hookBlockEnd + "\n"
+	}
+	// git writes this hook's input to stdin once, and the rest of the hook (`git lfs pre-push`, a
+	// hook manager) needs it as much as Beacon does. The block copies it to a temporary file, gives
+	// Beacon the copy, and points the hook's own stdin at the file before the rest runs. The file
+	// is unlinked once it is open; the descriptor keeps it readable. When it cannot be copied,
+	// Beacon gets nothing and stdin is left alone.
+	feed := `    "$beacon_hook" "$@" <"$beacon_stdin"` + "\n"
+	if hook == ShareHook {
+		// The refs being pushed matter to Beacon only when it shares sessions on push.
+		feed = `    if [ "$(git config --local --get ` + ShareSessionsKey + ` 2>/dev/null)" = "true" ]; then` + "\n" +
+			`      "$beacon_hook" "$@" <"$beacon_stdin"` + "\n" +
+			"    else\n" +
+			`      "$beacon_hook" "$@" </dev/null` + "\n" +
+			"    fi\n"
+	}
 	return hookBlockStart + "\n" +
-		`if [ -x "$(git rev-parse --git-path hooks)/` + scriptName + `" ]; then` + "\n" +
-		`  "$(git rev-parse --git-path hooks)/` + scriptName + `" "$@"` + "\n" +
+		`beacon_hook="$(git rev-parse --git-path hooks)/` + scriptName + `"` + "\n" +
+		`if [ -x "$beacon_hook" ]; then` + "\n" +
+		`  beacon_stdin="$(mktemp "${TMPDIR:-/tmp}/beacon-hook.XXXXXX" 2>/dev/null)" || beacon_stdin=""` + "\n" +
+		`  if [ -n "$beacon_stdin" ]; then` + "\n" +
+		`    trap 'rm -f "$beacon_stdin"' EXIT` + "\n" +
+		`    cat >"$beacon_stdin" || :` + "\n" +
+		feed +
+		`    exec 0<"$beacon_stdin"` + "\n" +
+		`    rm -f "$beacon_stdin"` + "\n" +
+		"    trap - EXIT\n" +
+		"  else\n" +
+		`    "$beacon_hook" "$@" </dev/null` + "\n" +
+		"  fi\n" +
 		"fi\n" +
+		"unset beacon_hook beacon_stdin\n" +
 		hookBlockEnd + "\n"
+}
+
+// hookReadsStdin is true for the hooks git gives input on stdin: post-rewrite (the rewritten
+// commits) and pre-push (the refs being pushed).
+func hookReadsStdin(hook string) bool { return hook == "post-rewrite" || hook == ShareHook }
+
+// blockOutdated is true when script carries a Beacon block other than the one this version
+// writes, which `beacon git setup` refreshes.
+func blockOutdated(script, hook string) bool {
+	start := strings.Index(script, hookBlockStart)
+	if start < 0 {
+		return false
+	}
+	end := strings.Index(script[start:], hookBlockEnd)
+	if end < 0 {
+		return true
+	}
+	return script[start:start+end+len(hookBlockEnd)]+"\n" != hookBlock(hook)
 }
 
 // HookCall is the line to put in a hook Beacon cannot edit (a hook manager's, or one written in
@@ -452,6 +504,8 @@ type HookState struct {
 	Installed    bool `json:"installed"`
 	BlockPresent bool `json:"block_present"`
 	ScriptExists bool `json:"script_exists"`
+	// Outdated is true when the hook carries a block an earlier Beacon wrote; setup refreshes it.
+	Outdated bool `json:"outdated,omitempty"`
 }
 
 // Status is the state of Beacon's git integration in one repository.
@@ -495,6 +549,7 @@ func HookStatus(ctx context.Context, repo Repo) (Status, error) {
 		st := HookState{Hook: hook}
 		if data, err := os.ReadFile(filepath.Join(loc.Dir, hook)); err == nil {
 			st.BlockPresent = strings.Contains(string(data), hookBlockStart)
+			st.Outdated = blockOutdated(string(data), hook)
 		}
 		if _, err := os.Stat(filepath.Join(loc.Dir, HookScriptPrefix+hook)); err == nil {
 			st.ScriptExists = true

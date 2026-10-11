@@ -21,6 +21,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -145,11 +146,13 @@ func (s Settings) anyEnabled() bool {
 	return false
 }
 
-// Project returns the user's entry for dir.
+// Project returns the user's entry for dir. Paths are compared the way the filesystem names them
+// (see pathKey), so an entry written with a symlink, another case on Windows, or a short 8.3 name
+// still matches.
 func (s Settings) Project(dir string) (Project, bool) {
-	dir = filepath.Clean(dir)
+	key := pathKey(dir)
 	for _, p := range s.Projects {
-		if filepath.Clean(p.Path) == dir {
+		if pathKey(p.Path) == key {
 			return p, true
 		}
 	}
@@ -162,9 +165,17 @@ func (s Settings) Project(dir string) (Project, bool) {
 func Resolve(s Settings, workDir string) Decision {
 	var d Decision
 	dir := filepath.Clean(workDir)
-	if workDir != "" && filepath.IsAbs(dir) {
+	if workDir != "" && rooted(dir) {
+		projects := make(map[string]Project, len(s.Projects))
+		for _, p := range s.Projects {
+			if k := pathKey(p.Path); k != "" {
+				if _, dup := projects[k]; !dup {
+					projects[k] = p
+				}
+			}
+		}
 		for i := 0; i < maxWalk; i++ {
-			if p, ok := s.Project(dir); ok {
+			if p, ok := projects[pathKey(dir)]; ok {
 				return Decision{Enabled: p.Enabled, Visibility: p.Visibility, Source: "project", Project: dir}
 			}
 			if m, ok := LoadMarker(dir); ok {
@@ -186,6 +197,40 @@ func Resolve(s Settings, workDir string) Decision {
 		d.Enabled, d.Visibility, d.Source = true, s.Auto.Visibility, "user"
 	}
 	return d
+}
+
+// SamePath reports whether a and b name the same directory, compared as Project and Resolve
+// compare them.
+func SamePath(a, b string) bool {
+	ka := pathKey(a)
+	return ka != "" && ka == pathKey(b)
+}
+
+// rooted is true for a path that names a directory from the top of a filesystem. On Windows that
+// includes a path rooted on the current drive (`\work\project`, `/work/project`), which a runtime
+// may report without a drive letter.
+func rooted(p string) bool {
+	if filepath.IsAbs(p) {
+		return true
+	}
+	return runtime.GOOS == "windows" && (strings.HasPrefix(p, `\`) || strings.HasPrefix(p, "/"))
+}
+
+// pathKey is the form two paths are compared in: cleaned, with symlinks resolved when the path
+// exists (which on Windows also expands 8.3 short names and normalizes the drive letter), and on
+// Windows case-folded, because its filesystems ignore case.
+func pathKey(p string) string {
+	if strings.TrimSpace(p) == "" {
+		return ""
+	}
+	p = filepath.Clean(p)
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	}
+	if runtime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p
 }
 
 // ForHook is Resolve for the hook path: it reads the user file and returns a disabled decision at

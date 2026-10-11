@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // team is a bare remote with two clones of it, alice and bob, sharing a first commit.
@@ -355,5 +356,31 @@ func TestPlainSetupIgnoresALeftoverShareScriptBesideAForeignPrePush(t *testing.T
 	var foreign *ForeignHookError
 	if _, err := InstallHooks(ctx, bob, InstallOptions{BeaconPath: bin, ShareNotes: &on}); !errors.As(err, &foreign) || foreign.Hook != ShareHook {
 		t.Fatalf("explicit share: %v", err)
+	}
+}
+
+// A force push over commits this clone never fetched names a remote sha that is not here; the
+// pushed commits are then the ones not already on any of the remote's tracking branches.
+func TestPushedCommitsForcePushOverUnfetchedRemoteTip(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	tm.alice.write("f", "alice")
+	unfetched := tm.alice.commitAt("alice", t0.Add(time.Minute))
+	tm.alice.git("push", "-q", "origin", "main")
+
+	tm.bob.git("config", "commit.gpgsign", "false")
+	tm.bob.write("f", "bob")
+	mine := tm.bob.commitAt("bob", t0.Add(2*time.Minute))
+	bob := tm.bob.open()
+	if _, err := bob.Git.Run(ctx, nil, "cat-file", "-e", unfetched+"^{commit}"); err == nil {
+		t.Fatal("bob should not have alice's commit")
+	}
+	stdin := "refs/heads/main " + mine + " refs/heads/main " + unfetched + "\n"
+	got, err := PushedCommits(ctx, bob, "origin", stdin, 0)
+	if err != nil {
+		t.Fatalf("PushedCommits: %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{mine}) {
+		t.Fatalf("pushed %v, want [%s]", got, mine)
 	}
 }

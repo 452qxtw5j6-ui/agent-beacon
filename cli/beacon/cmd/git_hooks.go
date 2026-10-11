@@ -248,6 +248,8 @@ func runGitStatus(cmd *cobra.Command, _ []string) error {
 	for _, st := range status.States {
 		state := "not installed"
 		switch {
+		case st.Installed && st.Outdated:
+			state = "installed, from an earlier Beacon (run `beacon git setup` to update it)"
 		case st.Installed:
 			state = "installed"
 		case st.BlockPresent:
