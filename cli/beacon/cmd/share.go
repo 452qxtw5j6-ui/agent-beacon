@@ -232,6 +232,16 @@ func runShare(cmd *cobra.Command) error {
 		fmt.Fprintf(errOut, "Sharing %s session %s (%d messages)%s.\n", subject.session.Harness, subject.session.ID, len(payload.Messages), shareSourceNote(subject))
 	}
 	ctx := commandContext(cmd)
+	if state, found, err := client.GetTrace(ctx, payload.ExternalID); err != nil {
+		return err
+	} else if found {
+		if subject, payload, err = alignShareSource(subject, payload, state); err != nil {
+			return err
+		}
+		if cmd.Flags().Changed("visibility") {
+			payload.Trace.Visibility = shareOpts.visibility
+		}
+	}
 	trace, err := client.PutTrace(ctx, payload.ExternalID, payload.Trace)
 	if err != nil {
 		return err
@@ -302,6 +312,9 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 	if !found {
 		return fmt.Errorf("%s is not shared yet: run `beacon share --session %s` first", payload.ExternalID, subject.session.ID)
 	}
+	if subject, payload, err = alignShareSource(subject, payload, state); err != nil {
+		return err
+	}
 	pending := messagesAfter(payload.Messages, state.LastMessageID, state.MaxOrder)
 	trace, err := client.PutTrace(ctx, payload.ExternalID, payload.Trace)
 	if err != nil {
@@ -331,9 +344,9 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 }
 
 // messagesAfter returns the messages after the one beacon.sh reported last. With no last id it goes
-// by the order number. When the last id is not in this projection (the session was shared from
-// another source, or its earlier messages changed), it returns everything: an upsert of what the
-// server already has changes nothing.
+// by the order number. When the last id is not in this projection it returns everything; callers
+// run alignShareSource first, so that happens only for a projection from the same source whose
+// earlier messages changed, where an upsert by id changes nothing.
 func messagesAfter(messages []asymptoteobserve.ShareMessageV1, lastID string, maxOrder int) []asymptoteobserve.ShareMessageV1 {
 	end := -1
 	if lastID != "" {
@@ -439,6 +452,38 @@ func shareDirectory() (string, error) {
 		return "", fmt.Errorf("resolve --cwd %s: %w", dir, err)
 	}
 	return abs, nil
+}
+
+// alignShareSource keeps a re-share or refresh on the source the trace was first built from. Message
+// ids come from event ids, and the same session read from its runtime's store and from Beacon's
+// runtime log has different event ids, so uploading the other source would add a second copy of
+// every message. When the server's last message is not in this projection, the other source is
+// tried; when neither has it, the upload is refused rather than duplicated.
+func alignShareSource(subject shareSubject, payload sharePayload, state *asymptoteobserve.ShareTraceStateV1) (shareSubject, sharePayload, error) {
+	if state == nil || state.LastMessageID == "" || hasShareMessage(payload.Messages, state.LastMessageID) {
+		return subject, payload, nil
+	}
+	var other shareSubject
+	if subject.fromLog {
+		other = shareSubject{session: subject.session}
+	} else if logSubject, err := resolveShareLog(subject.session); err == nil {
+		other = logSubject
+	}
+	if other.session.ID != "" {
+		if otherPayload, err := buildSharePayload(other); err == nil && hasShareMessage(otherPayload.Messages, state.LastMessageID) {
+			return other, otherPayload, nil
+		}
+	}
+	return subject, payload, fmt.Errorf("%s on beacon.sh was built from a different copy of this session than Beacon can read now (its store and the runtime log name messages differently), so uploading it would duplicate every message; delete the shared trace and share it again to start over", payload.ExternalID)
+}
+
+func hasShareMessage(messages []asymptoteobserve.ShareMessageV1, id string) bool {
+	for _, m := range messages {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // shareSubject is a session to share and, when it came from the runtime log, its events.

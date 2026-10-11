@@ -503,3 +503,35 @@ func TestShareLeavesALocalGitRemoteOut(t *testing.T) {
 		t.Fatalf("network remote: err=%v\n%s", err, stdout)
 	}
 }
+
+func TestShareRefreshRefusesToDuplicateFromAnotherSource(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+
+	// The store loses the session (its transcript was deleted); the runtime log still has it, as
+	// hook events whose ids differ from the store's.
+	stubHandoffSources(t, stubHandoffSource{
+		harness: handoff.HarnessClaude,
+		sessions: []handoff.Session{{
+			Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now(),
+		}},
+		eventsErr: handoff.ErrNotFound,
+	})
+	for _, event := range shareFixtureEvents(env.projectDir) {
+		event.Harness.CollectionMethod = schema.CollectionMethodHook
+		if _, err := writer.AppendEvent(event, writer.Options{Path: env.logPath, UserMode: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, _, err := runShareCommand(t, "refresh", "claude_code:"+shareTestSession, "--log-path", env.logPath)
+	if err == nil || !strings.Contains(err.Error(), "duplicate every message") {
+		t.Fatalf("refresh err = %v", err)
+	}
+	if len(srv.messages) != 4 {
+		t.Fatalf("server holds %d messages after a refused refresh", len(srv.messages))
+	}
+}
