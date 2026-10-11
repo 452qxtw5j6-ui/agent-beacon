@@ -264,6 +264,9 @@ func TestRedactStringTakesWholeValues(t *testing.T) {
 		{"quoted with spaces", `secret: "correct horse, battery staple"`, `secret: "[REDACTED]"`},
 		{"single quoted symbols", `password='p]a}s\\s'`, `password='[REDACTED]'`},
 		{"escaped json", `{\"token\": \"a]b}c d\"}`, `{\"token\": \"[REDACTED]\"}`},
+		{"quoted flag", `docker login --password "hunter2 hunter2" registry`, `docker login --password "[REDACTED]" registry`},
+		{"single quoted flag", `mysql --password 'p@ss' db`, `mysql --password '[REDACTED]' db`},
+		{"quoted flag with equals", `tool --token="opaque-value" run`, `tool --token="[REDACTED]" run`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

@@ -46,6 +46,10 @@ const redactUnquoted = `(?:[^"'` + "`" + `,\s\\]|\\[^"'` + "`" + `])[^"'` + "`" 
 // structure around it.
 const redactBare = `[^"'` + "`" + `\\\s,{}\[\]][^"'` + "`" + `\\\s,{}\[\]]*`
 
+// redactFlag is a command-line flag named for a secret and its separator: `--password `,
+// `--token=`, `-api-key `.
+const redactFlag = `(?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+)`
+
 // redactionRule is one redaction. ${1} and ${3}, when the pattern has them, are kept around the
 // value.
 type redactionRule struct {
@@ -100,8 +104,10 @@ var redactionRules = []redactionRule{
 	// and nested objects or arrays are left for their own fields' rules.
 	{regexp.MustCompile(`(?i)(\b` + redactLabel + `(?P<q>` + redactOpenQuote + `)\s*[:=]\s*)(?P<value>` + redactBare + `)`), "${1}${q}" + redactedValue + "${q}", isLiteralOrAuthScheme},
 	{regexp.MustCompile(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`), "${1}" + redactedValue, isAuthScheme},
-	// A command-line flag: `--password x`, `--token=x`, `--api-key x`.
-	{regexp.MustCompile(`(?i)((?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+))([^\s"'-][^\s"']*)()`), "${1}" + redactedValue, nil},
+	// A command-line flag: `--password x`, `--token=x`, `--api-key x`, and quoted, the way agents
+	// usually write arguments: `--password "x y"`, `--token='x'`.
+	{regexp.MustCompile(`(?i)(` + redactFlag + redactOpenQuote + `)(` + redactQuoted + `)`), "${1}" + redactedValue, nil},
+	{regexp.MustCompile(`(?i)(` + redactFlag + `)([^\s"'-][^\s"']*)`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
 	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}", nil},
 	// Credentials recognizable by their own shape, wherever they appear. The type prefix is public
