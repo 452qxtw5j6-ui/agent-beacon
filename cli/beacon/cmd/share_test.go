@@ -365,7 +365,8 @@ func TestShareUploadsAndRecordsTheShareLocally(t *testing.T) {
 		t.Fatalf("re-share duplicated messages: %d", len(srv.messages))
 	}
 
-	// A refresh sends only what the server does not have.
+	// A refresh sends what the server does not have, plus the call it holds without a result
+	// (the prompt and the Bash call are on the server; the call is re-sent with its result).
 	srv.mu.Lock()
 	srv.messages = srv.messages[:2]
 	srv.mu.Unlock()
@@ -373,7 +374,7 @@ func TestShareUploadsAndRecordsTheShareLocally(t *testing.T) {
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || result.Data.Uploaded != 2 || result.Data.MessageCount != 4 {
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil || result.Data.Uploaded != 3 || result.Data.MessageCount != 4 {
 		t.Fatalf("refresh result = %s (err %v)", stdout, err)
 	}
 }
@@ -457,8 +458,23 @@ func TestShareRefreshParsesExternalIDs(t *testing.T) {
 			t.Errorf("parseShareExternalID(%q) = %q %q %v, want %+v", in, h, s, ok, want)
 		}
 	}
-	if got := messagesAfter([]asymptoteobserve.ShareMessageV1{{ID: "a"}, {ID: "b"}, {ID: "c"}}, "b", 2); len(got) != 1 || got[0].ID != "c" {
-		t.Fatalf("messagesAfter = %+v", got)
+	if got := messagesAfter([]asymptoteobserve.ShareMessageV1{{ID: "a"}, {ID: "b"}, {ID: "c"}}, "b", 2); len(got) != 2 || got[0].ID != "b" {
+		t.Fatalf("messagesAfter should resend the last uploaded message: %+v", got)
+	}
+	// A call uploaded before its result arrived is re-sent so the completion's command and diff
+	// reach the server.
+	call := func(id, callID string) asymptoteobserve.ShareMessageV1 {
+		return asymptoteobserve.ShareMessageV1{ID: id, Parts: []asymptoteobserve.SharePartV1{{Type: asymptoteobserve.SharePartToolCall, Content: &asymptoteobserve.ShareToolCallContent{CallID: callID}}}}
+	}
+	result := func(id, callID string) asymptoteobserve.ShareMessageV1 {
+		return asymptoteobserve.ShareMessageV1{ID: id, Parts: []asymptoteobserve.SharePartV1{{Type: asymptoteobserve.SharePartToolResult, Content: &asymptoteobserve.ShareToolResultContent{CallID: callID}}}}
+	}
+	msgs := []asymptoteobserve.ShareMessageV1{call("c1", "t1"), result("r1", "t1"), call("c2", "t2"), {ID: "text"}, result("r2", "t2"), {ID: "later"}}
+	if got := messagesAfter(msgs, "text", 0); len(got) != 4 || got[0].ID != "c2" {
+		t.Fatalf("open call not re-sent: %+v", got)
+	}
+	if got := messagesAfter(msgs, "r2", 0); len(got) != 2 || got[0].ID != "r2" {
+		t.Fatalf("resolved calls should not be re-sent: %+v", got)
 	}
 	if got := messagesAfter([]asymptoteobserve.ShareMessageV1{{ID: "a"}, {ID: "b"}}, "zzz", 9); len(got) != 2 {
 		t.Fatalf("unknown last id should resend everything: %+v", got)

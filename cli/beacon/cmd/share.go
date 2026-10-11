@@ -335,17 +335,47 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 // another source, or its earlier messages changed), it returns everything: an upsert of what the
 // server already has changes nothing.
 func messagesAfter(messages []asymptoteobserve.ShareMessageV1, lastID string, maxOrder int) []asymptoteobserve.ShareMessageV1 {
+	end := -1
 	if lastID != "" {
 		for i, m := range messages {
 			if m.ID == lastID {
-				return messages[i+1:]
+				end = i
+				break
+			}
+		}
+		if end < 0 {
+			return messages
+		}
+	} else if maxOrder > 0 && maxOrder <= len(messages) {
+		end = maxOrder - 1
+	} else {
+		return messages
+	}
+	// A tool call gains its command, diff or path when its completion arrives, which updates the
+	// call message in place. Re-send from the earliest call the server holds without its result,
+	// and always the last message it holds; the server upserts by id, so a re-send is harmless.
+	return messages[firstOpenCall(messages[:end+1], end):]
+}
+
+// firstOpenCall is the index of the earliest tool_call in uploaded that has no tool_result among
+// them, or fallback when every call is resolved.
+func firstOpenCall(uploaded []asymptoteobserve.ShareMessageV1, fallback int) int {
+	resolved := map[string]bool{}
+	for _, m := range uploaded {
+		for _, part := range m.Parts {
+			if result, ok := part.Content.(*asymptoteobserve.ShareToolResultContent); ok && result.CallID != "" {
+				resolved[result.CallID] = true
 			}
 		}
 	}
-	if maxOrder > 0 && maxOrder <= len(messages) && lastID == "" {
-		return messages[maxOrder:]
+	for i, m := range uploaded {
+		for _, part := range m.Parts {
+			if call, ok := part.Content.(*asymptoteobserve.ShareToolCallContent); ok && call.CallID != "" && !resolved[call.CallID] {
+				return i
+			}
+		}
 	}
-	return messages
+	return fallback
 }
 
 func validateShareFlags(cmd *cobra.Command) error {

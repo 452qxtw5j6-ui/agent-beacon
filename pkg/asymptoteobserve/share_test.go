@@ -2,6 +2,7 @@ package asymptoteobserve
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -490,6 +491,8 @@ func TestPathScrubberReplacesWholePathsOnly(t *testing.T) {
 		"/srv/home/al/x":                "/srv/home/al/x",
 		"open /home/al, then /home/al.": "open ~, then ~.",
 		"/home/al/src/proj/x":           "~/src/proj/x",
+		"file:///home/al/notes.txt":     "file://~/notes.txt",
+		"file:///home/alex/notes.txt":   "file:///home/alex/notes.txt",
 	}
 	for in, want := range cases {
 		if got := s.text(in); got != want {
@@ -528,5 +531,53 @@ func TestShareMetadataUsesExplicitHomeWithoutLookup(t *testing.T) {
 	meta := ShareMetadataFromEventsWithOptions([]Event{prompt}, ShareOptions{HomeDirectory: "/home/al", NoHomeLookup: true})
 	if meta.Title != "look at ~/secret" {
 		t.Fatalf("title = %q", meta.Title)
+	}
+}
+
+func TestBuildShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) {
+	// The hook adapter labels a PostToolUse for tools without a more specific action (WebFetch,
+	// Grep, Task, ...) tool.invoked, carrying the result. With a PreToolUse tool.invoked for the
+	// same call (Kimi Code, Muse Code) it must still produce a result.
+	pre := shareEventAt("2026-10-01T10:00:00Z", "kimi_code", CollectionMethodHook, "tool.invoked", "tool")
+	pre.Event.ID = "k-pre"
+	pre = withCall(pre, "call_1", "WebFetch", map[string]interface{}{"url": "https://example.com"}, nil)
+	post := shareEventAt("2026-10-01T10:00:01Z", "kimi_code", CollectionMethodHook, "tool.invoked", "tool")
+	post.Event.ID = "k-post"
+	post = withCall(post, "call_1", "WebFetch", nil, "page body")
+	// Alone (Claude: PreToolUse becomes an approval), the post event still yields a call and result.
+	lone := shareEventAt("2026-10-01T10:00:02Z", "claude_code", CollectionMethodHook, "tool.invoked", "tool")
+	lone.Event.ID = "c-post"
+	lone = withCall(lone, "toolu_9", "Grep", map[string]interface{}{"pattern": "x"}, "3 matches")
+
+	messages := BuildShareMessagesWithOptions([]Event{pre, post, lone}, shareTestOpts)
+	want := "assistant/tool_call,assistant/tool_result,assistant/tool_call,assistant/tool_result"
+	if got := partsOf(t, messages); strings.Join(got, ",") != want {
+		t.Fatalf("parts = %v", got)
+	}
+	result := messages[1].Parts[0].Content.(*ShareToolResultContent)
+	if result.CallID != "call_1" || !strings.Contains(fmt.Sprint(result.Output), "page body") {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
+	// Claude Code logs each prompt from the UserPromptSubmit hook and from the OTLP export, with
+	// different event ids and the same prompt.id. The export copy may carry no text.
+	otlp := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodOTLP, "prompt.submitted", "prompt")
+	otlp.Event.ID = "p-otlp"
+	otlp.Prompt = &PromptInfo{ID: "prompt-1"}
+	hook := shareEventAt("2026-10-01T10:00:00.5Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	hook.Event.ID = "p-hook"
+	hook.Prompt = &PromptInfo{ID: "prompt-1", Text: "fix the test"}
+	next := shareEventAt("2026-10-01T10:01:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	next.Event.ID = "p-next"
+	next.Prompt = &PromptInfo{ID: "prompt-2", Text: "fix the test"}
+
+	messages := BuildShareMessagesWithOptions([]Event{otlp, hook, next}, shareTestOpts)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2: %+v", len(messages), messages)
+	}
+	if messages[0].Text != "fix the test" || messages[0].ID != "p-otlp" {
+		t.Fatalf("first prompt = %+v", messages[0])
 	}
 }
