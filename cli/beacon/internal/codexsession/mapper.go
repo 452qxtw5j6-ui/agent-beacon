@@ -32,15 +32,17 @@ type codexToolCall struct {
 }
 
 type mapper struct {
-	ref       SessionRef
-	opts      MapOptions
-	out       []MappedEvent
-	tools     map[string]codexToolCall
-	sessionID string
-	workspace string
-	model     string
-	turnID    string
-	started   bool
+	ref        SessionRef
+	opts       MapOptions
+	out        []MappedEvent
+	tools      map[string]codexToolCall
+	sessionID  string
+	workspace  string
+	model      string
+	turnID     string
+	started    bool
+	harness    string
+	turnTotals map[string]TokenUsage
 
 	tokenRecordTurns map[string]bool
 	// lastSessionTotal remembers the last cumulative total_token_usage seen
@@ -63,6 +65,8 @@ func MapSession(ref SessionRef, records []Record, opts MapOptions) []MappedEvent
 		tools:            map[string]codexToolCall{},
 		sessionID:        ref.ID,
 		workspace:        ref.Workspace,
+		harness:          Harness,
+		turnTotals:       map[string]TokenUsage{},
 		tokenRecordTurns: tokenRecordTurns,
 	}
 	for i := range records {
@@ -91,6 +95,11 @@ func (m *mapper) consume(record Record) {
 
 func (m *mapper) consumeSessionMeta(record Record, emit bool) {
 	meta := record.Entry.SessionMeta
+	// source=vscode is shared by Desktop and the editor extension. Use the
+	// explicit originator rather than treating every vscode session as Desktop.
+	if meta.Source != "exec" && meta.Source != "cli" && asymptoteobserve.NormalizeHarnessName(meta.Originator) == "codex_desktop" {
+		m.harness = "codex_desktop"
+	}
 	if id := firstNonEmpty(meta.ID, meta.SessionID); id != "" {
 		m.sessionID = id
 	}
@@ -261,10 +270,20 @@ func (m *mapper) consumeTokenUsageRecord(record Record, emit bool) {
 	if usageRecord.SessionID != "" {
 		m.sessionID = usageRecord.SessionID
 	}
+	// usage is per completion; turn_token_usage is cumulative within the turn.
+	// Retain cumulative state even on cursor-skipped rows for incremental sync.
+	previous, hadPrevious := m.turnTotals[usageRecord.TurnID]
+	snapshot := usageRecord.Usage
+	if snapshot == nil && usageRecord.TurnTokenUsage != nil {
+		snapshot = deltaTokenUsage(usageRecord.TurnTokenUsage, previous, hadPrevious)
+	}
+	if usageRecord.TurnTokenUsage != nil {
+		m.turnTotals[usageRecord.TurnID] = *usageRecord.TurnTokenUsage
+	}
 	if !emit {
 		return
 	}
-	usage := usageFromCodex(firstUsage(usageRecord.TurnTokenUsage, usageRecord.Usage))
+	usage := usageFromCodex(snapshot)
 	if usage == nil {
 		return
 	}
@@ -356,7 +375,7 @@ func (m *mapper) base(record Record, action, category string, severity schema.Se
 		Fidelity: fidelity,
 		Message:  message,
 		Origin:   schema.OriginLocal,
-		Harness:  schema.HarnessInfo{Name: Harness, CollectionMethod: schema.CollectionMethodPoll},
+		Harness:  schema.HarnessInfo{Name: m.harness, CollectionMethod: schema.CollectionMethodPoll},
 	})
 	if ts := eventTimestamp(record.Entry); ts != "" {
 		ev.Timestamp = ts
