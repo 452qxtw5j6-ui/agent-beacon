@@ -251,3 +251,46 @@ func TestCleanStringRedactsBeforeTruncating(t *testing.T) {
 		t.Fatalf("CleanString kept key material or overran its limit: %d bytes", len(got))
 	}
 }
+
+// A generated password is full of brackets, braces and backslashes, and a quoted one can hold
+// spaces and commas. None of it may survive past the first such character.
+func TestRedactStringTakesWholeValues(t *testing.T) {
+	tests := []struct {
+		name, input, want string
+	}{
+		{"unquoted symbols", "DB_PASSWORD=Xy7]kL9}pQ next", "DB_PASSWORD=[REDACTED] next"},
+		{"unquoted backslash", `password=ab\cdEFgh`, "password=[REDACTED]"},
+		{"leading bracket", "token=[abcDEF123]", "token=[REDACTED]"},
+		{"quoted with spaces", `secret: "correct horse, battery staple"`, `secret: "[REDACTED]"`},
+		{"single quoted symbols", `password='p]a}s\\s'`, `password='[REDACTED]'`},
+		{"escaped json", `{\"token\": \"a]b}c d\"}`, `{\"token\": \"[REDACTED]\"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactString(tc.input); got != tc.want {
+				t.Fatalf("RedactString(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// Source code, a diff or grep output that names a private key header is not a key, and the text
+// after it stays. A key on one line, as an env file holds it, is still redacted.
+func TestRedactStringPrivateKeyNeedsKeyMaterial(t *testing.T) {
+	code := `if strings.HasPrefix(s, "-----BEGIN RSA PRIVATE KEY-----") {` + "\n\treturn parseRSA(s)\n}"
+	if got := RedactString(code); got != code {
+		t.Fatalf("RedactString changed code that only names a key header:\n%q", got)
+	}
+	grep := "keys.go:12: // -----BEGIN OPENSSH PRIVATE KEY----- marks an OpenSSH key\nkeys.go:13: func parse() {}"
+	if got := RedactString(grep); got != grep {
+		t.Fatalf("RedactString changed grep output that only names a key header:\n%q", got)
+	}
+	escaped := `{"output":"-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC\n-----END PRIVATE KEY-----\n","ok":true}`
+	if got := RedactString(escaped); strings.Contains(got, "MIIEvQIBADANBgkq") || !strings.Contains(got, `"ok":true`) {
+		t.Fatalf("key quoted in a JSON string = %q, want the key gone and the rest kept", got)
+	}
+	oneLine := `PRIVATE_KEY="-----BEGIN PRIVATE KEY-----MIIEvQIBADANBgkqhkiG9w0BAQEFAASC-----END PRIVATE KEY-----"`
+	if got := RedactString(oneLine); strings.Contains(got, "MIIEvQIBADANBgkq") {
+		t.Fatalf("one-line key = %q, want it redacted", got)
+	}
+}

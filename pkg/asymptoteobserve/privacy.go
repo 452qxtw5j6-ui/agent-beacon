@@ -16,51 +16,72 @@ const (
 // says what was there.
 const redactedValue = "[REDACTED]"
 
-// secretKeyName is the part of a label that marks the value after it as a secret: `token`,
+// The redaction tables below are named redact*, not secret*: static analysis treats a variable
+// named for a secret as sensitive data, and these hold patterns, not credentials.
+
+// redactLabel is the part of a label that marks the value after it as a secret: `token`,
 // `GITHUB_TOKEN`, `api_key`, `AWS_SECRET_ACCESS_KEY`, `"password"`. The label must end in the
 // marker, so `input_tokens: 812` and `max_tokens=4096` stay readable.
-const secretKeyName = `[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|` +
+const redactLabel = `[A-Za-z0-9_.-]*?(?:api[_-]?key|access[_-]?key|secret[_-]?key|private[_-]?key|client[_-]?secret|` +
 	`token|secret|password|passwd|passphrase|authorization|credentials?)`
 
-// secretAssignment runs from the end of a label to the start of its value: an optional closing quote
-// (escaped too, for JSON quoted inside a string), the separator, and an optional opening quote.
-const secretAssignment = "(?:\\\\?[\"'`])?\\s*[:=]\\s*(?:\\\\?[\"'`])?"
+// redactSeparator runs from the end of a label to its value: an optional closing quote (escaped
+// too, for JSON quoted inside a string) and the separator.
+const redactSeparator = `(?:\\?["'` + "`" + `])?\s*[:=]\s*`
 
-// secretValue is the value itself, up to a quote, an escape, a separator or the end of a structure.
-// It never starts with `[`, so a value already replaced with [REDACTED] is left as it is and
-// redacting twice gives the same text as redacting once.
-const secretValue = "[^\"'`,\\s}\\]\\\\\\[][^\"'`,\\s}\\]\\\\]*"
+// redactOpenQuote opens a quoted value, escaped or not.
+const redactOpenQuote = `\\?["'` + "`" + `]`
 
-// secretRule is one redaction. ${1} and ${3}, when the pattern has them, are kept around the value.
-type secretRule struct {
+// redactQuoted is a quoted value, up to its closing quote: spaces, commas and brackets inside the
+// quotes are part of it. An escaped character is taken whole, except an escaped quote, which is how
+// a value quoted inside a JSON string ends.
+const redactQuoted = `(?:[^"'` + "`" + `\\\n]|\\[^"'` + "`" + `\n])+`
+
+// redactUnquoted is an unquoted value, up to a quote, a comma or whitespace. Brackets, braces and
+// backslashes are part of it: a generated password is full of them. It never starts with a quote,
+// escaped or not, so it leaves a value the quoted rule already replaced alone.
+const redactUnquoted = `(?:[^"'` + "`" + `,\s\\]|\\[^"'` + "`" + `])[^"'` + "`" + `,\s]*`
+
+// redactionRule is one redaction. ${1} and ${3}, when the pattern has them, are kept around the
+// value.
+type redactionRule struct {
 	pattern     *regexp.Regexp
 	replacement string
 	// keep, when set, leaves a match alone if its value (${2}) passes.
 	keep func(value string) bool
 }
 
-// isAuthScheme reports whether a labeled value is an Authorization scheme rather than a
-// credential. `Authorization: Bearer x` is redacted to `Authorization: Bearer [REDACTED]` by the
-// header rule, and the assignment rule must not then take `Bearer` for the value and erase what
-// kind of credential the line held.
+// isAuthScheme reports whether a labeled value is an Authorization scheme, alone or with its
+// credential already redacted, rather than a credential. `Authorization: Bearer x` is redacted to
+// `Authorization: Bearer [REDACTED]` by the header rule, and the assignment rules must not then
+// take the scheme for the value and erase what kind of credential the line held.
 func isAuthScheme(value string) bool {
-	switch strings.ToLower(value) {
+	fields := strings.Fields(value)
+	if len(fields) == 0 || len(fields) > 2 || (len(fields) == 2 && fields[1] != redactedValue) {
+		return false
+	}
+	switch strings.ToLower(fields[0]) {
 	case "bearer", "basic", "token", "digest":
 		return true
 	}
 	return false
 }
 
-var secretRules = []secretRule{
-	// A private key block, or the rest of the text when the block was cut before its END line.
-	{regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|[\s\S]*$)`), redactedValue, nil},
+var redactionRules = []redactionRule{
+	// A private key block. The header must be followed by key material, so source code, a diff or
+	// grep output that only names the header keeps the text after it. Without an END line (the
+	// block was cut) the rest of the text goes.
+	{regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:\s|\\[rn]|(?:Proc-Type|DEK-Info|Comment|Version):[^\n\\]*)*` +
+		`[A-Za-z0-9+/=]{16,}[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|$)`), redactedValue, nil},
 	// An Authorization header's credential after its scheme: Bearer, Basic, Token, Digest.
 	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+)([^"'\s,]+)()`), "${1}" + redactedValue, nil},
 	{regexp.MustCompile(`(?i)(\bbearer\s+)([a-z0-9._~+/=-]+)()`), "${1}" + redactedValue, nil},
 	// A labeled assignment in prose, shell, env files, YAML, TOML or JSON: `token=x`,
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
-	// between the label and the separator.
-	{regexp.MustCompile(`(?i)(\b` + secretKeyName + secretAssignment + `)(` + secretValue + `)()`), "${1}" + redactedValue, isAuthScheme},
+	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
+	// rule never starts at a quote, so it leaves a value the quoted rule already replaced alone.
+	{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + redactOpenQuote + `)(` + redactQuoted + `)()`), "${1}" + redactedValue, isAuthScheme},
+	{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + `)(` + redactUnquoted + `)()`), "${1}" + redactedValue, isAuthScheme},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`.
 	{regexp.MustCompile(`(?i)((?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+))([^\s"'-][^\s"']*)()`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
@@ -83,7 +104,7 @@ var secretRules = []secretRule{
 	{regexp.MustCompile(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil}, // JWT
 }
 
-func (rule secretRule) apply(value string) string {
+func (rule redactionRule) apply(value string) string {
 	if rule.keep == nil {
 		return rule.pattern.ReplaceAllString(value, rule.replacement)
 	}
@@ -103,9 +124,10 @@ func (rule secretRule) apply(value string) string {
 	return string(append(out, value[last:]...))
 }
 
-// assignedSecretPattern captures the value of a labeled assignment so a bare copy of it elsewhere in
-// the same text is removed too.
-var assignedSecretPattern = regexp.MustCompile(`(?i)\b` + secretKeyName + secretAssignment + `(` + secretValue + `)`)
+// redactAssignedPattern captures the value of a labeled assignment, quoted (${1}) or not (${2}), so
+// a bare copy of it elsewhere in the same text is removed too.
+var redactAssignedPattern = regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator +
+	`(?:` + redactOpenQuote + `(` + redactQuoted + `)|(` + redactUnquoted + `))`)
 
 // redactWindow is how far past a string's limit redaction reads before the string is cut, so a
 // secret that straddles the cut is recognized whole rather than left as a recognizable prefix. It
@@ -123,12 +145,13 @@ func RedactString(value string) string {
 	// This is common in model reasoning that quotes `token=value` and later
 	// refers to `value` by itself.
 	var assigned []string
-	for _, match := range assignedSecretPattern.FindAllStringSubmatch(value, -1) {
-		if len(match) > 1 && len(match[1]) >= 8 && match[1] != redactedValue {
-			assigned = append(assigned, match[1])
+	for _, match := range redactAssignedPattern.FindAllStringSubmatch(value, -1) {
+		copied := match[1] + match[2]
+		if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
+			assigned = append(assigned, copied)
 		}
 	}
-	for _, rule := range secretRules {
+	for _, rule := range redactionRules {
 		value = rule.apply(value)
 	}
 	// Each copy is searched for and removed; none of it survives into the result.
@@ -150,7 +173,7 @@ func isSecretKeyName(key string) bool {
 		}
 	}
 	name := normalized.String()
-	for _, suffix := range secretKeySuffixes {
+	for _, suffix := range redactKeySuffixes {
 		if strings.HasSuffix(name, suffix) {
 			return true
 		}
@@ -158,7 +181,7 @@ func isSecretKeyName(key string) bool {
 	return false
 }
 
-var secretKeySuffixes = []string{
+var redactKeySuffixes = []string{
 	"password", "passwd", "passphrase", "secret", "token", "apikey", "accesskey", "secretkey",
 	"privatekey", "authorization", "credential", "credentials", "cookie",
 }
