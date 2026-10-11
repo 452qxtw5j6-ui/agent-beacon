@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -246,5 +247,62 @@ func TestShareCurrentPassesOverAnOlderActiveEntry(t *testing.T) {
 	}
 	if got := sharePrintedExternalID(t, stdout); got != "claude_code:"+shareTestSession {
 		t.Fatalf("external id = %q, want the active Claude Code session", got)
+	}
+}
+
+// shareSymlinkedProject returns a symlink to the project directory, and the project's physical
+// path, which is what a hook records; the shell reports the symlink.
+func shareSymlinkedProject(t *testing.T, env *shareEnv) (link, physical string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinked directories need POSIX symlinks")
+	}
+	physical, err := filepath.EvalSymlinks(env.projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link = filepath.Join(t.TempDir(), "checkout")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Skipf("symlink: %v", err)
+	}
+	return link, physical
+}
+
+func TestShareCurrentMatchesTheActiveRecordThroughASymlink(t *testing.T) {
+	env := shareCurrentEnv(t)
+	link, physical := shareSymlinkedProject(t, env)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	t.Chdir(link)
+	if err := activesession.Record(shareActiveSessionsPath(), "gemini_cli", "gem-session-1", physical, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := runShareCommand(t, "--current", "--json", "--log-path", env.logPath)
+	if err != nil {
+		t.Fatalf("share --current: %v\n%s", err, stderr)
+	}
+	var result struct {
+		Data shareResult `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Data.SelectedBy != "active" || result.Data.ExternalID != "gemini_cli:gem-session-1" {
+		t.Fatalf("result = %+v, want the active session", result.Data)
+	}
+}
+
+func TestShareCurrentSeesAnInheritedEnvironmentThroughASymlink(t *testing.T) {
+	env := shareCurrentEnv(t)
+	shareEnvSessions(t, env)
+	link, physical := shareSymlinkedProject(t, env)
+	t.Chdir(link)
+	shareGetenv = shareEnvFor("claude_code", shareOlderSession)
+	if err := activesession.Record(shareActiveSessionsPath(), handoff.HarnessCodex, "codex-session-1", physical, time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := runShareCommand(t, "--print", "--log-path", env.logPath)
+	if err == nil || !strings.Contains(err.Error(), "codex-session-1") {
+		t.Fatalf("err = %v, want the inherited-environment refusal", err)
 	}
 }

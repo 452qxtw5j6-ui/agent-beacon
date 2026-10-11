@@ -622,7 +622,7 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 func shareEnvContradiction(sources []handoff.Source, dir string, subject shareSubject) error {
 	session := subject.session
 	advice := "pass --harness <runtime> for the runtime you are in, or --session <id>"
-	if session.Directory != "" && !shareDirWithin(dir, session.Directory) {
+	if session.Directory != "" && !handoff.DirectoryWithin(dir, session.Directory) {
 		return fmt.Errorf("%s=%s names %s session %s, which ran in %s, not in %s or a directory above it; a runtime started from that session's shell inherits its variables: %s",
 			shareSessionEnv, session.ID, session.Harness, session.ID, session.Directory, dir, advice)
 	}
@@ -631,10 +631,9 @@ func shareEnvContradiction(sources []handoff.Source, dir string, subject shareSu
 			shareSessionEnv, session.ID, session.Harness, session.ID, harness, id, dir, at.Local().Format(time.RFC3339), session.Harness, advice)
 	}
 	if entries, err := activesession.Read(shareActiveSessionsPath()); err == nil {
-		clean := activesession.CleanDir(dir)
 		now := shareNow()
 		for _, e := range entries {
-			if e.WorkingDirectory != clean || now.Sub(e.LastSeen) > shareActiveMaxAge {
+			if !handoff.SameDirectory(e.WorkingDirectory, dir) || now.Sub(e.LastSeen) > shareActiveMaxAge {
 				continue
 			}
 			name, err := handoff.ParseHarness(e.Harness)
@@ -651,16 +650,6 @@ func shareEnvContradiction(sources []handoff.Source, dir string, subject shareSu
 		}
 	}
 	return nil
-}
-
-// shareDirWithin reports whether dir is parent or below it.
-func shareDirWithin(dir, parent string) bool {
-	clean := func(p string) string { return filepath.Clean(evalSymlinks(filepath.Clean(p))) }
-	rel, err := filepath.Rel(clean(parent), clean(dir))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // shareActiveIsNewest reports whether the active-session entry may stand for this directory's
@@ -730,10 +719,9 @@ func shareActiveSession(dir, harness string) (activesession.Entry, bool) {
 	if err != nil {
 		return activesession.Entry{}, false
 	}
-	dir = activesession.CleanDir(dir)
 	now := shareNow()
 	for _, e := range entries {
-		if e.WorkingDirectory != dir || now.Sub(e.LastSeen) > shareActiveMaxAge {
+		if !handoff.SameDirectory(e.WorkingDirectory, dir) || now.Sub(e.LastSeen) > shareActiveMaxAge {
 			continue
 		}
 		name, err := handoff.ParseHarness(e.Harness)
