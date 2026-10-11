@@ -103,20 +103,42 @@ func init() {
 }
 
 type shareAutoStatus struct {
-	SettingsPath     string   `json:"settings_path"`
-	Directory        string   `json:"directory"`
-	Enabled          bool     `json:"enabled"`
-	Visibility       string   `json:"visibility,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	Project          string   `json:"project,omitempty"`
-	UntrustedMarker  string   `json:"untrusted_marker,omitempty"`
-	UserEnabled      bool     `json:"user_enabled"`
-	UserVisibility   string   `json:"user_visibility,omitempty"`
-	CloudConnected   bool     `json:"cloud_connected"`
-	CloudPrivacyMode string   `json:"cloud_privacy_mode,omitempty"`
-	Warnings         []string `json:"warnings,omitempty"`
-	// ProjectsTurnedOff are the project entries a user-wide disable turned off with it.
-	ProjectsTurnedOff []string `json:"projects_turned_off,omitempty"`
+	SettingsPath    string `json:"settings_path"`
+	Directory       string `json:"directory"`
+	Enabled         bool   `json:"enabled"`
+	Visibility      string `json:"visibility,omitempty"`
+	Source          string `json:"source,omitempty"`
+	Project         string `json:"project,omitempty"`
+	UntrustedMarker string `json:"untrusted_marker,omitempty"`
+	// Overridden is the project whose enabled entry the user-wide off switch overrides here.
+	Overridden     string `json:"overridden,omitempty"`
+	UserEnabled    bool   `json:"user_enabled"`
+	UserState      string `json:"user_state"`
+	UserVisibility string `json:"user_visibility,omitempty"`
+	// Projects are the user's project entries, each with whether the user-wide off switch
+	// overrides it.
+	Projects         []shareAutoProject `json:"projects,omitempty"`
+	CloudConnected   bool               `json:"cloud_connected"`
+	CloudPrivacyMode string             `json:"cloud_privacy_mode,omitempty"`
+	Warnings         []string           `json:"warnings,omitempty"`
+	// GlobalOffCleared is set when enable --project cleared the user-wide off switch.
+	GlobalOffCleared bool `json:"global_off_cleared,omitempty"`
+}
+
+// shareAutoProject is one project entry in the status.
+type shareAutoProject struct {
+	Path       string `json:"path"`
+	Enabled    bool   `json:"enabled"`
+	Visibility string `json:"visibility,omitempty"`
+	Overridden bool   `json:"overridden,omitempty"`
+}
+
+// shareAutoUserState names the user-wide switch's state for people: "on", "off" or "not set".
+func shareAutoUserState(state string) string {
+	if state == shareauto.GlobalUnset {
+		return "not set"
+	}
+	return state
 }
 
 func runShareAutoSet(cmd *cobra.Command, enable bool) error {
@@ -150,7 +172,7 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		return fmt.Errorf("read %s: %w (fix or remove it, then retry)", path, err)
 	}
 	project := ""
-	var turnedOff []string
+	globalOffCleared := false
 	if strings.TrimSpace(shareAutoOpts.project) != "" {
 		project, err = filepath.Abs(shareAutoOpts.project)
 		if err != nil {
@@ -168,21 +190,20 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		if !replaced {
 			settings.Projects = append(settings.Projects, entry)
 		}
-	} else {
-		settings.Auto.Enabled = enable
-		if enable {
-			settings.Auto.Visibility = visibility
-		} else {
-			// Off for every new session means every project too: a project entry is checked
-			// before the user-wide switch, so one left enabled would keep publishing. The entries
-			// stay, turned off, so `enable --project` can bring one back.
-			for i := range settings.Projects {
-				if settings.Projects[i].Enabled {
-					settings.Projects[i].Enabled = false
-					turnedOff = append(turnedOff, settings.Projects[i].Path)
-				}
-			}
+		// Opting a project in while the user-wide switch is off: the person wants it on here, so
+		// the kill switch goes back to unset (not on: other sessions stay off).
+		if enable && settings.Global() == shareauto.GlobalOff {
+			settings.SetGlobal(shareauto.GlobalUnset)
+			globalOffCleared = true
 		}
+	} else if enable {
+		// Project entries are left as they are, so turning auto-share back on restores exactly
+		// what was there before it was turned off.
+		settings.SetGlobal(shareauto.GlobalOn)
+		settings.Auto.Visibility = visibility
+	} else {
+		// Off is a kill switch over every project (shareauto.Resolve); the entries stay untouched.
+		settings.SetGlobal(shareauto.GlobalOff)
 	}
 	if err := shareauto.Save(path, settings); err != nil {
 		return err
@@ -197,7 +218,7 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		dir, _ = filepath.Abs(".")
 	}
 	status := buildShareAutoStatus(path, settings, dir)
-	status.ProjectsTurnedOff = turnedOff
+	status.GlobalOffCleared = globalOffCleared
 	return printShareAutoResult(cmd, status, enable, project)
 }
 
@@ -223,15 +244,23 @@ func buildShareAutoStatus(path string, settings shareauto.Settings, dir string) 
 		Source:           decision.Source,
 		Project:          decision.Project,
 		UntrustedMarker:  decision.UntrustedMarker,
-		UserEnabled:      settings.Auto.Enabled,
+		Overridden:       decision.Overridden,
+		UserEnabled:      settings.Global() == shareauto.GlobalOn,
+		UserState:        settings.Global(),
 		UserVisibility:   settings.Auto.Visibility,
 		CloudConnected:   connected,
 		CloudPrivacyMode: mode,
 	}
+	for _, p := range settings.Projects {
+		status.Projects = append(status.Projects, shareAutoProject{
+			Path: p.Path, Enabled: p.Enabled, Visibility: p.Visibility,
+			Overridden: p.Enabled && settings.Global() == shareauto.GlobalOff,
+		})
+	}
 	if status.Enabled && status.Visibility == "" {
 		status.Visibility = asymptoteobserve.ShareVisibilityDirect
 	}
-	if status.Enabled || settings.Auto.Enabled {
+	if status.Enabled || status.UserEnabled {
 		if !connected {
 			status.Warnings = append(status.Warnings, "this endpoint is not connected to Beacon Cloud, so nothing is published: auto-share works only through Beacon Cloud forwarding (`beacon endpoint connect`); `beacon share` publishes a session by hand")
 		} else if mode == managedprivacy.MetadataOnly {
@@ -256,10 +285,24 @@ func printShareAutoResult(cmd *cobra.Command, status shareAutoStatus, enable boo
 	if enable {
 		fmt.Fprintf(out, "Auto-share is on for %s (%s).\n", scope, status.Visibility)
 		fmt.Fprintln(out, "Sessions that are already running are shared on their next event; earlier sessions are not. Use `beacon share` for those.")
+		if status.GlobalOffCleared {
+			fmt.Fprintln(out, "Auto-share was turned off for every session; that switch is now cleared, so projects you turned on publish again and other sessions stay off.")
+		}
 	} else {
 		fmt.Fprintf(out, "Auto-share is off for %s. Traces already published stay published; delete them on beacon.sh.\n", scope)
-		for _, p := range status.ProjectsTurnedOff {
-			fmt.Fprintf(out, "Turned off for the project %s too.\n", p)
+		if project == "" {
+			var overridden []string
+			for _, p := range status.Projects {
+				if p.Overridden {
+					overridden = append(overridden, p.Path)
+				}
+			}
+			if len(overridden) > 0 {
+				fmt.Fprintf(out, "This overrides %d project setting(s), which are kept and apply again after `beacon share auto enable`:\n", len(overridden))
+				for _, p := range overridden {
+					fmt.Fprintf(out, "  %s\n", p)
+				}
+			}
 		}
 	}
 	if project != "" {
@@ -300,7 +343,29 @@ func runShareAutoStatus(cmd *cobra.Command, args []string) error {
 	case "marker":
 		fmt.Fprintf(out, "  turned off by %s\n", shareauto.MarkerPath(status.Project))
 	case "user":
-		fmt.Fprintln(out, "  decided by your setting for every session")
+		if status.Overridden != "" {
+			fmt.Fprintf(out, "  turned off for every session, which overrides your setting for the project %s\n", status.Overridden)
+		} else {
+			fmt.Fprintln(out, "  decided by your setting for every session")
+		}
+	}
+	userState := shareAutoUserState(status.UserState)
+	if status.UserState == shareauto.GlobalOn && status.UserVisibility != "" {
+		userState += " (" + status.UserVisibility + ")"
+	}
+	fmt.Fprintf(out, "Every session: %s\n", userState)
+	for _, p := range status.Projects {
+		state := "off"
+		if p.Enabled {
+			state = "on"
+			if p.Visibility != "" {
+				state += " (" + p.Visibility + ")"
+			}
+		}
+		if p.Overridden {
+			state += ", overridden by the off switch for every session"
+		}
+		fmt.Fprintf(out, "Project %s: %s\n", p.Path, state)
 	}
 	cloud := "not connected"
 	if status.CloudConnected {

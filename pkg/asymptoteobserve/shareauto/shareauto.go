@@ -45,11 +45,21 @@ const (
 )
 
 // Auto is one auto-share switch and the visibility it shares with ("" means the server default,
-// direct).
+// direct). In the user file the switch has three states (State): unset, on, or off; off is a kill
+// switch over every project. Enabled is kept equal to State == on, so a file written by an older
+// Beacon (enabled only) still reads: enabled true is on, false is unset. A marker uses Enabled only.
 type Auto struct {
 	Enabled    bool   `json:"enabled"`
+	State      string `json:"state,omitempty"`
 	Visibility string `json:"visibility,omitempty"`
 }
+
+// The user-wide switch's states.
+const (
+	GlobalUnset = ""
+	GlobalOn    = "on"
+	GlobalOff   = "off"
+)
 
 // Project is the user's choice for one project directory.
 type Project struct {
@@ -75,13 +85,34 @@ type Marker struct {
 type Decision struct {
 	Enabled    bool
 	Visibility string
-	// Source is "user", "project" (the user's entry for a project), "marker" (a project marker
-	// turned it off) or "" when nothing is configured.
+	// Source is "user" (the user-wide switch, on, or off as the kill switch), "project" (the user's
+	// entry for a project), "marker" (a project marker turned it off) or "" when nothing is
+	// configured.
 	Source string
 	// Project is the project directory the decision came from, when it came from one.
 	Project string
+	// Overridden is the project whose enabled entry the user-wide off switch overrides here.
+	Overridden string
 	// UntrustedMarker is a marker that asks for auto-share in a project the user has not opted in.
 	UntrustedMarker string
+}
+
+// Global is the user-wide switch's state: GlobalOn, GlobalOff or GlobalUnset.
+func (s Settings) Global() string {
+	switch s.Auto.State {
+	case GlobalOn, GlobalOff:
+		return s.Auto.State
+	}
+	if s.Auto.Enabled {
+		return GlobalOn
+	}
+	return GlobalUnset
+}
+
+// SetGlobal sets the user-wide switch, keeping Enabled in step for older readers.
+func (s *Settings) SetGlobal(state string) {
+	s.Auto.State = state
+	s.Auto.Enabled = state == GlobalOn
 }
 
 // DefaultPath is BEACON_SHARE_SETTINGS_FILE, or ~/.beacon/endpoint/share.json.
@@ -135,7 +166,10 @@ func LoadMarker(dir string) (Marker, bool) {
 // anyEnabled reports whether anything in s could turn auto-share on, so the hook path can skip
 // the directory walk entirely when the feature is not in use.
 func (s Settings) anyEnabled() bool {
-	if s.Auto.Enabled {
+	switch s.Global() {
+	case GlobalOff:
+		return false
+	case GlobalOn:
 		return true
 	}
 	for _, p := range s.Projects {
@@ -159,10 +193,24 @@ func (s Settings) Project(dir string) (Project, bool) {
 	return Project{}, false
 }
 
-// Resolve decides whether auto-share applies in workDir. The nearest enclosing directory that has
-// a user entry or a marker decides; a marker that asks for auto-share without a user entry is
-// reported and otherwise ignored. With neither, the user-wide switch decides.
+// Resolve decides whether auto-share applies in workDir. The user-wide switch turned off is a kill
+// switch: nothing applies anywhere, and the project entry it overrides is reported. Otherwise the
+// nearest enclosing directory that has a user entry or a marker decides; a marker that asks for
+// auto-share without a user entry is reported and otherwise ignored. With neither, the user-wide
+// switch decides (on, or unset meaning off).
 func Resolve(s Settings, workDir string) Decision {
+	d := resolveProjects(s, workDir)
+	if s.Global() == GlobalOff {
+		off := Decision{Source: "user", UntrustedMarker: d.UntrustedMarker}
+		if d.Enabled && d.Source == "project" {
+			off.Overridden = d.Project
+		}
+		return off
+	}
+	return d
+}
+
+func resolveProjects(s Settings, workDir string) Decision {
 	var d Decision
 	dir := filepath.Clean(workDir)
 	if workDir != "" && rooted(dir) {
@@ -193,7 +241,7 @@ func Resolve(s Settings, workDir string) Decision {
 			dir = parent
 		}
 	}
-	if s.Auto.Enabled {
+	if s.Global() == GlobalOn {
 		d.Enabled, d.Visibility, d.Source = true, s.Auto.Visibility, "user"
 	}
 	return d
