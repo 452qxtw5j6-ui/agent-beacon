@@ -121,6 +121,10 @@ func ResolveShareCredential(opts ResolveShareCredentialOptions) (ShareCredential
 		loginErr = errors.New("Beacon sign-in expired: run `beacon login` again")
 	case !hasScope(session.Scopes, ScopeTracesWrite):
 		loginErr = ErrTracesWriteScope
+	case explicitShareTarget(opts) != "" && !sameBaseURL(explicitShareTarget(opts), session.BaseURL):
+		// The sign-in belongs to another service than the one named. Sending the trace to the
+		// sign-in's service instead would publish it somewhere the person did not ask for.
+		loginErr = fmt.Errorf("signed in to %s, not %s: run `beacon login --auth-url %s`, or pass an API key for it", strings.TrimRight(session.BaseURL, "/"), explicitShareTarget(opts), explicitShareTarget(opts))
 	default:
 		return ShareCredential{BaseURL: strings.TrimRight(session.BaseURL, "/"), Token: session.AccessToken, Source: CredentialSourceLogin, User: session.User}, nil
 	}
@@ -130,6 +134,20 @@ func ResolveShareCredential(opts ResolveShareCredentialOptions) (ShareCredential
 		}
 	}
 	return ShareCredential{}, loginErr
+}
+
+// explicitShareTarget is the service named by --auth-url or BEACON_AUTH_URL, or "" when neither is
+// set and the default applies.
+func explicitShareTarget(opts ResolveShareCredentialOptions) string {
+	value := strings.TrimSpace(opts.BaseURL)
+	if value == "" && opts.Getenv != nil {
+		value = strings.TrimSpace(opts.Getenv(BaseURLEnv))
+	}
+	return strings.TrimRight(value, "/")
+}
+
+func sameBaseURL(a, b string) bool {
+	return strings.EqualFold(strings.TrimRight(strings.TrimSpace(a), "/"), strings.TrimRight(strings.TrimSpace(b), "/"))
 }
 
 func apiKeyCredential(key, baseURL, source, origin string) (ShareCredential, error) {
