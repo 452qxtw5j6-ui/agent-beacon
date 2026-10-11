@@ -54,12 +54,51 @@ var (
 	gitShareLogSessions = func(logPath string) ([]handoff.Session, error) {
 		return handoff.LogSessions(logPath, handoff.Filter{})
 	}
+	// gitShareListStore lists one runtime's stored sessions; tests replace it to count listings.
+	gitShareListStore = func(sources []handoff.Source, harness string) ([]handoff.Session, error) {
+		return handoff.List(sources, handoff.Filter{Harness: harness, IncludeSubagents: true})
+	}
 )
 
-// gitShareMaxResolve bounds how many linked sessions one push tries to find on this machine,
-// counting the ones that are not here (teammates' sessions), so a note full of them cannot use up
-// the budget.
+// gitShareMaxResolve bounds how many linked sessions without a URL one push looks up, counting the
+// ones that are not on this machine (teammates' sessions). Each runtime's store is listed at most
+// once per push and the runtime log read at most once, so the cap bounds the per-link work that
+// follows (matching, and reading a log session's events), not the number of store listings.
 const gitShareMaxResolve = 50
+
+// gitShareStoreIndex finds linked sessions in the runtimes' stores, listing each runtime's store at
+// most once per push, on the first link of that runtime. A link names a session by its full id, so
+// only an exact, unique id match counts: a prefix match (which handoff.Find would also accept) is
+// another session.
+type gitShareStoreIndex struct {
+	sources []handoff.Source
+	byID    map[string]map[string][]handoff.Session // harness -> id -> sessions
+}
+
+func newGitShareStoreIndex(sources []handoff.Source) *gitShareStoreIndex {
+	return &gitShareStoreIndex{sources: sources, byID: map[string]map[string][]handoff.Session{}}
+}
+
+// find returns the stored session of harness with exactly id. ctx is checked before a listing.
+func (x *gitShareStoreIndex) find(ctx context.Context, harness, id string) (handoff.Session, bool) {
+	index, listed := x.byID[harness]
+	if !listed {
+		if ctx.Err() != nil {
+			return handoff.Session{}, false
+		}
+		index = map[string][]handoff.Session{}
+		// A store that cannot be read lists what it can; the runtime log still answers for it.
+		sessions, _ := gitShareListStore(x.sources, harness)
+		for _, s := range sessions {
+			index[s.ID] = append(index[s.ID], s)
+		}
+		x.byID[harness] = index
+	}
+	if matches := index[id]; len(matches) == 1 {
+		return matches[0], true
+	}
+	return handoff.Session{}, false
+}
 
 // gitAllowShareHosts admits the configured Beacon service's host besides beacon.sh.
 func gitAllowShareHosts() {
@@ -186,7 +225,7 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 		// Resolve first, cap after: a teammate's session, or one this machine no longer has,
 		// must not use up a slot that one of this person's sessions needs. Resolving reads only
 		// the local stores, inside the upload budget.
-		sources := handoffSources(handoff.StoreDirs{})
+		stores := newGitShareStoreIndex(handoffSources(handoff.StoreDirs{}))
 		logPath := shareLogPath()
 		var inLog map[string]bool // read once, on the first link the stores do not have
 		for i, link := range toShare {
@@ -197,11 +236,12 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 			if err != nil {
 				continue
 			}
-			if session, err := handoff.Find(sources, harness, link.SessionID); err == nil {
-				if session.ID == link.SessionID {
-					subjects = append(subjects, linkedSubject{link: link, subject: shareSubject{session: session}})
-				}
+			if session, ok := stores.find(ctx, harness, link.SessionID); ok {
+				subjects = append(subjects, linkedSubject{link: link, subject: shareSubject{session: session}})
 				continue
+			}
+			if ctx.Err() != nil {
+				break
 			}
 			if inLog == nil {
 				inLog = map[string]bool{}
