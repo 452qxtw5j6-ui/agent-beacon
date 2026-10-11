@@ -41,3 +41,30 @@ func TestLogSessionsListsByDirectoryNewestFirst(t *testing.T) {
 		t.Fatalf("kiro sessions = %+v", only)
 	}
 }
+
+func TestLogSessionsIgnoresBeaconBookkeepingForRecency(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "runtime.jsonl")
+	write := func(action, session, ts string) {
+		t.Helper()
+		event := schema.NewEvent(schema.NewEventOptions{Action: action, Category: "prompt", Harness: schema.HarnessInfo{Name: "kiro"}})
+		event.Timestamp = ts
+		event.Session = &schema.SessionInfo{ID: session, WorkingDirectory: dir}
+		if _, err := writer.AppendEvent(event, writer.Options{Path: logPath, UserMode: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("prompt.submitted", "older", "2026-10-01T10:00:00.000000000Z")
+	write("prompt.submitted", "newer", "2026-10-01T11:00:00.000000000Z")
+	write("session.shared", "older", "2026-10-01T12:00:00.000000000Z")
+	write("session.commit_linked", "older", "2026-10-01T12:30:00.000000000Z")
+	write("session.shared", "bookkeeping-only", "2026-10-01T13:00:00.000000000Z")
+
+	sessions, err := LogSessions(logPath, Filter{Directory: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 || sessions[0].ID != "newer" || sessions[1].ID != "older" {
+		t.Fatalf("sessions = %+v", sessions)
+	}
+}

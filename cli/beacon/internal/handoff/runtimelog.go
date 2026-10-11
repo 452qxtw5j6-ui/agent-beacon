@@ -87,6 +87,13 @@ func logSessionForPrefix(logPath, prefix, harness string) (string, error) {
 	return "", &AmbiguousError{ID: prefix, Candidates: candidates}
 }
 
+// beaconBookkeeping reports whether action is a record Beacon writes into a session's timeline
+// after the fact (sharing it, linking it to a commit). Those are stamped when Beacon wrote them, so
+// counting them would move an old session to the top of "most recent" the moment it is shared.
+func beaconBookkeeping(action string) bool {
+	return action == "session.shared" || action == "session.commit_linked"
+}
+
 // LogSessions lists the sessions in Beacon's runtime log, newest first, narrowed by filter the way
 // List narrows a store listing: a runtime, a directory the session ran in or below, and a limit. It
 // is how a runtime whose store Beacon does not read, or a session its store no longer has, is found
@@ -96,7 +103,7 @@ func LogSessions(logPath string, filter Filter) ([]Session, error) {
 	byKey := map[string]*Session{}
 	var order []string
 	err := dashboard.StreamEvents(logPath, func(event schema.Event) error {
-		if event.Session == nil || strings.TrimSpace(event.Session.ID) == "" {
+		if event.Session == nil || strings.TrimSpace(event.Session.ID) == "" || beaconBookkeeping(event.Event.Action) {
 			return nil
 		}
 		name := canonicalHarness(asymptoteobserve.NormalizeHarnessName(event.Harness.Name))
