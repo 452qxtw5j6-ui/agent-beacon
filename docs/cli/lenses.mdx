@@ -48,18 +48,29 @@ the other lenses still list.
 ## beacon lenses add
 
 Checks a lens file against the [spec](https://github.com/asymptote-labs/agent-beacon/blob/main/spec/lenses/SPEC.md)
-(at most 16 MiB, one valid manifest) and copies it into the store under its manifest `id`.
+(at most 16 MiB, one valid manifest), asks you to confirm, and copies it into the store under
+its manifest `id`.
+
+A lens sees the full content of every trace it is shown, and installing one is trusting its
+code with that content. The sandbox keeps a lens away from Beacon and the dashboard and blocks
+ordinary network requests, but it cannot stop every way a browser can send data out (WebRTC,
+resource hints; see [what the sandbox does not guarantee](/concepts/lenses#what-the-sandbox-does-not-guarantee)).
+So `add` prints that warning and asks before it writes anything. Without a terminal, or in CI,
+it refuses unless you pass `--yes`.
 
 Replacing an installed lens needs a higher `version` in the new file's manifest, so adding
 an old copy by mistake does not downgrade it. `--force` replaces it anyway.
 
 ```bash
 beacon lenses add ./command-log.lens.html
+# A lens sees the full content of every trace it is shown: ...
+# Install Command Log (command-log v1) from ./command-log.lens.html? [y/N] y
 # installed command-log v1 (~/.beacon/endpoint/lenses/command-log.lens.html)
 ```
 
 | Flag | Description |
 |------|-------------|
+| `--yes` | Install without asking; you trust this lens with the traces it is shown |
 | `--force` | Replace an installed lens even when the new version is not higher |
 | `--user` / `--system` | Use the per-user (default) or system endpoint paths |
 
@@ -103,12 +114,15 @@ Checks lens files against the spec. **Errors** (an oversized file, a missing or 
 manifest) stop a lens from running. **Warnings** name the line where a lens does something
 the sandbox will block or the spec forbids:
 
-- parsing trace content as HTML (`innerHTML`, `insertAdjacentHTML`, `document.write`)
+- parsing trace content as HTML (`innerHTML`, `outerHTML`, `insertAdjacentHTML`)
 - network requests (`fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`)
 - scripts, images, fonts or stylesheets loaded by URL
 - browser storage and cookies
 - messaging or navigating another window, or its own frame
 - `eval`, `new Function` and workers
+- WebRTC, nested frames (`iframe`, `srcdoc`, `object`, `embed`), `<link>` elements and resource
+  hints (`preconnect`, `prefetch`), speculation rules, `document.write` and declarative shadow
+  roots, which the lens frame removes or refuses
 - a root sized to the viewport (`100vh`), which never settles because the frame grows to fit
 - never calling `window.beacon.getTrace()`
 

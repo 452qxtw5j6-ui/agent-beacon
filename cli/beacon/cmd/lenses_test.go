@@ -26,8 +26,59 @@ func useLensTestHome(t *testing.T) {
 	t.Helper()
 	testenv.SetHome(t, t.TempDir())
 	prev := lensesOpts
-	lensesOpts.userMode, lensesOpts.systemMode, lensesOpts.force, lensesOpts.json = true, false, false, false
+	lensesOpts.userMode, lensesOpts.systemMode, lensesOpts.force, lensesOpts.yes, lensesOpts.json = true, false, false, true, false
 	t.Cleanup(func() { lensesOpts = prev })
+}
+
+func TestLensesAddAsksBeforeInstallingAndRefusesWithoutATerminal(t *testing.T) {
+	useLensTestHome(t)
+	lensesOpts.yes = false
+	for _, key := range []string{"CI", "CONTINUOUS_INTEGRATION", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL", "TEAMCITY_VERSION"} {
+		t.Setenv(key, "")
+	}
+	prevTTY, prevStdin := lensesIsTTY, lensesStdin
+	t.Cleanup(func() { lensesIsTTY, lensesStdin = prevTTY, prevStdin })
+	src := t.TempDir()
+	installed := func() bool {
+		_, err := os.Stat(filepath.Join(lensstore.Dir(true), "mine"+lensstore.FileSuffix))
+		return err == nil
+	}
+
+	lensesIsTTY = func() bool { return false }
+	cmd, _ := newCmd()
+	if err := lensesAddCmd.RunE(cmd, []string{writeTestLens(t, src, "mine", "1")}); err == nil || !strings.Contains(err.Error(), "--yes") || installed() {
+		t.Fatalf("without a terminal: err = %v, installed = %v", err, installed())
+	}
+
+	lensesIsTTY = func() bool { return true }
+	lensesStdin = strings.NewReader("n\n")
+	cmd, buf := newCmd()
+	if err := lensesAddCmd.RunE(cmd, []string{writeTestLens(t, src, "mine", "1")}); err == nil || installed() {
+		t.Fatalf("declined: err = %v, installed = %v", err, installed())
+	}
+	if !strings.Contains(buf.String(), "full content of every trace") || !strings.Contains(buf.String(), "Install Test mine (mine v1)") {
+		t.Fatalf("prompt = %q", buf.String())
+	}
+
+	lensesStdin = strings.NewReader("y\n")
+	cmd, _ = newCmd()
+	if err := lensesAddCmd.RunE(cmd, []string{writeTestLens(t, src, "mine", "1")}); err != nil || !installed() {
+		t.Fatalf("confirmed: err = %v, installed = %v", err, installed())
+	}
+
+	// A file that fails a check is refused before anyone is asked.
+	lensesStdin = strings.NewReader("")
+	cmd, buf = newCmd()
+	if err := lensesAddCmd.RunE(cmd, []string{writeTestLens(t, src, "files-changed", "1")}); err == nil || strings.Contains(buf.String(), "Install ") {
+		t.Fatalf("built-in id: err = %v, output = %q", err, buf.String())
+	}
+
+	lensesIsTTY = func() bool { return false }
+	lensesOpts.yes = true
+	cmd, _ = newCmd()
+	if err := lensesAddCmd.RunE(cmd, []string{writeTestLens(t, src, "mine", "2")}); err != nil {
+		t.Fatalf("--yes without a terminal: %v", err)
+	}
 }
 
 func TestLensesAddListShowRemove(t *testing.T) {

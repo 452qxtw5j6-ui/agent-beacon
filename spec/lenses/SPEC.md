@@ -5,8 +5,9 @@ A lens is a single HTML file that renders one Beacon trace. The local dashboard
 Each tab reads the same trace and answers a different question: which files
 changed, what the run cost, what the threat rules flagged.
 
-A lens runs in a sandboxed frame with no network and no access to the dashboard.
-It receives the trace through one call, `window.beacon.getTrace()`. Everything
+A lens runs in a sandboxed frame with no access to Beacon or the dashboard and
+no ordinary network APIs. It receives the trace through one call,
+`window.beacon.getTrace()`. Everything
 else is plain HTML, CSS and JavaScript, so any coding agent can write one from
 this document.
 
@@ -150,10 +151,11 @@ The full field list is the Go source in `pkg/asymptoteobserve/trace.go` and
 
 A lens sees whatever the local log retained. With `full` retention that
 includes prompts, responses, command output and diffs, after Beacon's local
-redaction. A lens can show that content on screen and nowhere else: the
-sandbox below gives it no way to send it anywhere. Forwarding privacy modes
-(such as metadata-only) govern what leaves the machine. They do not reduce
-what a local lens receives.
+redaction. The sandbox below is built so that a lens shows that content on
+screen and nowhere else, but it cannot guarantee it: see
+[Trust model](#trust-model). Forwarding privacy modes (such as metadata-only)
+govern what Beacon sends off the machine. They do not reduce what a local
+lens receives.
 
 ## Sandbox
 
@@ -181,17 +183,24 @@ The host enforces these rules; a lens does not opt into them.
   script runs, every `RTC*` interface on `window` (including
   `RTCPeerConnection`, `RTCDataChannel` and `webkitRTCPeerConnection`) is
   defined as `undefined`, non-writable and non-configurable. A lens cannot
-  delete or redefine them. This holds inside the lens's own realm only; it
-  relies on the CSP and sandbox above to keep the lens from reaching a fresh
-  realm (a frame, worker or popup) where the originals still exist.
+  delete or redefine them. This holds in the lens's own realm only. A child
+  frame is a fresh realm where they still exist: the lens cannot reach into
+  one (a sandboxed child has its own opaque origin), but a `srcdoc` child
+  runs its own scripts, which is why the host refuses child frames (next).
+- The host refuses, before any lens script runs, the elements that can start
+  a request the CSP does not see or open a fresh realm: nested frames
+  (`iframe`, `frame`, `object`, `embed`, `portal`, `fencedframe`), every
+  `<link>` element (a lens loads nothing by URL, and resource hints such as
+  `preconnect`, `prefetch` and `preload` are links), and
+  `<script type="speculationrules">`. Creating one, inserting one, or parsing
+  one in through `innerHTML`, `outerHTML`, `insertAdjacentHTML`,
+  `setHTMLUnsafe` or `execCommand` throws a `NotSupportedError`
+  `DOMException`; `document.write` and `document.writeln` always throw; and
+  any the parser puts in from the lens file's own markup is removed before
+  the next script runs.
 - The frame is served with `X-DNS-Prefetch-Control: off`, and the host
   repeats it as a `<meta http-equiv>` in the document, so the browser does not
   resolve hostnames the lens mentions on its own.
-- Residual risk. CSP and the sandbox are the boundary, and browsers do not
-  route every speculative or connection-warming request through them; some
-  resource-hint and speculative-loading features can still start a request a
-  CSP does not see, depending on the browser and its settings. Treat a lens
-  as code that can read the whole trace, and install only lenses you trust.
 - Trace data reaches the frame only over a private `MessageChannel` port. The
   one `postMessage` from the host to the window carries that port and
   nothing else. The lens never uses `window.postMessage` itself;
@@ -201,6 +210,29 @@ The host enforces these rules; a lens does not opt into them.
 - If the lens throws before rendering, rejects, or does not render within
   the timeout, the host falls back to the full trace view. A broken lens
   cannot break the dashboard.
+
+### Trust model
+
+The opaque origin, the sandbox and the CSP are enforced by the browser. They
+keep a lens from touching Beacon, the dashboard, its storage or its API, and
+they refuse the ordinary network APIs (`fetch`, XHR, WebSocket,
+`EventSource`, `sendBeacon`, remote images, fonts and scripts, frames,
+workers and navigation).
+
+They cannot fully prevent a lens from sending the trace data it is shown out
+of the machine. Some browser features are not governed by CSP or any other
+policy a page can set: WebRTC, and resource hints and speculative loading
+such as `preconnect` and speculation rules. The removal and refusals above
+are best-effort hardening inside the lens's own page, not a boundary: they
+close the common ways to reach those features, and a determined lens may find
+another. They do not cover what the browser's preload scanner does with the
+file's own markup before any script runs, closed declarative shadow roots,
+or attribute changes made through `Attr` nodes.
+
+So an installed lens is code you trust with the trace data it is shown.
+Read a lens before you install it, and install only lenses you trust.
+`beacon lenses add` asks for that confirmation, and `beacon lenses lint`
+warns on the features above.
 
 ## Layout and style
 
@@ -270,3 +302,7 @@ The host enforces these rules; a lens does not opt into them.
 - `lenses/v1` (additive): `cache_creation_1h_input_tokens` in every usage object,
   the subset of `cache_creation_input_tokens` written with a one-hour TTL where
   the source reported it. It is a breakdown; never add it to a total.
+- `lenses/v1` (hardening): the host removes WebRTC, refuses nested frames,
+  `<link>` elements, speculation rules and `document.write`, and turns off DNS
+  prefetching. A lens that follows this spec uses none of them; the
+  [trust model](#trust-model) says what this does and does not guarantee.
