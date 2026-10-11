@@ -46,6 +46,8 @@ var lintChecks = []struct {
 		"sizes to the viewport; the frame grows to fit the document, so a viewport-height root never settles"},
 	{regexp.MustCompile(`new\s+Worker\s*\(|new\s+SharedWorker\s*\(|serviceWorker`),
 		"starts a worker, which the lens CSP blocks"},
+	{regexp.MustCompile(`\b(webkit)?RTC(PeerConnection|DataChannel)\b`),
+		"uses WebRTC, which the lens frame removes; everything comes from getTrace()"},
 }
 
 // Lint checks a lens file against spec/lenses/SPEC.md. The file-level rules (size, manifest) are

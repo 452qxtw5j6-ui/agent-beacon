@@ -75,6 +75,30 @@ window.beacon.getTrace().then(async function (data) {
       setTimeout(function () { reject(new Error("timeout")); }, 2000);
     });
   });
+  // WebRTC is outside the CSP, so the prelude removes it. Each probe passes only if no peer
+  // connection constructor is reachable, whether named directly, by a computed name, through the
+  // webkit alias, or after trying to delete or redefine the removed global.
+  function rtcReachable(get) {
+    return attempt(function () {
+      var ctor = get();
+      if (typeof ctor !== "function") throw new Error("absent");
+      return typeof ctor;
+    });
+  }
+  r.rtcDirect = await rtcReachable(function () { return window.RTCPeerConnection; });
+  r.rtcComputed = await rtcReachable(function () { return window["RTCPeer" + "Connection"]; });
+  r.rtcWebkit = await rtcReachable(function () { return window.webkitRTCPeerConnection; });
+  r.rtcDataChannel = await rtcReachable(function () { return window.RTCDataChannel; });
+  r.rtcDelete = await rtcReachable(function () {
+    try { delete window.RTCPeerConnection; } catch (e) {}
+    return window.RTCPeerConnection;
+  });
+  r.rtcRedefine = await rtcReachable(function () {
+    try { Object.defineProperty(window, "RTCPeerConnection", { value: function () {}, configurable: true, writable: true }); } catch (e) {}
+    try { window.RTCPeerConnection = function () {}; } catch (e) {}
+    return window.RTCPeerConnection;
+  });
+  r.dnsPrefetchMeta = !!document.querySelector('meta[http-equiv="x-dns-prefetch-control"][content="off"]');
   r.origin = self.origin;
   r.seenPorts = seenPorts;
   document.getElementById("results").textContent = JSON.stringify(r);

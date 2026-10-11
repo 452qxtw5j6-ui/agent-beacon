@@ -25,6 +25,7 @@ func TestLintFlagsWhatTheSandboxBlocks(t *testing.T) {
 		`location.href = "/elsewhere"`:                       "navigates a window",
 		`main { height: 100vh }`:                             "viewport",
 		`new Worker(url)`:                                    "worker",
+		`new RTCPeerConnection(config)`:                      "WebRTC",
 	}
 	for line, want := range cases {
 		html := "<!doctype html>\n" + lintManifest + "\n<script>window.beacon.getTrace()</script>\n" + line + "\n"

@@ -172,8 +172,19 @@ func TestLensFrameIsServedSandboxedWithThePrelude(t *testing.T) {
 	if h.Get("X-Content-Type-Options") != "nosniff" || h.Get("Cache-Control") != "no-store" {
 		t.Fatalf("headers = %v", h)
 	}
+	if got := h.Get("X-DNS-Prefetch-Control"); got != "off" {
+		t.Fatalf("X-DNS-Prefetch-Control = %q, want off", got)
+	}
 
 	body := rec.Body.String()
+	if !strings.Contains(body, lensDNSPrefetchMeta) {
+		t.Fatal("frame lacks the DNS prefetch meta")
+	}
+	// WebRTC is not governed by the CSP, so the prelude removes it before any lens script runs.
+	rtc := strings.Index(body, "(webkit)?RTC")
+	if rtc < 0 || rtc > strings.Index(body, "window.beacon.getTrace()") {
+		t.Fatal("the prelude must remove the WebRTC interfaces before the lens's own script")
+	}
 	if !strings.HasPrefix(body, "<!doctype html><style>") {
 		t.Fatalf("frame does not start with the doctype then the prelude: %.80q", body)
 	}

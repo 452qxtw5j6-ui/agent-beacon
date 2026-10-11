@@ -13,6 +13,23 @@
 // the host is the only party allowed to talk to the frame and anything else is ignored.
 (function () {
   "use strict";
+
+  // WebRTC is the one network API the frame's CSP does not govern: connect-src does not apply to
+  // ICE, and sandbox="allow-scripts" leaves RTCPeerConnection working, so a lens could hand trace
+  // data to a STUN/TURN server it names. Remove every RTC* interface (and the webkit alias) before
+  // any lens code runs, as non-configurable, non-writable undefined properties so a lens can neither
+  // delete nor redefine them. This is hardening inside the lens's own realm, not a browser-enforced
+  // boundary: it holds because the lens cannot reach a fresh realm (the CSP refuses frames and
+  // workers, the sandbox refuses popups, and a sandboxed about:blank child is cross-origin to it).
+  Object.getOwnPropertyNames(window).forEach(function (name) {
+    if (!/^(webkit)?RTC/.test(name)) return;
+    try {
+      Object.defineProperty(window, name, { value: undefined, writable: false, configurable: false, enumerable: false });
+    } catch (e) {
+      // A property that is already non-configurable cannot be replaced; leave it.
+    }
+  });
+
   var TIMEOUT_MS = 10000;
   var port = null;
   var pending = [];

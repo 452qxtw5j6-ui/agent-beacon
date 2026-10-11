@@ -177,6 +177,21 @@ The host enforces these rules; a lens does not opt into them.
 
   No `fetch`, XHR, WebSocket, `EventSource`, remote image, remote font,
   worker, nested frame, `eval` or `new Function`. Load nothing by URL.
+- WebRTC is not governed by the CSP, so the host removes it: before any lens
+  script runs, every `RTC*` interface on `window` (including
+  `RTCPeerConnection`, `RTCDataChannel` and `webkitRTCPeerConnection`) is
+  defined as `undefined`, non-writable and non-configurable. A lens cannot
+  delete or redefine them. This holds inside the lens's own realm only; it
+  relies on the CSP and sandbox above to keep the lens from reaching a fresh
+  realm (a frame, worker or popup) where the originals still exist.
+- The frame is served with `X-DNS-Prefetch-Control: off`, and the host
+  repeats it as a `<meta http-equiv>` in the document, so the browser does not
+  resolve hostnames the lens mentions on its own.
+- Residual risk. CSP and the sandbox are the boundary, and browsers do not
+  route every speculative or connection-warming request through them; some
+  resource-hint and speculative-loading features can still start a request a
+  CSP does not see, depending on the browser and its settings. Treat a lens
+  as code that can read the whole trace, and install only lenses you trust.
 - Trace data reaches the frame only over a private `MessageChannel` port. The
   one `postMessage` from the host to the window carries that port and
   nothing else. The lens never uses `window.postMessage` itself;

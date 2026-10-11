@@ -78,9 +78,13 @@ test('a lens cannot reach the network, the dashboard, storage or code evaluation
   for (const probe of [
     'fetchSameOrigin', 'fetchRemote', 'xhr', 'websocket', 'image', 'nestedFrame',
     'parentDocument', 'topLocation', 'localStorage', 'cookie', 'eval', 'newFunction', 'popup', 'worker',
+    'rtcDirect', 'rtcComputed', 'rtcWebkit', 'rtcDataChannel', 'rtcDelete', 'rtcRedefine',
   ]) {
     expect(r[probe], probe).toBe('blocked');
   }
+  expect(r.dnsPrefetchMeta).toBe(true); // implicit DNS prefetching is off in the document
+  const frameResponse = await page.request.get('/lenses/frame/probe');
+  expect(frameResponse.headers()['x-dns-prefetch-control']).toBe('off');
   // Spoofed window messages to the host changed nothing.
   const height = await page.locator('iframe.lens-frame').evaluate((f: HTMLIFrameElement) => f.style.height);
   expect(height).not.toBe('99999px');
