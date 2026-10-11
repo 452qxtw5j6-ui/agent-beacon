@@ -5,6 +5,10 @@ description: "Check for Beacon CLI updates and upgrade safely"
 
 ## Check for updates
 
+Running bare `beacon` in an interactive terminal shows a cached update notice when a
+newer release is available. It does not wait on a network request: when the cache is
+more than a day old, Beacon refreshes it in the background for the next run.
+
 Use `beacon version check` before upgrading to confirm whether a newer release is available:
 
 ```bash title="Check for updates"
@@ -12,6 +16,10 @@ beacon version check
 ```
 
 When an update is available, Beacon prints the latest version, the installed version, Homebrew upgrade guidance, and a release download URL.
+
+The automatic notice is skipped for scripts, pipes, redirects, other commands, CI,
+and development builds. Set `BEACON_UPDATE_CHECK=0` to disable it without disabling
+the explicit `beacon version check` command.
 
 ## Upgrade with Homebrew
 
