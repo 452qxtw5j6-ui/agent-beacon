@@ -59,13 +59,11 @@ type TraceQuery struct {
 	After       int
 }
 
+// traceAggregate is one projected trace as the JSONL scan answers from it: its finished summary
+// and its events, built by asymptoteobserve.TraceBuilder.
 type traceAggregate struct {
-	summary       TraceSummaryV1
-	events        []TraceEventV1
-	spans         map[string]*TraceSpanV1
-	models        map[string]bool
-	methods       map[string]bool
-	titlePriority int
+	summary TraceSummaryV1
+	events  []TraceEventV1
 }
 
 // The local history, once the user has opted in to it, answers the same
@@ -206,7 +204,7 @@ func ShowTrace(path, id string, query TraceQuery) (TraceShowResultV1, bool, erro
 	resp := TraceShowResultV1{
 		Trace:  agg.summary,
 		Events: append([]TraceEventV1(nil), events[offset-1:end]...),
-		Spans:  spansFromEvents(events),
+		Spans:  asymptoteobserve.TraceSpans(events),
 		Range: TraceRangeV1{
 			TotalEvents:    total,
 			ReturnedEvents: end - (offset - 1),
@@ -241,591 +239,38 @@ func readTraceAggregates(path string, query EventQuery) (map[string]*traceAggreg
 		return nil, err
 	}
 	SortRecordsAppendOrder(result.Events)
-	traces := map[string]*traceAggregate{}
+	builders := map[string]*asymptoteobserve.TraceBuilder{}
 	for _, record := range result.Events {
 		event := record.Event
 		id := traceProjectionID(event)
-		agg := traces[id]
-		if agg == nil {
-			agg = newTraceAggregate(id, event)
-			traces[id] = agg
+		builder := builders[id]
+		if builder == nil {
+			builder = asymptoteobserve.NewTraceBuilder(id, event)
+			builders[id] = builder
 		}
-		te := traceEventFromRecord(record, len(agg.events)+1)
-		agg.events = append(agg.events, te)
-		agg.update(event, te)
+		builder.Add(event, traceEventFromRecord(record, 0))
 	}
-	for _, agg := range traces {
-		agg.finish()
+	traces := make(map[string]*traceAggregate, len(builders))
+	for id, builder := range builders {
+		traces[id] = &traceAggregate{summary: builder.Summary(), events: builder.Events()}
 	}
 	return traces, nil
 }
 
-func newTraceAggregate(id string, event schema.Event) *traceAggregate {
-	return &traceAggregate{
-		summary:       newTraceSummary(id, event),
-		spans:         map[string]*TraceSpanV1{},
-		models:        map[string]bool{},
-		methods:       map[string]bool{},
-		titlePriority: -1,
-	}
-}
-
-func newTraceSummary(id string, event schema.Event) TraceSummaryV1 {
-	summary := TraceSummaryV1{
-		ID:      id,
-		Harness: TraceHarnessV1{Name: event.Harness.Name, Version: event.Harness.Version},
-		Content: TraceContentSummaryV1{Retention: "metadata"},
-		Sharing: TraceSharingV1{State: "local_only", Visibility: "private"},
-	}
-	if event.Session != nil {
-		summary.Session = &TraceSessionV1{ID: event.Session.ID, WorkingDirectory: event.Session.WorkingDirectory}
-	}
-	if event.Trace != nil {
-		summary.Trace = &TraceIdentityV1{ID: event.Trace.ID}
-	}
-	return summary
-}
-
-func (a *traceAggregate) update(event schema.Event, traceEvent TraceEventV1) {
-	a.summary.EventCount++
-	a.summary.LocalEventCount++
-	if a.summary.StartedAt == "" {
-		a.summary.StartedAt = event.Timestamp
-	}
-	a.summary.EndedAt = event.Timestamp
-	a.summary.UpdatedAt = event.Timestamp
-	if event.Harness.CollectionMethod != "" {
-		a.methods[event.Harness.CollectionMethod] = true
-	}
-	if traceEvent.Type == "user_message" || traceEvent.Type == "agent_message" {
-		a.summary.LocalMessageCount++
-	}
-	if p := traceTitlePriority(traceEvent); p > a.titlePriority {
-		a.summary.Title = traceTitle(event, traceEvent)
-		if preview := tracePreview(traceEvent); preview != "" {
-			a.summary.Preview = preview
-		}
-		a.titlePriority = p
-	}
-	if event.Session != nil && a.summary.Session == nil {
-		a.summary.Session = &TraceSessionV1{ID: event.Session.ID, WorkingDirectory: event.Session.WorkingDirectory}
-	}
-	if event.Trace != nil {
-		if a.summary.Trace == nil {
-			a.summary.Trace = &TraceIdentityV1{}
-		}
-		if a.summary.Trace.ID == "" {
-			a.summary.Trace.ID = event.Trace.ID
-		}
-		if event.Trace.ParentSpanID == "" && event.Trace.SpanID != "" && a.summary.Trace.RootSpanID == "" {
-			a.summary.Trace.RootSpanID = event.Trace.SpanID
-		}
-		if event.Trace.SpanID != "" {
-			span := a.spans[event.Trace.SpanID]
-			if span == nil {
-				span = &TraceSpanV1{ID: event.Trace.SpanID, ParentSpanID: event.Trace.ParentSpanID, TraceID: event.Trace.ID}
-				a.spans[event.Trace.SpanID] = span
-			}
-			if span.Name == "" {
-				span.Name = firstNonEmpty(event.Message, event.Event.Action)
-			}
-			span.EventIDs = append(span.EventIDs, traceEvent.ID)
-		}
-	}
-	if event.Repository != "" || event.Branch != "" {
-		if a.summary.Repository == nil {
-			a.summary.Repository = &TraceRepositoryV1{}
-		}
-		if a.summary.Repository.Path == "" {
-			a.summary.Repository.Path = event.Repository
-		}
-		if a.summary.Repository.Branch == "" {
-			a.summary.Repository.Branch = event.Branch
-		}
-	}
-	if event.Model != "" {
-		model := asymptoteobserve.NormalizeModelName(event.Model)
-		if model != "" {
-			a.models[model] = true
-		}
-	}
-	if traceEvent.Usage != nil {
-		if a.summary.TokenUsage == nil {
-			a.summary.TokenUsage = &TraceUsageV1{}
-		}
-		addTraceUsage(a.summary.TokenUsage, *traceEvent.Usage)
-	}
-	updateContentSummary(&a.summary.Content, event.Content)
-	a.updateRawMetadata(event.Raw)
-}
-
-func (a *traceAggregate) updateRawMetadata(raw map[string]interface{}) {
-	if raw == nil {
-		return
-	}
-	if namespaceID := rawString(raw, "namespace_id"); namespaceID != "" {
-		if a.summary.Namespace == nil {
-			a.summary.Namespace = &TraceNamespaceV1{}
-		}
-		a.summary.Namespace.ID = namespaceID
-	}
-	if namespaceSlug := rawString(raw, "namespace_slug"); namespaceSlug != "" {
-		if a.summary.Namespace == nil {
-			a.summary.Namespace = &TraceNamespaceV1{}
-		}
-		a.summary.Namespace.Slug = namespaceSlug
-	}
-	if namespaceName := rawString(raw, "namespace_name"); namespaceName != "" {
-		if a.summary.Namespace == nil {
-			a.summary.Namespace = &TraceNamespaceV1{}
-		}
-		a.summary.Namespace.Name = namespaceName
-	}
-	if title := firstNonEmpty(rawString(raw, "remote_title"), rawString(raw, "remote_ai_title")); title != "" {
-		if a.summary.Remote == nil {
-			a.summary.Remote = &TraceRemoteV1{}
-		}
-		a.summary.Remote.Title = title
-	}
-	if url := firstNonEmpty(rawString(raw, "shared_url"), rawString(raw, "sharedUrl")); url != "" {
-		a.summary.Sharing.URL = url
-		a.summary.Sharing.State = "shared"
-	}
-	if visibility := firstNonEmpty(rawString(raw, "visibility"), rawString(raw, "shared_visibility")); visibility != "" {
-		a.summary.Sharing.Visibility = visibility
-	}
-	if sharedAt := rawString(raw, "shared_at"); sharedAt != "" {
-		a.summary.Sharing.SharedAt = sharedAt
-	}
-	if refreshedAt := firstNonEmpty(rawString(raw, "last_refreshed_at"), rawString(raw, "synced_at")); refreshedAt != "" {
-		a.summary.Sharing.LastRefreshedAt = refreshedAt
-		if a.summary.Remote == nil {
-			a.summary.Remote = &TraceRemoteV1{}
-		}
-		a.summary.Remote.SyncedAt = refreshedAt
-	}
-	if remoteEvents := intFromRaw(raw, "remote_event_count"); remoteEvents > 0 {
-		a.summary.RemoteEventCount = remoteEvents
-	}
-	if sharedEvents := intFromRaw(raw, "shared_event_count"); sharedEvents > 0 {
-		a.summary.SharedEventCount = sharedEvents
-	}
-	if remoteMessages := intFromRaw(raw, "remote_message_count"); remoteMessages > 0 {
-		a.summary.RemoteMessageCount = remoteMessages
-	}
-}
-
-func (a *traceAggregate) finish() {
-	a.summary.Harness.CollectionMethods = sortedKeys(a.methods)
-	models := sortedKeys(a.models)
-	if len(models) > 0 {
-		a.summary.Model = &TraceModelV1{Names: models, Primary: models[0]}
-	}
-	if a.summary.Title == "" {
-		a.summary.Title = a.summary.ID
-	}
-	if a.summary.Preview == "" {
-		a.summary.Preview = a.summary.Title
-	}
-	if a.summary.Content.Retention == "" {
-		a.summary.Content.Retention = "metadata"
-	}
-	if a.summary.SharedEventCount == 0 && a.summary.RemoteEventCount > 0 {
-		a.summary.SharedEventCount = a.summary.RemoteEventCount
-	}
-	if a.summary.RemoteEventCount > 0 && a.summary.RemoteEventCount != a.summary.LocalEventCount {
-		a.summary.Sharing.State = "stale"
-	}
-}
-
+// traceEventFromRecord is the trace projection of one log record; the line's ID names an event
+// that carries no event.id.
 func traceEventFromRecord(record EventRecord, number int) TraceEventV1 {
-	event := record.Event
-	id := event.Event.ID
-	if id == "" {
-		id = record.ID
-	}
-	te := TraceEventV1{
-		ID:            id,
-		Number:        number,
-		Timestamp:     event.Timestamp,
-		Type:          traceEventType(event),
-		Action:        event.Event.Action,
-		Category:      event.Event.Category,
-		Fidelity:      event.Event.Fidelity,
-		Actor:         traceActor(event),
-		Title:         traceEventTitle(event),
-		Summary:       event.Message,
-		Model:         asymptoteobserve.NormalizeModelName(event.Model),
-		SourceEventID: id,
-	}
-	if event.Trace != nil {
-		te.Trace = &TraceEventTraceV1{ID: event.Trace.ID, SpanID: event.Trace.SpanID, ParentSpanID: event.Trace.ParentSpanID}
-	}
-	if event.GenAI != nil && event.GenAI.Tool != nil && event.GenAI.Tool.Call != nil {
-		te.ToolCallID = event.GenAI.Tool.Call.ID
-	}
-	if content := eventContent(event); content != nil {
-		te.Content = content
-	}
-	if event.Tool != nil || (event.GenAI != nil && event.GenAI.Tool != nil) {
-		te.Tool = traceTool(event)
-	}
-	if event.Command != nil {
-		te.Command = &TraceCommandV1{
-			Command:    event.Command.Command,
-			ExitCode:   event.Command.ExitCode,
-			DurationMS: event.Command.DurationMS,
-		}
-		if event.Command.Output != "" {
-			te.Command.Output = contentFromText(event.Command.Output, event.Content)
-		}
-	}
-	if event.File != nil {
-		te.File = &TraceFileV1{
-			Path:      event.File.Path,
-			Operation: event.File.Operation,
-			Language:  event.File.Language,
-			DiffHash:  event.File.DiffHash,
-			DiffBytes: event.File.DiffBytes,
-		}
-		if event.File.Diff != "" {
-			te.File.Diff = contentFromText(event.File.Diff, event.Content)
-		}
-	}
-	if event.MCP != nil {
-		te.MCP = &TraceMCPV1{Server: event.MCP.Server, Tool: event.MCP.Tool}
-		if event.MCP.Method != nil {
-			te.MCP.Method = event.MCP.Method.Name
-		}
-		if event.MCP.Resource != nil {
-			te.MCP.ResourceURI = event.MCP.Resource.URI
-		}
-		if event.MCP.Session != nil {
-			te.MCP.SessionID = event.MCP.Session.ID
-		}
-	}
-	if event.Error != nil && event.Error.Type != "" {
-		te.Error = &TraceErrorV1{Type: event.Error.Type}
-	}
-	if event.Approval != nil {
-		te.Approval = &TraceApprovalV1{Required: event.Approval.Required, Decision: event.Approval.Decision, Reason: event.Approval.Reason}
-	}
-	if event.Policy != nil {
-		te.Policy = &TracePolicyV1{
-			ID:          event.Policy.ID,
-			Name:        event.Policy.Name,
-			Decision:    event.Policy.Decision,
-			Enforcement: event.Policy.Enforcement,
-			Reason:      event.Policy.Reason,
-		}
-	}
-	if usage := traceUsage(event); usage != nil {
-		te.Usage = usage
-	}
-	return te
+	return asymptoteobserve.TraceEventFromEvent(record.Event, record.ID, number)
 }
 
 func traceProjectionID(event schema.Event) string {
-	if event.Trace != nil && strings.TrimSpace(event.Trace.ID) != "" {
-		id := strings.TrimSpace(event.Trace.ID)
-		if strings.HasPrefix(id, "session:") || strings.HasPrefix(id, "trace:") || strings.HasPrefix(id, "event:") {
-			return id
-		}
-		return "trace:" + id
-	}
-	if event.Session != nil && strings.TrimSpace(event.Session.ID) != "" {
-		harness := asymptoteobserve.NormalizeHarnessName(event.Harness.Name)
-		if harness == "" {
-			harness = strings.TrimSpace(event.Harness.Name)
-		}
-		return "session:" + harness + ":" + strings.TrimSpace(event.Session.ID)
-	}
-	if event.Event.ID != "" {
-		return "event:" + event.Event.ID
-	}
-	return "event:" + event.Timestamp + ":" + event.Event.Action + ":" + event.Message
+	return asymptoteobserve.TraceProjectionID(event)
 }
 
-func traceEventType(event schema.Event) string {
-	action := strings.ToLower(event.Event.Action)
-	category := strings.ToLower(event.Event.Category)
-	switch {
-	case category == "prompt" || strings.HasPrefix(action, "prompt."):
-		return "user_message"
-	case action == "agent.reasoning" || strings.Contains(action, "reasoning"):
-		return "agent_reasoning"
-	case action == "agent.message" || action == "assistant.message":
-		return "agent_message"
-	case strings.HasPrefix(action, "tool.invoked") || action == "tool.started":
-		return "tool_call"
-	case strings.HasPrefix(action, "tool.") || category == "tool":
-		return "tool_result"
-	case category == "command" || event.Command != nil:
-		return "command"
-	case category == "file" || event.File != nil:
-		return "file"
-	case category == "mcp" || event.MCP != nil:
-		return "mcp"
-	case category == "approval" || event.Approval != nil || event.Policy != nil:
-		return "approval"
-	case category == "metric" && event.GenAI != nil && event.GenAI.Usage != nil:
-		return "token_usage"
-	case category == "session":
-		return "session"
-	case strings.Contains(action, "error") || event.Error != nil:
-		return "error"
-	default:
-		return "other"
-	}
-}
-
-func traceActor(event schema.Event) string {
-	switch traceEventType(event) {
-	case "user_message":
-		return "user"
-	case "agent_message", "agent_reasoning":
-		return "assistant"
-	case "tool_call", "tool_result", "command", "file", "mcp":
-		return "tool"
-	default:
-		if strings.HasPrefix(event.Event.Action, "endpoint.") || strings.HasPrefix(event.Event.Action, "telemetry.") {
-			return "beacon"
-		}
-		return "runtime"
-	}
-}
-
-// traceTitlePriority ranks an event as a source for the trace title and
-// preview. A trace usually opens on lifecycle noise (session.started,
-// session.context), so a later user prompt outranks it and takes the label;
-// ties keep the earlier event, so the first prompt names the trace. The
-// aggregate seeds this at -1 rather than 0, so a trace that only ever carries
-// lifecycle events is still named by its first one rather than falling back to
-// its raw trace ID in finish().
-func traceTitlePriority(event TraceEventV1) int {
-	switch event.Type {
-	case "user_message":
-		return 2
-	case "session", "other":
-		return 0
-	default:
-		return 1
-	}
-}
-
-func traceTitle(event schema.Event, traceEvent TraceEventV1) string {
-	content := ""
-	if traceEvent.Content != nil {
-		content = traceEvent.Content.Text
-	}
-	for _, value := range []string{content, traceEvent.Title, traceEvent.Summary, event.Message} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return truncateString(trimmed, 80)
-		}
-	}
-	return traceEvent.Type
-}
-
-func tracePreview(event TraceEventV1) string {
-	if event.Content != nil && event.Content.Text != "" {
-		return truncateString(event.Content.Text, 160)
-	}
-	return truncateString(firstNonEmpty(event.Summary, event.Title), 160)
-}
-
-func traceEventTitle(event schema.Event) string {
-	switch {
-	case event.Command != nil && event.Command.Command != "":
-		return event.Command.Command
-	case event.File != nil && event.File.Path != "":
-		return event.File.Path
-	case event.MCP != nil && (event.MCP.Server != "" || event.MCP.Tool != ""):
-		return strings.Trim(strings.Join([]string{event.MCP.Server, event.MCP.Tool}, " "), " ")
-	case event.Tool != nil && event.Tool.Name != "":
-		return event.Tool.Name
-	default:
-		return event.Event.Action
-	}
-}
-
-func eventContent(event schema.Event) *TraceContentV1 {
-	if event.Prompt != nil && event.Prompt.Text != "" {
-		return contentFromText(event.Prompt.Text, event.Content)
-	}
-	var partType string
-	switch traceEventType(event) {
-	case "agent_message":
-		partType = asymptoteobserve.GenAIPartTypeText
-	case "agent_reasoning":
-		partType = asymptoteobserve.GenAIPartTypeReasoning
-	}
-	if partType != "" {
-		// The retained turn text lives in gen_ai.output.messages; event.Message on
-		// these events is usually a fixed label ("Codex assistant message"). The
-		// label stays the event summary, and is the content only when no text was
-		// retained.
-		if text := retainedOutputText(event.GenAI, partType); text != "" {
-			return retainedOutputContent(text, event.Content)
-		}
-		if event.Message != "" {
-			return contentFromText(event.Message, event.Content)
-		}
-	}
-	return contentFromContentInfo(event.Content)
-}
-
-// retainedOutputContent is contentFromText for text read back out of
-// gen_ai.output.messages. The writer already redacted and bounded each stored
-// part, but an event can carry several parts, so the joined text is held to the
-// same limit prompt.text is stored at and redacted again; the marker records
-// either change so a reader can still tell the copy was altered.
-func retainedOutputContent(text string, info *schema.ContentInfo) *TraceContentV1 {
-	bounded := asymptoteobserve.TruncateString(text, asymptoteobserve.DefaultStringLimit)
-	cleaned := asymptoteobserve.RedactString(bounded)
-	content := contentFromText(cleaned, info)
-	if bounded != text {
-		content.Truncated = true
-	}
-	if cleaned != bounded {
-		content.Redacted = true
-	}
-	return content
-}
-
-// RetainedOutputText is retainedOutputText for readers outside the dashboard, such as the handoff
-// brief, so every reader agrees on which parts are what the assistant said.
+// RetainedOutputText is asymptoteobserve.RetainedOutputText, for readers that reach it through
+// the dashboard, such as the handoff brief.
 func RetainedOutputText(genAI *schema.GenAIInfo, partType string) string {
-	return retainedOutputText(genAI, partType)
-}
-
-// retainedOutputText joins the assistant parts of partType in
-// gen_ai.output.messages, in order, as asymptoteobserve.GenAIText reads them.
-// Parts of another type -- reasoning on a message event, tool calls -- are
-// skipped, so an assistant message never shows its reasoning as what it said.
-func retainedOutputText(genAI *schema.GenAIInfo, partType string) string {
-	if genAI == nil || genAI.Output == nil {
-		return ""
-	}
-	return strings.Join(asymptoteobserve.GenAIText(genAI.Output.Messages, asymptoteobserve.RoleAssistant, partType), "\n\n")
-}
-
-func contentFromText(text string, info *schema.ContentInfo) *TraceContentV1 {
-	content := contentFromContentInfo(info)
-	if content == nil {
-		content = &TraceContentV1{Retention: "full", Included: true}
-	}
-	content.Text = text
-	if content.Retention == "" {
-		content.Retention = "full"
-	}
-	content.Included = true
-	return content
-}
-
-func contentFromContentInfo(info *schema.ContentInfo) *TraceContentV1 {
-	if info == nil {
-		return nil
-	}
-	return &TraceContentV1{
-		Retention: info.Retention,
-		Included:  info.Included,
-		Redacted:  info.Redacted,
-		Truncated: info.Truncated,
-		Hash:      info.Hash,
-		Bytes:     info.Bytes,
-	}
-}
-
-func traceTool(event schema.Event) *TraceToolV1 {
-	tool := &TraceToolV1{}
-	if event.Tool != nil {
-		tool.Name = event.Tool.Name
-		tool.Command = event.Tool.Command
-		tool.Path = event.Tool.Path
-	}
-	if event.GenAI != nil && event.GenAI.Tool != nil {
-		if tool.Name == "" {
-			tool.Name = event.GenAI.Tool.Name
-		}
-		if event.GenAI.Tool.Call != nil {
-			tool.Arguments = event.GenAI.Tool.Call.Arguments
-			tool.Result = event.GenAI.Tool.Call.Result
-		}
-	}
-	return tool
-}
-
-func traceUsage(event schema.Event) *TraceUsageV1 {
-	if event.GenAI == nil || event.GenAI.Usage == nil {
-		return nil
-	}
-	usage := event.GenAI.Usage
-	out := &TraceUsageV1{}
-	if usage.InputTokens != nil {
-		out.InputTokens = *usage.InputTokens
-	}
-	if usage.OutputTokens != nil {
-		out.OutputTokens = *usage.OutputTokens
-	}
-	if usage.CacheRead != nil && usage.CacheRead.InputTokens != nil {
-		out.CacheReadInputTokens = *usage.CacheRead.InputTokens
-	}
-	if usage.CacheCreation != nil && usage.CacheCreation.InputTokens != nil {
-		out.CacheCreationInputTokens = *usage.CacheCreation.InputTokens
-		out.CacheCreation1hInputTokens = usage.CacheCreation.OneHourInputTokens()
-	}
-	if usage.Reasoning != nil && usage.Reasoning.OutputTokens != nil {
-		out.ReasoningOutputTokens = *usage.Reasoning.OutputTokens
-	}
-	if usage.CostUSD != nil {
-		out.CostUSD = *usage.CostUSD
-	}
-	if traceUsageEmpty(*out) {
-		return nil
-	}
-	return out
-}
-
-func traceUsageEmpty(u TraceUsageV1) bool {
-	return u.InputTokens == 0 && u.OutputTokens == 0 && u.CacheReadInputTokens == 0 && u.CacheCreationInputTokens == 0 && u.ReasoningOutputTokens == 0 && u.CostUSD == 0
-}
-
-func addTraceUsage(u *TraceUsageV1, delta TraceUsageV1) {
-	u.InputTokens += delta.InputTokens
-	u.OutputTokens += delta.OutputTokens
-	u.CacheReadInputTokens += delta.CacheReadInputTokens
-	u.CacheCreationInputTokens += delta.CacheCreationInputTokens
-	u.CacheCreation1hInputTokens += delta.CacheCreation1hInputTokens
-	u.ReasoningOutputTokens += delta.ReasoningOutputTokens
-	u.CostUSD += delta.CostUSD
-}
-
-func updateContentSummary(summary *TraceContentSummaryV1, info *schema.ContentInfo) {
-	if summary.Retention == "" {
-		summary.Retention = "metadata"
-	}
-	if info == nil {
-		return
-	}
-	switch {
-	case info.Redacted:
-		summary.HasRedactions = true
-	case info.Truncated:
-		summary.HasTruncations = true
-	}
-	if info.Truncated {
-		summary.HasTruncations = true
-	}
-	if summary.Retention == "mixed" || info.Retention == "" {
-		return
-	}
-	if summary.Retention == "metadata" && info.Retention != "metadata" {
-		summary.Retention = info.Retention
-		return
-	}
-	if summary.Retention != info.Retention {
-		summary.Retention = "mixed"
-	}
+	return asymptoteobserve.RetainedOutputText(genAI, partType)
 }
 
 func filterTraceSummaries(traces map[string]*traceAggregate, query TraceQuery) []TraceSummaryV1 {
@@ -921,15 +366,6 @@ func traceRange(query TraceQuery, total int) (int, int) {
 		limit = total - offset + 1
 	}
 	return offset, limit
-}
-
-func traceSpanList(spans map[string]*TraceSpanV1) []TraceSpanV1 {
-	out := make([]TraceSpanV1, 0, len(spans))
-	for _, span := range spans {
-		out = append(out, *span)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
 }
 
 // traceSummaryHaystack is the text a free-text query is matched against for one
@@ -1106,26 +542,6 @@ func truncateString(value string, limit int) string {
 		return value
 	}
 	return value[:limit]
-}
-
-func intFromRaw(raw map[string]interface{}, key string) int {
-	value, ok := raw[key]
-	if !ok {
-		return 0
-	}
-	switch typed := value.(type) {
-	case int:
-		return typed
-	case int64:
-		return int(typed)
-	case float64:
-		return int(typed)
-	case string:
-		parsed, _ := strconv.Atoi(typed)
-		return parsed
-	default:
-		return 0
-	}
 }
 
 func valueOrEmpty[T any](value *T, render func(*T) string) string {

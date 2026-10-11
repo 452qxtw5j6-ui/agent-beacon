@@ -31,7 +31,7 @@ import (
 // store cannot answer a query.
 //
 // The store must answer the same question the JSONL scan answers. Every event is stored, in log
-// order, and projected by the same code (traceEventFromRecord and traceAggregate), so trace
+// order, and projected by the same code (asymptoteobserve.TraceEventFromEvent and TraceBuilder), so trace
 // membership, event numbers, summaries and search results match the JSONL path for the same log.
 
 const (
@@ -41,7 +41,7 @@ const (
 	// historyDerivationVersion covers everything computed from a stored line: trace keys, event
 	// numbers, types, summaries and search text. Bump it when that projection changes; the next
 	// catch-up recomputes it from the stored lines, so history survives the change.
-	historyDerivationVersion = 4 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split
+	historyDerivationVersion = 6 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split; 5: agent.response is an agent message; 6: the summary names its project
 
 	defaultHistoryRetentionDays = 90
 	// maxHistoryRetentionDays is 100 years: a retention this long or longer means nothing expires.

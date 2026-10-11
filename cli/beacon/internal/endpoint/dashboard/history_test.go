@@ -803,13 +803,19 @@ func noiseText(seed, n int) string {
 }
 
 // The store keeps only the raw keys in historyRawKeys. A raw key the dashboard reads and the store
-// drops would make a rebuilt history differ from the log, so every one must be listed.
+// drops would make a rebuilt history differ from the log, so every one must be listed. The trace
+// projection the dashboard calls lives in pkg/asymptoteobserve (tracebuild.go), so its reads count.
 func TestHistoryKeepsEveryRawKeyTheDashboardReads(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
-	pattern := regexp.MustCompile(`(?:rawString\([^,]+, |intFromRaw\([^,]+, |Raw\[)"([^"]+)"`)
+	projection, err := filepath.Glob(filepath.Join("..", "..", "..", "..", "..", "pkg", "asymptoteobserve", "tracebuild*.go"))
+	if err != nil || len(projection) == 0 {
+		t.Fatalf("trace projection sources not found: %v", err)
+	}
+	files = append(files, projection...)
+	pattern := regexp.MustCompile(`(?:(?:rawString|traceRawString)\([^,]+, |(?:intFromRaw|traceIntFromRaw)\([^,]+, |Raw\[)"([^"]+)"`)
 	found := 0
 	for _, file := range files {
 		if strings.HasSuffix(file, "_test.go") {

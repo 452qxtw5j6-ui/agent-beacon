@@ -96,8 +96,8 @@ func TestGitPrePushSharesLinkedSessions(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr %q", stderr.String())
 	}
-	if len(srv.messages) != 4 {
-		t.Fatalf("server messages = %d", len(srv.messages))
+	if len(srv.events) != 4 {
+		t.Fatalf("server events = %d", len(srv.events))
 	}
 	want := "beacon:claude_code/" + shareTestSession + " https://beacon.sh/s/k3xabc\nbeacon:cursor/someone-else"
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
