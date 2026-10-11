@@ -190,6 +190,75 @@ window.beacon.getTrace().then(async function (data) {
     t.content.firstChild.replaceWith(new DOMParser().parseFromString(childMarkup, "text/html").body.firstChild);
     holder().appendChild(t.content.cloneNode(true));
   });
+  // Markup the browser parses differently from a plain whole-document parse: with scripting on, a
+  // <noscript> is raw text, so the attribute below closes it and what follows is real markup; and in
+  // an <svg> or <math> context, <style> holds markup and an integration point turns it back into
+  // HTML. A check that parses differently from the real call sees only text here. Each probe also
+  // reports whether a refused element survived, so a run without the guard shows the differential.
+  var noscriptMarkup = '<noscript><p title="</noscript><link rel=preconnect href=http://127.0.0.1:9/?via=noscript><iframe></iframe>"></p></noscript>';
+  function survived(root, fn) {
+    return attempt(function () {
+      fn();
+      return root.querySelector("iframe, link") ? "present" : "absent";
+    });
+  }
+  var h;
+  h = holder(); r.noscriptInnerHTML = await survived(h, function () { h.innerHTML = noscriptMarkup; });
+  h = holder(); r.noscriptInsertAdjacentHTML = await survived(h, function () { h.insertAdjacentHTML("afterbegin", noscriptMarkup); });
+  h = holder(); r.noscriptSetHTMLUnsafe = await survived(h, function () { h.setHTMLUnsafe(noscriptMarkup); });
+  h = holder(); var inner = document.createElement("span"); h.appendChild(inner);
+  r.noscriptOuterHTML = await survived(h, function () { inner.outerHTML = noscriptMarkup; });
+  h = holder(); var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); h.appendChild(svg);
+  r.foreignSvg = await survived(h, function () {
+    svg.innerHTML = '<style><foreignObject><iframe></iframe></foreignObject></style>';
+  });
+  h = holder(); var math = document.createElementNS("http://www.w3.org/1998/Math/MathML", "math"); h.appendChild(math);
+  r.foreignMath = await survived(h, function () { math.innerHTML = '<style><mi><iframe></iframe></mi></style>'; });
+  // A closed declarative shadow root hides its content from every later scan, so only the check of
+  // the markup itself can stop this one.
+  h = holder();
+  r.templateClosedShadow = await survived(h, function () {
+    h.setHTMLUnsafe('<div><template shadowrootmode="closed">' + noscriptMarkup + "</template></div>");
+  });
+  r.parseHTMLUnsafeClosedShadow = await survived(h, function () {
+    if (typeof Document.parseHTMLUnsafe !== "function") throw new Error("unsupported");
+    var parsed = Document.parseHTMLUnsafe('<div id="shadow-host"><template shadowrootmode="closed"><iframe></iframe></template></div>');
+    h.appendChild(document.adoptNode(parsed.getElementById("shadow-host")));
+  });
+  r.execCommandInsertHTML = await added(function () {
+    var editable = holder();
+    editable.contentEditable = "true";
+    editable.focus();
+    document.getSelection().selectAllChildren(editable);
+    if (!document.execCommand("insertHTML", false, "<iframe></iframe>")) throw new Error("not run");
+  });
+  // Benign markup must come out exactly as the browser's own parsing builds it.
+  r.benignParsing = (function () {
+    var d = holder();
+    d.innerHTML = "<b>x</b><script>window.innerScriptRan = true<\/script>";
+    d.insertAdjacentHTML("beforeend", "<i>y</i>");
+    d.insertAdjacentHTML("beforebegin", "<hr id=before>");
+    d.firstChild.outerHTML = "<u>z</u><s>w</s>";
+    var svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    d.appendChild(svgEl);
+    svgEl.innerHTML = "<circle r='1'/>";
+    var table = document.createElement("table");
+    d.appendChild(table);
+    table.innerHTML = "<tr><td>2</td></tr>";
+    var template = document.createElement("template");
+    template.innerHTML = "<tr><td>1</td></tr>";
+    var shadow = holder().attachShadow({ mode: "open" });
+    shadow.innerHTML = "<em>s</em>";
+    var noscript = holder();
+    noscript.innerHTML = "<noscript><p>n</p></noscript>";
+    return [
+      Array.prototype.map.call(d.childNodes, function (n) { return n.localName; }).join("+"),
+      d.previousSibling.id, window.innerScriptRan === undefined ? "inert" : "ran",
+      svgEl.firstChild.namespaceURI === "http://www.w3.org/2000/svg" ? "svg" : "html",
+      table.firstChild.localName, template.content.firstChild.localName, shadow.firstChild.localName,
+      noscript.firstChild.firstChild.nodeType,
+    ].join(",");
+  })();
   r.frameStatic = staticChildMessages.length ? "allowed:" + staticChildMessages[0]
     : document.getElementById("static-frame") ? "present" : "blocked";
   r.hintCreate = await added(function () { document.createElement("LINK"); });

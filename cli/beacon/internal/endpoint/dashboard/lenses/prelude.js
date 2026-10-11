@@ -39,8 +39,10 @@
   // object, embed, portal, fencedframe: a fresh realm with WebRTC intact), a <link> (a lens loads
   // nothing by URL, and rel=preconnect/prefetch/prerender/dns-prefetch/preload can start a request
   // the CSP does not see), or a <script type=speculationrules>. Creating, inserting or parsing one
-  // in through the DOM APIs throws; document.write is refused outright; a mutation observer removes
-  // any that the parser puts in from the lens file's own markup. Not covered: what the browser's
+  // in through the DOM APIs throws (markup is parsed in the real call's document and context, so
+  // the check sees what the browser builds); document.write and execCommand("insertHTML") are
+  // refused outright; a mutation observer removes any that the parser puts in from the lens file's
+  // own markup. Not covered: what the browser's
   // preload scanner does with the file's own markup before any script runs, closed declarative
   // shadow roots, and attribute changes made through Attr nodes. `beacon lenses lint` warns on these
   // elements and on declarative shadow roots in source. Everything the guard calls is captured
@@ -70,6 +72,19 @@
     var shadowRoot = getter(Element.prototype, "shadowRoot");
     var listLength = getter(NodeList.prototype, "length");
     var addedNodes = getter(MutationRecord.prototype, "addedNodes");
+    var ownerDocument = getter(Node.prototype, "ownerDocument");
+    var parentNode = getter(Node.prototype, "parentNode");
+    var childNodes = getter(Node.prototype, "childNodes");
+    var shadowHost = getter(ShadowRoot.prototype, "host");
+    var createElementNS = method(Document.prototype, "createElementNS");
+    var setInnerHTML = Object.getOwnPropertyDescriptor(Element.prototype, "innerHTML").set;
+    var indexOf = method(String.prototype, "indexOf");
+    // The native insertions, kept before they are wrapped below.
+    var insert = Object.create(null);
+    ["replaceChildren", "replaceWith", "before", "after", "prepend", "append"].forEach(function (name) {
+      insert[name] = method(Element.prototype, name);
+    });
+    insert.fragmentReplaceChildren = method(DocumentFragment.prototype, "replaceChildren");
     var getAttribute = method(Element.prototype, "getAttribute");
     var removeElement = method(Element.prototype, "remove");
     var trim = method(String.prototype, "trim");
@@ -122,7 +137,46 @@
     function checkNode(node) {
       eachRefused(node, function (el) { refuse("add a <" + localName(el) + "> element"); });
     }
-    function checkMarkup(markup) {
+    // Parses markup as the browser does for the fragment parsing behind innerHTML and its kin: in the
+    // same document (so with the same scripting flag, which decides whether <noscript> is raw text)
+    // and with a context element of the same name and namespace (which decides how <svg>, <math>,
+    // tables and raw-text elements read it). The scratch context is detached, so nothing parsed into
+    // it loads. Returns the parsed nodes once none of them, template contents included, is refused;
+    // the caller inserts exactly these nodes, so the browser never parses the markup a second time.
+    function parseInContext(context, markup) {
+      var ns = namespaceURI(context);
+      var name = localName(context);
+      // An autonomous custom element parses like any unknown element; do not run its constructor.
+      if (ns === HTML_NS && indexOf(name, ["-"]) >= 0) name = "div";
+      var scratch = createElementNS(ownerDocument(context), [ns, name]);
+      apply(setInnerHTML, scratch, [markup]);
+      var root = ns === HTML_NS && name === "template" ? templateContent(scratch) : scratch;
+      var list = childNodes(root);
+      var nodes = Object.create(null);
+      nodes.length = listLength(list);
+      for (var i = 0; i < nodes.length; i++) nodes[i] = list[i];
+      for (var j = 0; j < nodes.length; j++) checkNode(nodes[j]);
+      return nodes;
+    }
+    // The context the browser uses for markup inserted beside or into node: a shadow root parses in
+    // its host's context, and a fragment or an <html> element in a new <body>'s.
+    function contextFor(node) {
+      var type = nodeType(node);
+      if (type === 11 && isShadowRoot(node)) return shadowHost(node);
+      if (type === 1 && !(namespaceURI(node) === HTML_NS && localName(node) === "html")) return node;
+      return createElementNS(ownerDocument(node), [HTML_NS, "body"]);
+    }
+    function isShadowRoot(node) {
+      try {
+        shadowHost(node);
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    // A whole document parsed with no browsing context (Document.parseHTMLUnsafe) parses like a
+    // DOMParser document: scripting off, no context element.
+    function checkDocumentMarkup(markup) {
       checkNode(parseHTML(parser, [markup, "text/html"]));
     }
 
@@ -134,16 +188,18 @@
         return apply(original, this, arguments);
       };
     }
-    function wrapSetter(proto, name, check, convert) {
+    // handle(target, value, set) replaces the setter; set(target, value) is the native one.
+    function wrapSetter(proto, name, handle, convert) {
       var desc = proto && Object.getOwnPropertyDescriptor(proto, name);
       if (!desc || !desc.set) return;
-      var set = desc.set;
+      var native = desc.set;
+      function set(target, value) {
+        apply(native, target, [value]);
+      }
       Object.defineProperty(proto, name, {
         get: desc.get,
         set: function (value) {
-          var converted = (convert || text)(value);
-          check(this, converted);
-          apply(set, this, [converted]);
+          handle(this, (convert || text)(value), set);
         },
         enumerable: desc.enumerable,
         configurable: true
@@ -174,26 +230,70 @@
     wrapMethod(Range.prototype, "insertNode", checkNodeArgs);
     wrapMethod(Range.prototype, "surroundContents", checkNodeArgs);
 
-    // HTML parsing into the live document. Markup is parsed once into an inert document and refused
-    // if it holds a refused element; the converted string is what then reaches the real parser.
+    // HTML parsing into a document. innerHTML, outerHTML and insertAdjacentHTML parse the markup once,
+    // in the real context, check the result and insert exactly those nodes (parseInContext).
+    function setInner(target, markup) {
+      var nodes = parseInContext(contextFor(target), markup);
+      if (nodeType(target) === 11) {
+        insert.fragmentReplaceChildren(target, nodes);
+      } else if (namespaceURI(target) === HTML_NS && localName(target) === "template") {
+        insert.fragmentReplaceChildren(templateContent(target), nodes);
+      } else {
+        insert.replaceChildren(target, nodes);
+      }
+    }
+    wrapSetter(Element.prototype, "innerHTML", setInner, nullToEmpty);
+    wrapSetter(ShadowRoot.prototype, "innerHTML", setInner, nullToEmpty);
+    wrapSetter(Element.prototype, "outerHTML", function (target, markup, set) {
+      var parent = parentNode(target);
+      // No parent: the native setter does nothing. A document parent: it throws before parsing.
+      if (parent === null || nodeType(parent) === 9) return set(target, markup);
+      insert.replaceWith(target, parseInContext(contextFor(parent), markup));
+    }, nullToEmpty);
+    var insertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+    Element.prototype.insertAdjacentHTML = function (position, markup) {
+      var where = lower(text(position), []);
+      var outside = where === "beforebegin" || where === "afterend";
+      var parent = outside ? parentNode(this) : this;
+      if ((!outside && where !== "afterbegin" && where !== "beforeend") || parent === null || nodeType(parent) === 9) {
+        return apply(insertAdjacentHTML, this, arguments); // the native call throws (or does nothing)
+      }
+      var nodes = parseInContext(contextFor(parent), text(markup));
+      var into = { beforebegin: insert.before, afterbegin: insert.prepend, beforeend: insert.append, afterend: insert.after };
+      into[where](this, nodes);
+    };
+    // setHTMLUnsafe and setHTML also build declarative shadow roots, which parseInContext's nodes
+    // cannot carry, so they are checked in the real context (a closed root's content is checked as
+    // the template it is written in) and then handed to the native parser with the same string. As
+    // a second line, anything refused that the native parse still produced, where a scan can see it,
+    // is removed before the call returns.
     [Element, ShadowRoot].forEach(function (type) {
-      wrapSetter(type.prototype, "innerHTML", function (target, markup) { checkMarkup(markup); }, nullToEmpty);
       ["setHTMLUnsafe", "setHTML"].forEach(function (name) {
-        wrapMethod(type.prototype, name, function (target, args) {
-          args[0] = text(args[0]);
-          checkMarkup(args[0]);
-        });
+        var native = type.prototype[name];
+        if (typeof native !== "function") return;
+        type.prototype[name] = function (markup) {
+          var args = arguments;
+          args[0] = text(markup);
+          parseInContext(contextFor(this), args[0]);
+          var result = apply(native, this, args);
+          var removed = false;
+          eachRefused(this, function (el) { removeElement(el, []); removed = true; });
+          if (removed) refuse("add a nested frame, a <link> or speculation rules");
+          return result;
+        };
       });
     });
-    wrapSetter(Element.prototype, "outerHTML", function (target, markup) { checkMarkup(markup); }, nullToEmpty);
-    wrapMethod(Element.prototype, "insertAdjacentHTML", function (target, args) {
-      args[1] = text(args[1]);
-      checkMarkup(args[1]);
-    });
+    if (typeof Document.parseHTMLUnsafe === "function") {
+      var parseHTMLUnsafe = Document.parseHTMLUnsafe;
+      Document.parseHTMLUnsafe = function (markup) {
+        var converted = text(markup);
+        checkDocumentMarkup(converted);
+        return apply(parseHTMLUnsafe, this, [converted]);
+      };
+    }
+    // insertHTML parses in whatever context the selection is in; a lens has no use for it.
     wrapMethod(Document.prototype, "execCommand", function (doc, args) {
-      if (args.length < 3 || lower(text(args[0]), []) !== "inserthtml") return;
-      args[2] = text(args[2]);
-      checkMarkup(args[2]);
+      if (lower(text(args[0]), []) === "inserthtml") refuse("use execCommand(\"insertHTML\")");
     });
     // document.write can split one element across calls, so no single call can be checked.
     ["write", "writeln"].forEach(function (name) {
@@ -206,8 +306,9 @@
       .forEach(function (entry) {
         wrapSetter(entry[0].prototype, entry[1], function () { refuse("load a nested frame"); });
       });
-    wrapSetter(HTMLScriptElement.prototype, "type", function (el, type) {
+    wrapSetter(HTMLScriptElement.prototype, "type", function (el, type, set) {
       if (isSpeculationRules(type)) refuse("add speculation rules");
+      set(el, type);
     });
     function checkScriptType(el, name, value) {
       if (lower(text(name), []) === "type" && namespaceURI(el) === HTML_NS && localName(el) === "script" && isSpeculationRules(value)) {

@@ -194,10 +194,12 @@ The host enforces these rules; a lens does not opt into them.
   `preconnect`, `prefetch` and `preload` are links), and
   `<script type="speculationrules">`. Creating one, inserting one, or parsing
   one in through `innerHTML`, `outerHTML`, `insertAdjacentHTML`,
-  `setHTMLUnsafe` or `execCommand` throws a `NotSupportedError`
-  `DOMException`; `document.write` and `document.writeln` always throw; and
-  any the parser puts in from the lens file's own markup is removed before
-  the next script runs.
+  `setHTMLUnsafe` or `Document.parseHTMLUnsafe` throws a `NotSupportedError`
+  `DOMException`. The host parses such markup in the same document and
+  context as the real call, so it checks what the browser would build;
+  `document.write`, `document.writeln` and `execCommand("insertHTML")`
+  always throw; and any the parser puts in from the lens file's own markup
+  is removed before the next script runs.
 - The frame is served with `X-DNS-Prefetch-Control: off`, and the host
   repeats it as a `<meta http-equiv>` in the document, so the browser does not
   resolve hostnames the lens mentions on its own.

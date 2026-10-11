@@ -88,9 +88,16 @@ test('a lens cannot reach the network, the dashboard, storage or code evaluation
     'frameDocumentWrite', 'frameParsedAdopt', 'frameFragment', 'frameShadow', 'frameTemplateClone', 'frameStatic',
     'hintCreate', 'hintInnerHTML', 'hintStatic',
     'rulesTypeProperty', 'rulesSetAttribute', 'rulesMutateManifest', 'rulesInnerHTML', 'rulesStatic',
+    // Markup the real parser reads differently from a plain document parse: <noscript> with scripting
+    // on, foreign content contexts, and closed declarative shadow roots.
+    'noscriptInnerHTML', 'noscriptInsertAdjacentHTML', 'noscriptSetHTMLUnsafe', 'noscriptOuterHTML',
+    'foreignSvg', 'foreignMath', 'templateClosedShadow', 'parseHTMLUnsafeClosedShadow', 'execCommandInsertHTML',
   ]) {
     expect(r[probe], probe).toBe('blocked');
   }
+  // The guard parses markup itself; benign markup must come out exactly as the browser builds it
+  // (children, beside-insertion, context-dependent tbody, inert innerHTML scripts, <noscript> as text).
+  expect(r.benignParsing).toBe('u+s+script+i+svg+table,before,inert,svg,tbody,tr,em,3');
   expect(r.dnsPrefetchMeta).toBe(true); // implicit DNS prefetching is off in the document
   const frameResponse = await page.request.get('/lenses/frame/probe');
   expect(frameResponse.headers()['x-dns-prefetch-control']).toBe('off');
