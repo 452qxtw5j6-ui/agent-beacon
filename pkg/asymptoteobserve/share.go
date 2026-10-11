@@ -1402,12 +1402,9 @@ func ShareMetadataFromEventsWithOptions(events []Event, opts ShareOptions) Share
 			meta.RelationshipType = ShareRelationshipResume
 		}
 	}
-	home := ""
-	if !opts.NoHomeLookup {
-		home = opts.HomeDirectory
-		if home == "" {
-			home, _ = os.UserHomeDir()
-		}
+	home := opts.HomeDirectory
+	if home == "" && !opts.NoHomeLookup {
+		home, _ = os.UserHomeDir()
 	}
 	if firstPrompt != "" {
 		meta.Title = ShareTitle(newPathScrubber(firstNonEmptyString(opts.WorkingDirectory, workDir), home).text(firstPrompt))
