@@ -159,10 +159,28 @@ beacon mcp connect --token-env BEACON_MCP_TOKEN
 
 Beacon writes only the variable's name into the harness configuration, never the token.
 
-- Tokens from `beacon mcp token create` are **read-only**. Use OAuth to publish lenses.
+- Tokens from `beacon mcp token create` are **read-only**. To publish lenses with a token, create
+  one with **Read + publish lenses** access on the [MCP Access](https://beacon.sh/dashboard/mcp)
+  page instead.
 - Tokens start with `bcn_mcp_`, are shown once, and expire after 90 days by default
   (`--expires-in-days`, up to 366, or `0` for never).
 - You can have up to 25 active tokens.
+
+## Manage access in the dashboard
+
+The **MCP Access** page at [beacon.sh/dashboard/mcp](https://beacon.sh/dashboard/mcp), under
+**Identity** in the dashboard sidebar, shows everything that can reach your history over MCP:
+
+- **What Beacon MCP can access:** the server URL, and what read and write access allow.
+- **Connected apps:** every client you approved in the browser, whether it can publish lenses, and
+  when it was last used. Select **Disconnect** to remove one.
+- **Access tokens:** every token, its access, expiry and last use. Create a token here, including
+  one that can publish lenses, or select **Revoke**. A token is shown once, when you create it.
+- **Agents on your devices:** each supported agent Beacon found on your connected devices, and
+  whether `beacon-managed` is already configured in it. For one that is not, the page gives you the
+  `beacon mcp connect --harness <name>` command to run on that device.
+
+Disconnecting an app or revoking a token takes effect within 30 seconds.
 
 ## Security
 

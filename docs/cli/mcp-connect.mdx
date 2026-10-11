@@ -137,7 +137,7 @@ then registers itself, opens a browser, and you approve access on beacon.sh. No 
 by Beacon, and access is revoked from the dashboard.
 
 **A personal token** is for harnesses or setups where browser sign-in does not work. Create one
-with `beacon mcp token create` (or at beacon.sh → Dashboard → MCP Access), export it, and connect
+with `beacon mcp token create` (or at [beacon.sh → Dashboard → MCP Access](https://beacon.sh/dashboard/mcp)), export it, and connect
 with `--token-env`:
 
 ```bash
@@ -173,7 +173,7 @@ JSON on stdout instead. Beacon never writes the token to a file.
 | `--json` | Print the token and its details as JSON |
 
 The token reads your Beacon Cloud data, counts toward the limit of 25 active tokens, and is
-revoked at beacon.sh → Dashboard → MCP Access. It needs the `mcp:token:create` permission, which
+revoked at [beacon.sh → Dashboard → MCP Access](https://beacon.sh/dashboard/mcp). It needs the `mcp:token:create` permission, which
 `beacon login` requests and the sign-in page lists; a session from an older `beacon login` is
 refused with a prompt to sign in again.
 
@@ -209,7 +209,7 @@ Connect writes these entries (OAuth mode shown, then what `--token-env NAME` add
 
 These harnesses have no MCP OAuth support Beacon has confirmed, so connect writes nothing for them.
 It prints the command or snippet instead, with a `<token>` placeholder for a token from
-beacon.sh → Dashboard → MCP Access:
+[beacon.sh → Dashboard → MCP Access](https://beacon.sh/dashboard/mcp):
 
 - GitHub Copilot CLI: `copilot mcp add --transport http beacon-managed <url> --header "Authorization: Bearer <token>"`
 - Cline: a `streamableHttp` entry in `cline_mcp_settings.json`
