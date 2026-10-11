@@ -103,12 +103,14 @@ trace view uses. Its main parts:
 
 - `trace.summary`: title, `started_at`/`ended_at`, `event_count`, `harness`
   (`name`, `version`, `collection_methods`), `session`, `repository`,
-  `model`, `token_usage`, and `content.retention`.
+  `project` (`name`: the project directory's name, never a path), `model`,
+  `token_usage`, and `content.retention`.
 - `trace.events[]`, in order. Each event has `id`, `number` (1-based
   position), `timestamp`, `type`, `action`, and optional `category`,
   `fidelity` (`observed` | `inferred`), `actor`, `title`, `summary`,
   `content`, `tool`, `command`, `file`, `mcp`, `approval`, `policy`, `error`,
-  `model`, `usage`, `tool_call_id` and `trace` (span IDs). `error.type` is set
+  `model`, `usage`, `tool_call_id`, `prompt_id` (the turn the event belongs to,
+  where the runtime names one) and `trace` (span IDs). `error.type` is set
   when the runtime reported the action as failed, which can happen on an event
   whose `type` is not `error` (a failed MCP call keeps type `mcp`).
 - `type` is one of `user_message`, `agent_message`, `agent_reasoning`,
