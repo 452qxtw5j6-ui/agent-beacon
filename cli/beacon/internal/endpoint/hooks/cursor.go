@@ -251,7 +251,7 @@ func isEndpointHookEntry(entry json.RawMessage) bool {
 }
 
 func mergeEndpointHook(existing []json.RawMessage, ref json.RawMessage) []json.RawMessage {
-	out := make([]json.RawMessage, 0, len(existing)+1)
+	out := make([]json.RawMessage, 0, len(existing))
 	for _, item := range existing {
 		if !isEndpointHookEntry(item) {
 			out = append(out, item)
