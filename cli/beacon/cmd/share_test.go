@@ -253,6 +253,7 @@ type fakeShareServer struct {
 	server   *httptest.Server
 	trace    *asymptoteobserve.ShareTraceV1
 	events   []asymptoteobserve.TraceEventV1
+	created  string
 	requests []string
 	auth     map[string]bool
 }
@@ -278,6 +279,10 @@ func newFakeShareServer(t *testing.T) *fakeShareServer {
 			}
 			if trace.Visibility == "" {
 				trace.Visibility = "direct"
+			}
+			if created {
+				// beacon.sh stamps the trace when it creates it; the test clock stands in for it.
+				f.created = shareNow().UTC().Format(time.RFC3339)
 			}
 			f.trace = &trace
 			fmt.Fprintf(w, `{"id":"k3xabc","external_id":%q,"url":"https://beacon.sh/s/k3xabc","visibility":%q,"event_count":%d,"created":%v}`, id, trace.Visibility, len(f.events), created)
@@ -313,7 +318,7 @@ func newFakeShareServer(t *testing.T) *fakeShareServer {
 					last, maxNumber = e.ID, e.Number
 				}
 			}
-			fmt.Fprintf(w, `{"id":"k3xabc","url":"https://beacon.sh/s/k3xabc","visibility":%q,"event_count":%d,"last_event_id":%q,"max_number":%d}`, f.trace.Visibility, len(f.events), last, maxNumber)
+			fmt.Fprintf(w, `{"id":"k3xabc","url":"https://beacon.sh/s/k3xabc","visibility":%q,"event_count":%d,"last_event_id":%q,"max_number":%d,"created_at":%q}`, f.trace.Visibility, len(f.events), last, maxNumber, f.created)
 		default:
 			http.NotFound(w, r)
 		}
@@ -710,5 +715,45 @@ func TestShareRefusesAnAmbiguousPrefix(t *testing.T) {
 	}
 	if len(srv.requests) != 0 {
 		t.Fatalf("requests = %v", srv.requests)
+	}
+}
+
+func TestShareAgainKeepsTheShareDate(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	first := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	shareNow = func() time.Time { return first }
+	t.Cleanup(func() { shareNow = time.Now })
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	later := first.Add(3 * time.Hour)
+	shareNow = func() time.Time { return later }
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("share again: %v\n%s", err, stderr)
+	}
+	list, err := dashboard.ReadTraceList(env.logPath, dashboard.TraceQuery{State: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Traces) != 1 {
+		t.Fatalf("shared traces = %+v", list.Traces)
+	}
+	sharing := list.Traces[0].Sharing
+	if sharing.SharedAt != first.Format(time.RFC3339) || sharing.LastRefreshedAt != later.Format(time.RFC3339) {
+		t.Fatalf("sharing = %+v, want shared_at %s and last_refreshed_at %s", sharing, first.Format(time.RFC3339), later.Format(time.RFC3339))
+	}
+	data, err := os.ReadFile(env.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var second schema.Event
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Raw["shared_at"] != first.Format(time.RFC3339) || !strings.Contains(second.Message, "refreshed") {
+		t.Fatalf("second record = %q %+v", second.Message, second.Raw)
 	}
 }

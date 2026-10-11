@@ -182,6 +182,9 @@ type shareResult struct {
 	Uploaded int `json:"uploaded"`
 	// SelectedBy says how the session was chosen: session, source_path, env, active or recent.
 	SelectedBy string `json:"selected_by,omitempty"`
+	// sharedAt is when beacon.sh created the trace, for a refresh or re-share to record as the
+	// share date (empty when unknown).
+	sharedAt string
 }
 
 // sharePayload is what --print shows: the external id the requests go to, the body of the PUT
@@ -236,9 +239,11 @@ func runShare(cmd *cobra.Command) error {
 		fmt.Fprintf(errOut, "Sharing %s session %s (%d events)%s.\n", subject.session.Harness, subject.session.ID, len(payload.Events), shareSourceNote(subject))
 	}
 	ctx := commandContext(cmd)
-	if state, found, err := client.GetTrace(ctx, payload.ExternalID); err != nil {
+	state, found, err := client.GetTrace(ctx, payload.ExternalID)
+	if err != nil {
 		return err
-	} else if found {
+	}
+	if found {
 		if subject, payload, err = alignShareSource(subject, payload, state); err != nil {
 			return err
 		}
@@ -268,7 +273,11 @@ func runShare(cmd *cobra.Command) error {
 	if uploaded.Batches == 0 {
 		result.EventCount = trace.EventCount
 	}
-	if err := recordShareEvent(subject.session, result, false); err != nil {
+	// Sharing a trace that already exists updates it: the share date stays the trace's own.
+	if found {
+		result.sharedAt = state.CreatedAt
+	}
+	if err := recordShareEvent(subject.session, result, found); err != nil {
 		fmt.Fprintf(errOut, "warning: the session was shared, but the runtime log was not updated: %v\n", err)
 	}
 	return printShareResult(cmd, result)
@@ -343,6 +352,7 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 	if uploaded.Batches > 0 {
 		result.EventCount = uploaded.EventCount
 	}
+	result.sharedAt = state.CreatedAt
 	if err := recordShareEvent(subject.session, result, true); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the trace was refreshed, but the runtime log was not updated: %v\n", err)
 	}
@@ -990,6 +1000,10 @@ func shareRecordEvent(session handoff.Session, result shareResult, refresh bool,
 	}
 	if !refresh {
 		event.Raw["shared_at"] = stamp
+	} else if created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(result.sharedAt)); err == nil {
+		// A refresh keeps the share date: the trace's creation on beacon.sh, which also stands in
+		// for a first record that has rotated out of the log.
+		event.Raw["shared_at"] = created.UTC().Format(time.RFC3339)
 	}
 	return event
 }
