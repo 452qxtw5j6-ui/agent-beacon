@@ -255,6 +255,9 @@ func newFakeShareServer(t *testing.T) *fakeShareServer {
 			if !created && trace.Visibility == "" {
 				trace.Visibility = f.trace.Visibility
 			}
+			if !created && trace.Title == "" {
+				trace.Title = f.trace.Title
+			}
 			if trace.Visibility == "" {
 				trace.Visibility = "direct"
 			}
@@ -533,5 +536,71 @@ func TestShareRefreshRefusesToDuplicateFromAnotherSource(t *testing.T) {
 	}
 	if len(srv.messages) != 4 {
 		t.Fatalf("server holds %d messages after a refused refresh", len(srv.messages))
+	}
+}
+
+func TestShareRefreshKeepsATitleSetEarlier(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Login fix", "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	if _, _, err := runShareCommand(t, "refresh", "claude_code:"+shareTestSession, "--log-path", env.logPath); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("re-share: %v", err)
+	}
+	if srv.trace.Title != "Login fix" {
+		t.Fatalf("title = %q, want the one set with --title", srv.trace.Title)
+	}
+	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Renamed", "--log-path", env.logPath); err != nil {
+		t.Fatal(err)
+	}
+	if srv.trace.Title != "Renamed" {
+		t.Fatalf("an explicit --title did not apply: %q", srv.trace.Title)
+	}
+}
+
+// pathMatchingSource is a store that, like the real ones, finds a session's events only by the
+// store path it listed the session with.
+type pathMatchingSource struct{ stubHandoffSource }
+
+func (s pathMatchingSource) Events(session handoff.Session) ([]schema.Event, error) {
+	if len(s.sessions) == 0 || session.SourcePath != s.sessions[0].SourcePath {
+		return nil, handoff.ErrNotFound
+	}
+	return s.events, nil
+}
+
+func TestShareAlignSwitchesFromTheLogToTheStore(t *testing.T) {
+	env := newShareEnv(t)
+	storeSession := handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, SourcePath: filepath.Join(env.home, "store", shareTestSession+".jsonl"), UpdatedAt: time.Now()}
+	stubHandoffSources(t, pathMatchingSource{stubHandoffSource{harness: handoff.HarnessClaude, sessions: []handoff.Session{storeSession}, events: shareFixtureEvents(env.projectDir)}})
+	shareOpts = shareOptions{logPath: env.logPath}
+
+	stored, err := buildSharePayload(shareSubject{session: storeSession})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logEvents []schema.Event
+	for _, event := range shareFixtureEvents(env.projectDir) {
+		event.Harness.CollectionMethod = schema.CollectionMethodHook
+		logEvents = append(logEvents, event)
+	}
+	// Found in the log: no store path.
+	logSubject := shareSubject{session: handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir}, fromLog: true, logEvents: logEvents}
+	logPayload, err := buildSharePayload(logSubject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := &asymptoteobserve.ShareTraceStateV1{LastMessageID: stored.Messages[len(stored.Messages)-1].ID}
+	subject, payload, err := alignShareSource(logSubject, logPayload, state)
+	if err != nil {
+		t.Fatalf("align: %v", err)
+	}
+	if subject.fromLog || !hasShareMessage(payload.Messages, state.LastMessageID) {
+		t.Fatalf("did not switch to the store copy: fromLog=%v", subject.fromLog)
 	}
 }

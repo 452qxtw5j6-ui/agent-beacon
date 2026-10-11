@@ -568,7 +568,7 @@ func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
 	otlp.Prompt = &PromptInfo{ID: "prompt-1"}
 	hook := shareEventAt("2026-10-01T10:00:00.5Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
 	hook.Event.ID = "p-hook"
-	hook.Prompt = &PromptInfo{ID: "prompt-1", Text: "fix the test"}
+	hook.Prompt = &PromptInfo{Text: "fix the test"} // the UserPromptSubmit hook carries no prompt.id
 	next := shareEventAt("2026-10-01T10:01:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
 	next.Event.ID = "p-next"
 	next.Prompt = &PromptInfo{ID: "prompt-2", Text: "fix the test"}
@@ -579,5 +579,40 @@ func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
 	}
 	if messages[0].Text != "fix the test" || messages[0].ID != "p-otlp" {
 		t.Fatalf("first prompt = %+v", messages[0])
+	}
+}
+
+func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
+	prompt := func(id, ts, method, promptID, text string) Event {
+		e := shareEventAt(ts, "claude_code", method, "prompt.submitted", "prompt")
+		e.Event.ID = id
+		e.Prompt = &PromptInfo{ID: promptID, Text: text}
+		return e
+	}
+	// Hook first, export second: one message.
+	got := BuildShareMessagesWithOptions([]Event{
+		prompt("h1", "2026-10-01T10:00:00Z", CollectionMethodHook, "", "continue"),
+		prompt("o1", "2026-10-01T10:00:01Z", CollectionMethodOTLP, "p-1", ""),
+	}, shareTestOpts)
+	if len(got) != 1 || got[0].Text != "continue" {
+		t.Fatalf("hook then export = %+v", got)
+	}
+	// Two hook prompts with the same text moments apart are two submissions.
+	got = BuildShareMessagesWithOptions([]Event{
+		prompt("h1", "2026-10-01T10:00:00Z", CollectionMethodHook, "", "continue"),
+		prompt("h2", "2026-10-01T10:00:03Z", CollectionMethodHook, "", "continue"),
+	}, shareTestOpts)
+	if len(got) != 2 {
+		t.Fatalf("two hook prompts = %+v", got)
+	}
+	// A keyless copy far from the keyed one, or with different text, stays separate.
+	got = BuildShareMessagesWithOptions([]Event{
+		prompt("o1", "2026-10-01T10:00:00Z", CollectionMethodOTLP, "p-1", "first"),
+		prompt("h1", "2026-10-01T10:05:00Z", CollectionMethodHook, "", "first"),
+		prompt("o2", "2026-10-01T10:06:00Z", CollectionMethodOTLP, "p-2", "second"),
+		prompt("h2", "2026-10-01T10:06:01Z", CollectionMethodHook, "", "other"),
+	}, shareTestOpts)
+	if len(got) != 4 {
+		t.Fatalf("unrelated prompts merged: %+v", got)
 	}
 }
