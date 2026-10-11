@@ -233,7 +233,7 @@ type sessionClassification struct {
 }
 
 func sessionIDsForState(path string, query EventQuery, state string) (map[string]bool, error) {
-	classifications, _, err := classifySessions(path, query)
+	classifications, _, err := classifySessions(path, query, false)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,11 @@ func sessionIDsForState(path string, query EventQuery, state string) (map[string
 // It also returns each shared session's sharing state, worked out from every event of the session
 // whatever the filters are: a session.shared record outside the selected window or filters still
 // marks the session shared, and activity outside them still makes the share stale.
-func classifySessions(path string, query EventQuery) (map[string]sessionClassification, map[string]*SessionSharing, error) {
+//
+// withSharing false skips the sharing work (sessionIDsForState needs only the states). With it,
+// only sessions that have a session.shared record are buffered: a cheap first pass, which parses
+// only the lines that mention session.shared, names them.
+func classifySessions(path string, query EventQuery, withSharing bool) (map[string]sessionClassification, map[string]*SessionSharing, error) {
 	// Session state is a property of the whole session, not the filtered slice.
 	// Only the selected time window scopes recurrence. The owner is part of the
 	// recurrence key; content, harness and individual-session filters must not
@@ -265,6 +269,12 @@ func classifySessions(path string, query EventQuery) (map[string]sessionClassifi
 	stats := map[string]*sessionStateStats{}
 	sessionRecords := map[string][]EventRecord{}
 	shared := map[string]bool{}
+	if withSharing {
+		var err error
+		if shared, err = sharedSessionIDs(path); err != nil {
+			return nil, nil, err
+		}
+	}
 	for _, source := range eventSources(path) {
 		if err := collectSessionStateStats(source, stateQuery, stats, sessionRecords, shared); err != nil {
 			return nil, nil, err
@@ -313,6 +323,52 @@ func classifySessions(path string, query EventQuery) (map[string]sessionClassifi
 	return classifications, sharing, nil
 }
 
+// sharingRecordBuffered is called once per record classifySessions buffers for the sharing state;
+// tests replace it to count.
+var sharingRecordBuffered = func() {}
+
+var sessionSharedMarker = []byte(`"session.shared"`)
+
+// sharedSessionIDs names the sessions that have a session.shared record. It parses only the lines
+// that mention session.shared, so a log with no shares costs one read and no decoding.
+func sharedSessionIDs(path string) (map[string]bool, error) {
+	ids := map[string]bool{}
+	for _, source := range eventSources(path) {
+		file, err := os.Open(source.path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line := scanner.Bytes()
+			if !bytes.Contains(line, sessionSharedMarker) {
+				continue
+			}
+			var probe struct {
+				Event struct {
+					Action string `json:"action"`
+				} `json:"event"`
+				Session *struct {
+					ID string `json:"id"`
+				} `json:"session"`
+			}
+			if json.Unmarshal(line, &probe) == nil && probe.Event.Action == "session.shared" && probe.Session != nil && probe.Session.ID != "" {
+				ids[probe.Session.ID] = true
+			}
+		}
+		err = scanner.Err()
+		file.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ids, nil
+}
+
 func collectSessionStateStats(source eventSource, query EventQuery, stats map[string]*sessionStateStats, sessionRecords map[string][]EventRecord, shared map[string]bool) error {
 	file, err := os.Open(source.path)
 	if err != nil {
@@ -349,10 +405,11 @@ func collectSessionStateStats(source eventSource, query EventQuery, stats map[st
 		if event.Session == nil || event.Session.ID == "" {
 			continue
 		}
-		// Every session's records, slimmed to what the sharing state reads, whatever the filters.
-		sessionRecords[event.Session.ID] = append(sessionRecords[event.Session.ID], shareRelevantRecord(record))
-		if event.Event.Action == "session.shared" {
-			shared[event.Session.ID] = true
+		// A shared session's records, slimmed to what the sharing state reads, whatever the
+		// filters. Sessions never shared are not buffered.
+		if shared[event.Session.ID] {
+			sessionRecords[event.Session.ID] = append(sessionRecords[event.Session.ID], shareRelevantRecord(record))
+			sharingRecordBuffered()
 		}
 		if !matchesQuery(record, query) {
 			continue

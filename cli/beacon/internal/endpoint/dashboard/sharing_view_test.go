@@ -367,3 +367,69 @@ func TestOpenCodeShareFromInsideTheSessionIsNotStale(t *testing.T) {
 		), "stale")
 	})
 }
+
+func TestIsBeaconShareCommand(t *testing.T) {
+	for command, want := range map[string]bool{
+		`beacon share --current`:                                  true,
+		`cd x && beacon share refresh --harness claude_code`:      true,
+		`/opt/beacon/bin/beacon share`:                            true,
+		`BEACON_X=1 beacon share`:                                 true,
+		`./beacon share --json`:                                   true,
+		`C:\Tools\beacon.exe share`:                               true,
+		`sudo beacon share --session abc`:                         true,
+		"go test ./...\nbeacon share":                             true,
+		`rg "beacon share"`:                                       false,
+		`git commit -m 'beacon share now records shared_through'`: false,
+		`git commit -m 'fix; beacon share'`:                       false,
+		`echo beacon share`:                                       false,
+		`beacon shares`:                                           false,
+		`beacon git setup --share-sessions`:                       false,
+		``:                                                        false,
+	} {
+		if got := isBeaconShareCommand(command); got != want {
+			t.Errorf("isBeaconShareCommand(%q) = %v, want %v", command, got, want)
+		}
+	}
+}
+
+// The session list buffers records for the sharing state only for sessions that were shared, and
+// the session-state filter does no sharing work at all.
+func TestSharingBuffersOnlySharedSessions(t *testing.T) {
+	buffered := 0
+	prev := sharingRecordBuffered
+	sharingRecordBuffered = func() { buffered++ }
+	t.Cleanup(func() { sharingRecordBuffered = prev })
+	withoutHistory(t)
+
+	unshared := newTestLog(t, sharingLines(
+		`{"timestamp":"2026-06-11T10:00:00Z","event":{"id":"u1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"nu1"},"prompt":{"text":"hello"}}`,
+		`{"timestamp":"2026-06-11T10:00:05Z","event":{"id":"u2","action":"command.executed","category":"command"},"harness":{"name":"claude_code"},"session":{"id":"nu1"},"command":{"command":"echo beacon share"}}`,
+	))
+	if got := sessionSharing(t, unshared, EventQuery{}); got["nu1"] != nil {
+		t.Fatalf("unshared session sharing = %+v", got["nu1"])
+	}
+	if buffered != 0 {
+		t.Fatalf("buffered %d records for a log with no shares", buffered)
+	}
+
+	path := newTestLog(t, parityFixture())
+	if _, err := sessionIDsForState(path, EventQuery{}, "captured"); err != nil {
+		t.Fatal(err)
+	}
+	if buffered != 0 {
+		t.Fatalf("the session-state filter buffered %d records", buffered)
+	}
+	got := sessionSharing(t, path, EventQuery{})
+	if got["s7"] == nil || got["s8"] == nil {
+		t.Fatalf("shared sessions missing: %+v", got)
+	}
+	shared := 0
+	for _, line := range parityFixture() {
+		if strings.Contains(string(line), `"id":"s7"`) || strings.Contains(string(line), `"id":"s8"`) {
+			shared++
+		}
+	}
+	if buffered != shared {
+		t.Fatalf("buffered %d records, want only the shared sessions' %d", buffered, shared)
+	}
+}

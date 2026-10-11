@@ -1,7 +1,6 @@
 package dashboard
 
 import (
-	"regexp"
 	"strings"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
@@ -33,13 +32,90 @@ type shareActivity struct {
 	QuietSinceShare bool `json:"quiet_since_share,omitempty"`
 }
 
-// beaconShareCommand matches a shell command that runs `beacon share`, with any subcommand or
-// flags, as a whole word (`beacon share`, `/opt/beacon/bin/beacon share refresh ...`, `x && beacon
-// share --current`).
-var beaconShareCommand = regexp.MustCompile(`(^|[\s/;&|(` + "`" + `'"])beacon(\.exe)?\s+share(\s|$|[;&|)'"])`)
-
+// isBeaconShareCommand reports whether a shell command runs `beacon share` (any subcommand or
+// flags): `beacon` must be in command position -- the start of the command or of a segment after
+// `;`, `&&`, `||`, `|`, `(` or a newline outside quotes -- optionally after environment assignments,
+// `sudo`, `exec` or `env`, and optionally with a path (`/opt/beacon/bin/beacon`, `./beacon`,
+// `beacon.exe`), followed by `share`. A mention inside an argument (`rg "beacon share"`,
+// `git commit -m 'beacon share ...'`, `echo beacon share`) is not a share call.
 func isBeaconShareCommand(command string) bool {
-	return command != "" && beaconShareCommand.MatchString(command)
+	if command == "" {
+		return false
+	}
+	for _, segment := range shellSegments(command) {
+		words := strings.Fields(segment)
+		i := 0
+		for i < len(words) && (isEnvAssignment(words[i]) || words[i] == "sudo" || words[i] == "exec" || words[i] == "env") {
+			i++
+		}
+		if i+1 < len(words) && isBeaconExecutable(words[i]) && words[i+1] == "share" {
+			return true
+		}
+	}
+	return false
+}
+
+// shellSegments splits a command at the separators that start a new command (`;`, `&`, `|`, `(`,
+// `)`, newline), outside single and double quotes. Quoted text stays inside its segment, so a
+// separator in an argument does not start one.
+func shellSegments(command string) []string {
+	var segments []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	flush := func() {
+		if strings.TrimSpace(current.String()) != "" {
+			segments = append(segments, current.String())
+		}
+		current.Reset()
+	}
+	for _, r := range command {
+		switch {
+		case escaped:
+			escaped = false
+			current.WriteRune(r)
+		case r == '\\' && quote != '\'':
+			escaped = true
+			current.WriteRune(r)
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+			current.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+			current.WriteRune(r)
+		case r == ';' || r == '&' || r == '|' || r == '(' || r == ')' || r == '\n':
+			flush()
+		default:
+			current.WriteRune(r)
+		}
+	}
+	flush()
+	return segments
+}
+
+func isEnvAssignment(word string) bool {
+	name, _, ok := strings.Cut(word, "=")
+	if !ok || name == "" {
+		return false
+	}
+	for i, r := range name {
+		if !(r == '_' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || i > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// isBeaconExecutable is the word `beacon`, or a path to it, as a command names it.
+func isBeaconExecutable(word string) bool {
+	word = strings.Trim(word, `"'`)
+	if i := strings.LastIndexAny(word, `/\`); i >= 0 {
+		word = word[i+1:]
+	}
+	word = strings.ToLower(word)
+	return word == "beacon" || word == "beacon.exe"
 }
 
 // counts reports whether event is activity that makes a share stale, and updates the state.

@@ -77,7 +77,7 @@ type SessionDetail struct {
 
 func ReadSessions(path string, query EventQuery) (SessionResult, error) {
 	limit := normalizeLimit(query.Limit)
-	classifications, sharing, err := classifySessions(path, query)
+	classifications, sharing, err := classifySessions(path, query, true)
 	if err != nil {
 		return SessionResult{}, err
 	}
