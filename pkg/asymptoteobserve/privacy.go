@@ -32,21 +32,36 @@ const redactSeparator = `(?:\\?["'` + "`" + `])?\s*[:=]\s*`
 // redactOpenQuote opens a quoted value, escaped or not.
 const redactOpenQuote = `\\?["'` + "`" + `]`
 
-// redactQuotedBy is a value quoted with q, up to its own closing quote: spaces, commas, brackets
-// and the other quote characters inside it are part of it (`"it's-mine"`). An escaped character is
-// taken whole, except an escaped q, which is how a value quoted inside a JSON string ends.
-func redactQuotedBy(q string) string {
-	return `(?:[^` + q + `\\\n]|\\[^` + q + `\n])+`
+// redactInQuotes is a value quoted with q, up to its own closing quote: spaces, commas, brackets,
+// the other quote characters and escaped characters, an escaped q among them, are part of it
+// (`"it's-mine"`, `"ab\"cd"`).
+func redactInQuotes(q string) string {
+	return `(?:[^` + q + `\\\n]|\\[^\n])+`
 }
 
-// quotedAssignmentRule redacts a labeled value quoted with q: `token="x"`, `{"api_key": "x"}`.
-func quotedAssignmentRule(q string) redactionRule {
-	return redactionRule{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + `\\?` + q + `)(?P<value>` + redactQuotedBy(q) + `)`), "${1}" + redactedValue, isAuthScheme}
+// redactInEscapedQuotes is a value whose opening quote was itself escaped (`\"`), which means it
+// sits inside a JSON string: there the escaped q is its closing quote, and any other escaped
+// character is part of it, a quote escaped twice (`\\\"`, the value's own quote) among them.
+func redactInEscapedQuotes(q string) string {
+	return `(?:[^` + q + `\\\n]|\\\\\\` + q + `|\\[^` + q + `\n])+`
 }
 
-// quotedFlagRule redacts a secret-named flag's value quoted with q: `--password "x y"`.
-func quotedFlagRule(q string) redactionRule {
-	return redactionRule{regexp.MustCompile(`(?i)(` + redactFlag + `\\?` + q + `)(` + redactQuotedBy(q) + `)`), "${1}" + redactedValue, nil}
+// quotedValues pairs each way a value can be opened with the body it runs to: an escaped and a
+// plain opening for each quote character. Go has no backreferences, so each pair is its own rule.
+var quotedValues = [][2]string{
+	{`\\"`, redactInEscapedQuotes(`"`)}, {`"`, redactInQuotes(`"`)},
+	{`\\'`, redactInEscapedQuotes(`'`)}, {`'`, redactInQuotes(`'`)},
+	{"\\\\`", redactInEscapedQuotes("`")}, {"`", redactInQuotes("`")},
+}
+
+// quotedRules builds one rule per quotedValues entry from prefix, the pattern before the opening
+// quote.
+func quotedRules(prefix string, keep func(string) bool) []redactionRule {
+	rules := make([]redactionRule, 0, len(quotedValues))
+	for _, quoted := range quotedValues {
+		rules = append(rules, redactionRule{regexp.MustCompile(`(?i)(` + prefix + quoted[0] + `)(?P<value>` + quoted[1] + `)`), "${1}" + redactedValue, keep})
+	}
+	return rules
 }
 
 // redactUnquoted is an unquoted value, up to a quote, a comma or whitespace. Brackets, braces and
@@ -102,7 +117,7 @@ func isLiteralOrAuthScheme(value string) bool {
 	return isAuthScheme(value)
 }
 
-var redactionRules = []redactionRule{
+var redactionRules = concatRules([]redactionRule{
 	// A private key block. The header must be followed by key material, so source code, a diff or
 	// grep output that only names the header keeps the text after it. Without an END line (the
 	// block was cut) the rest of the text goes.
@@ -118,7 +133,7 @@ var redactionRules = []redactionRule{
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
 	// rule never starts at a quote, so it leaves a value the quoted rule already replaced alone.
-	quotedAssignmentRule(`"`), quotedAssignmentRule(`'`), quotedAssignmentRule("`"),
+}, quotedRules(`\b`+redactLabel+redactSeparator, isAuthScheme), []redactionRule{
 	// A quoted label with a bare value is JSON (or a YAML or Python mapping) holding a number, a
 	// literal or a structure. The replacement is quoted the way the label is, so the text still
 	// parses where something decodes it again (string-encoded tool arguments do); null, true, false
@@ -127,7 +142,7 @@ var redactionRules = []redactionRule{
 	{regexp.MustCompile(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`), "${1}" + redactedValue, isAuthScheme},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`, and quoted, the way agents
 	// usually write arguments: `--password "x y"`, `--token='x'`.
-	quotedFlagRule(`"`), quotedFlagRule(`'`), quotedFlagRule("`"),
+}, quotedRules(redactFlag, nil), []redactionRule{
 	{regexp.MustCompile(`(?i)(` + redactFlag + `)([^\s"'-][^\s"']*)`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
 	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}", nil},
@@ -147,6 +162,14 @@ var redactionRules = []redactionRule{
 	{regexp.MustCompile(`\b(hf_)[A-Za-z0-9]{30,}`), "${1}" + redactedValue, nil},                                           // Hugging Face
 	{regexp.MustCompile(`\b(bcn_(?:api|device|mcp)_)[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil},                      // Beacon's own keys
 	{regexp.MustCompile(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil}, // JWT
+})
+
+func concatRules(groups ...[]redactionRule) []redactionRule {
+	var all []redactionRule
+	for _, group := range groups {
+		all = append(all, group...)
+	}
+	return all
 }
 
 func (rule redactionRule) apply(value string) string {
@@ -177,8 +200,16 @@ func (rule redactionRule) apply(value string) string {
 // redactAssignedPattern captures the value of a labeled assignment, quoted with ", ' or a backtick
 // (${1} to ${3}) or not (${4}), so a bare copy of it elsewhere in the same text is
 // removed too.
-var redactAssignedPattern = regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator + `(?:` +
-	`\\?"(` + redactQuotedBy(`"`) + `)|\\?'(` + redactQuotedBy(`'`) + `)|\\?` + "`(" + redactQuotedBy("`") + `)|(` + redactUnquoted + `))`)
+var redactAssignedPattern = regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator + `(?:` + quotedAlternatives() + `|(` + redactUnquoted + `))`)
+
+// quotedAlternatives is every quotedValues entry as one capturing alternative.
+func quotedAlternatives() string {
+	parts := make([]string, 0, len(quotedValues))
+	for _, quoted := range quotedValues {
+		parts = append(parts, quoted[0]+`(`+quoted[1]+`)`)
+	}
+	return strings.Join(parts, "|")
+}
 
 // redactWindow is how far past a string's limit redaction reads before the string is cut, so a
 // secret that straddles the cut is recognized whole rather than left as a recognizable prefix. It
@@ -197,7 +228,7 @@ func RedactString(value string) string {
 	// refers to `value` by itself.
 	var assigned []string
 	for _, match := range redactAssignedPattern.FindAllStringSubmatch(value, -1) {
-		copied := match[1] + match[2] + match[3] + match[4]
+		copied := strings.Join(match[1:], "")
 		if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
 			assigned = append(assigned, copied)
 		}
