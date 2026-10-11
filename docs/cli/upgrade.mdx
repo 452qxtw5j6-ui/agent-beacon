@@ -45,7 +45,9 @@ the package artifact for the local architecture, downloads it into the endpoint
 update staging directory, verifies the manifest checksum, Developer ID Installer
 signature, and Gatekeeper install assessment, then runs Apple's `installer`. The
 package postinstall restarts the local collector, restores configured Vector
-forwarders, reconciles the updater LaunchDaemon, and the updater health-checks
+forwarders, re-renders a connected endpoint's Beacon Cloud forwarder config from
+the new version's pack (see [Keeping the forwarder config current](/cli/endpoint-connect#keeping-the-forwarder-config-current)),
+reconciles the updater LaunchDaemon, and the updater health-checks
 the new install. If the new install is unhealthy, Beacon restores the previous
 `/opt/beacon` tree.
 
@@ -166,7 +168,7 @@ beacon endpoint repair
 beacon endpoint status
 ```
 
-`beacon endpoint repair` preserves runtime logs while reapplying service files, collector configuration, harness telemetry settings, and forwarding destinations.
+`beacon endpoint repair` preserves runtime logs while reapplying service files, collector configuration, harness telemetry settings, and forwarding destinations. On an endpoint connected to Beacon Cloud it keeps the forwarder, its device key and its Vector checkpoints, and re-renders `vector.toml` from the upgraded version's pack with the recorded privacy mode, so a Homebrew or archive upgrade picks up forwarder fixes without a re-connect. See [Keeping the forwarder config current](/cli/endpoint-connect#keeping-the-forwarder-config-current).
 
 <Note>
   On v0.0.43 or newer, use `beacon endpoint doctor --fix` when you only need supported health-check drift remediated without a full repair.

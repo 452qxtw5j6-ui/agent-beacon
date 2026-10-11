@@ -24,6 +24,7 @@ type fakeForwarder struct {
 	unitPath  string
 	written   []string
 	loads     int
+	stopped   bool // registered (enabled) but not running, as after `systemctl stop`
 	unloads   int
 	removed   int
 	loadErr   error
@@ -62,7 +63,7 @@ func (f *fakeForwarder) RemoveUnits() {
 	}
 }
 func (f *fakeForwarder) Status() service.Status {
-	return service.Status{Label: "fake.forwarder", Loaded: f.loads > 0, Running: f.loads > 0}
+	return service.Status{Label: "fake.forwarder", Loaded: f.loads > 0, Running: f.loads > 0 && !f.stopped}
 }
 
 // fakeVector writes an executable that answers --version and validate like Vector 0.56.
