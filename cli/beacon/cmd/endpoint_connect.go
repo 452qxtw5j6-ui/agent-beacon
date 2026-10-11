@@ -73,7 +73,7 @@ func init() {
 	endpointConnectCmd.Flags().StringVar(&connectOpts.dashboardURL, "dashboard-url", "", "Beacon service URL (defaults to "+auth.DefaultDashboardURL+", or "+auth.DashboardURLEnv+")")
 	endpointConnectCmd.Flags().BoolVar(&connectOpts.noBrowser, "no-browser", false, "System mode: print the device approval URL instead of opening a browser")
 	endpointConnectCmd.Flags().StringVar(&connectOpts.vectorBin, "vector-bin", "", "Vector binary to run (defaults to "+asymptote.VectorBinEnv+", "+asymptote.PackagedVectorPath+", Homebrew, then PATH)")
-	endpointConnectCmd.Flags().BoolVar(&endpointOpts.noBackfill, "no-backfill", false, "On a first connect, do not upload the last 30 days of agent sessions read from their local session stores (also "+endpointBackfillEnv+"=0)")
+	endpointConnectCmd.Flags().BoolVar(&endpointOpts.noBackfill, "no-backfill", false, "Do not upload the last 30 days of agent sessions read from their local session stores (also "+endpointBackfillEnv+"=0)")
 	endpointConnectCmd.Flags().StringVar(&connectOpts.privacyMode, "privacy-mode", "", "Beacon Cloud forwarding privacy: standard or metadata-only (defaults to onboarding choice)")
 	endpointDisconnectCmd.Flags().BoolVar(&connectOpts.keepCredentials, "keep-credentials", false, "Keep the enrollment record and device key so a later connect can reuse this device")
 	endpointCmd.AddCommand(endpointConnectCmd)

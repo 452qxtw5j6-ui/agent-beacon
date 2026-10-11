@@ -67,7 +67,7 @@ func TestEndpointBackfillGivesEachRuntimeAShareAndNamesWhereToContinue(t *testin
 		writingRunner("Absent", 0, nil),
 	)
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
-	result := runEndpointBackfill(logPath)
+	result := runEndpointBackfill(logPath, true)
 
 	if want := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC); !since.Equal(want) {
 		t.Fatalf("collectors were given since=%s, want %s", since, want)
@@ -114,7 +114,7 @@ func TestEndpointBackfillGivesEachRuntimeAShareAndNamesWhereToContinue(t *testin
 func TestEndpointBackfillReportsAnEmptyMachinePlainly(t *testing.T) {
 	stubBackfill(t, 4000, 2500, writingRunner("Absent", 0, nil))
 	var out strings.Builder
-	reportEndpointBackfill(&out, runEndpointBackfill(filepath.Join(t.TempDir(), "runtime.jsonl")))
+	reportEndpointBackfill(&out, runEndpointBackfill(filepath.Join(t.TempDir(), "runtime.jsonl"), true))
 	if got := strings.TrimSpace(out.String()); got != "Session backfill: no new agent session activity from the last 30 days." {
 		t.Fatalf("report = %q", got)
 	}
@@ -163,8 +163,41 @@ func TestEndpointInstallBackfillsAfterTheInstallSucceeds(t *testing.T) {
 		}
 		t.Setenv(endpointBackfillEnv, "")
 	}
-	if endpointBackfillEnabled(false) {
-		t.Fatal("a system install backfills root's home")
+}
+
+func TestSystemEndpointBackfillReadsTheConsoleUsersStores(t *testing.T) {
+	home := t.TempDir()
+	var sawHome string
+	var sawUserMode bool
+	stubBackfill(t, 1<<20, 1<<20, endpointBackfillRunner{Name: "Codex", Sync: "beacon endpoint codex sync", Run: func(r endpointBackfillRun) (int, error) {
+		sawHome, _ = os.UserHomeDir()
+		sawUserMode = r.UserMode
+		return writingRunner("Codex", 2, nil).Run(r)
+	}})
+	stubConsoleUser(t, consoleUserInfo{Username: "alice", HomeDir: home}, true, nil)
+	before, _ := os.UserHomeDir()
+
+	var out strings.Builder
+	reportEndpointBackfill(&out, runEndpointBackfill(filepath.Join(t.TempDir(), "runtime.jsonl"), false))
+	if sawHome != home || sawUserMode {
+		t.Fatalf("system backfill read home=%q userMode=%t, want the console user's home %q in system mode", sawHome, sawUserMode, home)
+	}
+	if after, _ := os.UserHomeDir(); after != before {
+		t.Fatalf("system backfill left HOME at %q, want %q", after, before)
+	}
+	if !strings.Contains(out.String(), "Session backfill: 2 events from the last 30 days (Codex 2).") {
+		t.Fatalf("report = %q", out.String())
+	}
+
+	stubConsoleUser(t, consoleUserInfo{}, false, nil)
+	sawHome = ""
+	out.Reset()
+	reportEndpointBackfill(&out, runEndpointBackfill(filepath.Join(t.TempDir(), "runtime.jsonl"), false))
+	if sawHome != "" {
+		t.Fatal("a system backfill with no console user read root's home")
+	}
+	if got := strings.TrimSpace(out.String()); got != "Session backfill skipped: no active console user to read agent sessions for." {
+		t.Fatalf("report = %q", got)
 	}
 }
 

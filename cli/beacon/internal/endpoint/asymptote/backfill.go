@@ -14,7 +14,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
 )
 
-// BackfillLogName is the file a first connect stages the session backfill in, beside the runtime
+// BackfillLogName is the file every connect stages the session backfill in, beside the runtime
 // log.
 const BackfillLogName = siempack.BackfillLogName
 
@@ -22,7 +22,7 @@ const BackfillLogName = siempack.BackfillLogName
 // a hand-run pack and the managed forwarder agree on it.
 func BackfillLogPath(logPath string) string { return siempack.BackfillLogPath(logPath) }
 
-// BackfillOptions bounds what a first connect ships from before the connection point.
+// BackfillOptions bounds what a connect ships from before the connection point.
 type BackfillOptions struct {
 	// Since drops events older than it.
 	Since time.Time
@@ -49,9 +49,11 @@ type BackfillResult struct {
 // OTLP and plugin events from before the connection stay local. The lines are copied byte for
 // byte, so the forwarder's privacy transforms apply to them exactly as to live lines.
 //
-// It runs before the forwarder starts and only on a first connect: a re-connect resumes from
-// Vector's checkpoints and would otherwise ship the same history twice. The file is replaced
-// atomically, 0600, so a reader never sees half of it.
+// It runs before the forwarder starts, on every connect. The file is replaced atomically, 0600, so
+// a reader never sees half of it, and the replacement is a new inode, which the backfill source
+// (fingerprinted by inode) reads from the beginning. A re-connect can therefore send lines the
+// forwarder shipped before; they carry the deterministic event.id they were written with, so they
+// name the same events rather than new ones.
 func StageBackfill(logPath string, opts BackfillOptions) (BackfillResult, error) {
 	result := BackfillResult{Path: BackfillLogPath(logPath)}
 	if logPath == "" {
@@ -99,8 +101,8 @@ func StageBackfill(logPath string, opts BackfillOptions) (BackfillResult, error)
 	return result, nil
 }
 
-// RemoveBackfill deletes the staged backfill file. Disconnect calls it so a later first connect
-// stages a fresh one rather than shipping a stale copy.
+// RemoveBackfill deletes the staged backfill file. Disconnect calls it so nothing is left staged
+// for a forwarder that no longer exists.
 func RemoveBackfill(logPath string) error {
 	if logPath == "" {
 		return nil

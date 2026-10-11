@@ -186,8 +186,8 @@ func runEndpointInstall(cmd *cobra.Command, args []string) error {
 	// in it before any agent runs again. Local only, bounded, and never a reason to fail the
 	// install; a connect below ships what it wrote rather than sweeping again.
 	backfilled := false
-	if endpointBackfillEnabled(endpointUserMode()) {
-		reportEndpointBackfill(cmd.OutOrStdout(), runEndpointBackfill(result.LogPath))
+	if endpointBackfillEnabled() {
+		reportEndpointBackfill(cmd.OutOrStdout(), runEndpointBackfill(result.LogPath, endpointUserMode()))
 		backfilled = true
 	}
 	finishCloudSetup(cmd, onboarded, connectAfterInstall, func() error {

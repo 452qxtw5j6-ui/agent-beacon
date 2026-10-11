@@ -13,7 +13,7 @@ const logPathToken = "{{LOG_PATH}}"
 const inventoryLogPathToken = "{{INVENTORY_LOG_PATH}}"
 const backfillLogPathToken = "{{BACKFILL_LOG_PATH}}"
 
-// BackfillLogName is the file Beacon Cloud's first connect stages the bounded session backfill in,
+// BackfillLogName is the file every Beacon Cloud connect stages the bounded session backfill in,
 // beside the runtime log. Its name does not start with the runtime log's, so readers of the runtime
 // log and its archives never see it.
 const BackfillLogName = "cloud-backfill.jsonl"
