@@ -20,7 +20,6 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/lifecycle"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
-	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/gitlink"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/handoff"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/tokens"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
@@ -598,7 +597,7 @@ func buildSharePayload(subject shareSubject) (sharePayload, error) {
 		trace.GitBranch = asymptoteobserve.ShareBranch(session.Branch)
 	}
 	if trace.GitRemoteURL == "" && session.Directory != "" {
-		trace.GitRemoteURL = gitlink.SanitizeRemoteURL(shareGitRemote(session.Directory))
+		trace.GitRemoteURL = asymptoteobserve.ShareRemoteURL(shareGitRemote(session.Directory))
 		if trace.ProjectName == "" || trace.ProjectName == filepath.Base(session.Directory) {
 			if name := strings.TrimSuffix(lastURLSegment(trace.GitRemoteURL), ".git"); name != "" {
 				trace.ProjectName = name

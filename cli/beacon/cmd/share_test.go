@@ -464,3 +464,26 @@ func TestShareRefreshParsesExternalIDs(t *testing.T) {
 		t.Fatalf("unknown last id should resend everything: %+v", got)
 	}
 }
+
+func TestShareLeavesALocalGitRemoteOut(t *testing.T) {
+	env := newShareEnv(t)
+	for _, remote := range []string{filepath.Join(env.home, "mirrors", "app.git"), "file://" + filepath.Join(env.home, "mirrors", "app.git")} {
+		shareGitRemote = func(string) string { return remote }
+		stdout, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", env.logPath)
+		if err != nil {
+			t.Fatalf("share --print: %v", err)
+		}
+		var payload sharePayload
+		if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Trace.GitRemoteURL != "" || strings.Contains(stdout, env.home) {
+			t.Fatalf("remote %q leaked into the payload: %+v", remote, payload.Trace)
+		}
+	}
+	shareGitRemote = func(string) string { return "https://tok@github.com/acme/app.git" }
+	stdout, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", env.logPath)
+	if err != nil || !strings.Contains(stdout, `"git_remote_url": "https://github.com/acme/app.git"`) {
+		t.Fatalf("network remote: err=%v\n%s", err, stdout)
+	}
+}
