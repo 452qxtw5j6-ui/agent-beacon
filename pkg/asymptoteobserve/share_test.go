@@ -514,3 +514,12 @@ func TestBuildShareMessagesKeepsRepeatedPhaselessCallsApart(t *testing.T) {
 		t.Fatalf("parts = %v", got)
 	}
 }
+
+func TestShareMetadataUsesExplicitHomeWithoutLookup(t *testing.T) {
+	prompt := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	prompt.Prompt = &PromptInfo{Text: "look at /home/al/secret"}
+	meta := ShareMetadataFromEventsWithOptions([]Event{prompt}, ShareOptions{HomeDirectory: "/home/al", NoHomeLookup: true})
+	if meta.Title != "look at ~/secret" {
+		t.Fatalf("title = %q", meta.Title)
+	}
+}
