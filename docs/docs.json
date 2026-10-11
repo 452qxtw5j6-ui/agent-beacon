@@ -56,8 +56,27 @@
             "icon": "cloud-arrow-up",
             "pages": [
               "deployment/hosting-options",
-              "deployment/open-source",
-              "deployment/managed"
+              "deployment/open-source"
+            ]
+          },
+          {
+            "group": "Beacon Cloud",
+            "icon": "cloud",
+            "pages": [
+              "deployment/managed",
+              "cloud/devices",
+              "cloud/sessions",
+              "deployment/managed-mcp",
+              {
+                "group": "Lenses",
+                "pages": [
+                  "cloud/lenses/adding-lenses",
+                  "cloud/lenses/creating-lenses",
+                  "cloud/lenses/managing-lenses",
+                  "cloud/lenses/lenses-mcp"
+                ]
+              },
+              "manage/profile"
             ]
           },
           {
@@ -93,8 +112,6 @@
             "group": "Manage Beacon",
             "icon": "sliders",
             "pages": [
-              "deployment/managed-mcp",
-              "manage/profile",
               {
                 "group": "Inventory",
                 "root": "guides/inventory",

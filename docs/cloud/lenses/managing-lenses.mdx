@@ -1,0 +1,65 @@
+---
+title: "Managing lenses"
+description: "Upload new versions, change the current version, and choose who can find a lens"
+---
+
+After you create a lens, you can change its details, upload new versions, roll back, and decide
+whether it is listed in the marketplace. You manage lenses through
+[Beacon Cloud MCP](/cloud/lenses/lenses-mcp): ask your agent, and it calls the tools for you.
+
+Only the lens's owner can change it.
+
+## Change details
+
+The title, description and icon can change at any time. Ask your agent, for example:
+
+```text
+Rename my files-changed-plus lens to "Files Changed+" and update its description.
+```
+
+The key is permanent. To use a different key, create a new lens.
+
+## Upload a new version
+
+Every upload is a new, immutable version with its own semantic version number, such as `1.0.1`
+or `1.1.0`. A version number can be used only once, so to change the HTML, upload another version.
+
+Uploading a version does not change what anyone sees. It stays a draft until you release it.
+
+## Release or roll back
+
+Releasing a version makes it the **current version**: the one the lens page, the marketplace and
+everyone who added the lens see. Releasing takes effect immediately.
+
+To roll back, release an earlier version. Nothing is re-uploaded, and every version stays
+available to release again.
+
+## Who can see a lens
+
+| Visibility | Who can see and add it |
+| --- | --- |
+| **Private** | Only you. New lenses are private unless you choose otherwise. |
+| **Public** | Everyone. The lens is listed in the marketplace once it has a released version. |
+
+Change visibility by asking your agent, for example "Make my token-heatmap lens public."
+
+Making a public lens private removes it from the marketplace straight away, and it disappears from
+the sessions of everyone else who added it. You keep it.
+
+## Your lenses
+
+Ask your agent to list your lenses. It shows every lens you own, public or private, with its
+current version. You can also list the lenses you added, or browse the marketplace, the same way.
+
+Lenses cannot be deleted yet. To retire one, make it private.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Lenses with MCP" icon="plug" href="/cloud/lenses/lenses-mcp">
+    The tools and the publishing flow your agent uses.
+  </Card>
+  <Card title="Creating lenses" icon="wand-magic-sparkles" href="/cloud/lenses/creating-lenses">
+    File rules and the session data a lens receives.
+  </Card>
+</Columns>

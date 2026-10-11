@@ -1,46 +1,82 @@
 ---
 title: "Beacon Cloud"
-description: "Hosted storage, search, and long-term history for your agent sessions"
+description: "One place for every agent session across your devices and harnesses"
 ---
 
-The easiest way to use Beacon without running your own backend.
+Beacon Cloud is the hosted home for your agent history. Connect a device, and the sessions Beacon
+records from Claude Code, Cursor, Codex CLI and every other supported harness show up at
+[beacon.sh](https://beacon.sh), searchable and kept over time.
 
-Beacon Cloud gives individual developers hosted storage, search, and long-term history for their agent sessions.
+You keep using your agents exactly as before. Beacon Cloud stores and indexes the history for you,
+so there is no database, bucket or pipeline to run.
 
-Install Beacon, connect your account, and your traces are automatically available in one place across the agents you use.
+## What you get
 
-## What Beacon Cloud gives you
+- **Sessions.** Every forwarded session on one timeline, with filters for device, harness, model,
+  repository and risk. Open a session to read its prompts, commands, tool calls and file edits.
+- **Lenses.** Focused views of a session, such as files changed, token spend or security
+  findings. Use the built-in lenses, add more from the [marketplace](/cloud/lenses/adding-lenses),
+  or [build your own](/cloud/lenses/creating-lenses).
+- **MCP.** Let the agent you are working in search and read your past sessions, and publish lenses
+  for you. See [Beacon Cloud MCP](/deployment/managed-mcp).
+- **Analytics.** Token usage and cost by model, agent activity over time, and the harnesses,
+  models and repositories you use most.
+- **Findings and inventory.** Threat-rule findings with their evidence, plus the configs, MCP
+  servers, skills and hooks each device reports.
+- **Profile.** An optional public page of aggregate activity. See
+  [Configure your profile](/manage/profile).
 
-| Capability | Beacon Cloud |
-| --- | --- |
-| Hosted ingest | Send Beacon traces to a managed backend |
-| Unlimited retention | Keep your agent history over time |
-| Search | Find past sessions, prompts, commands, and tool calls |
-| Cross-harness history | See activity from Claude Code, Cursor, Codex, and more in one place |
-| Analytics | Understand usage, tokens, workflows, and runtime behavior |
-| Knowledge | Surface recurring workflows, corrections, and useful patterns |
-| No backend to run | Asymptote handles storage and infrastructure |
+## Get started
 
-## One place for all your agent history
+<Steps>
+  <Step title="Install Beacon">
+    Follow the [quickstart](/get-started/quickstart) for macOS, Linux or Windows.
+  </Step>
+  <Step title="Sign in and connect">
+    ```bash
+    beacon login
+    beacon endpoint connect
+    ```
+    The interactive installer (`beacon endpoint install`) does both for you when you choose
+    Beacon Cloud. See [Connect devices](/cloud/devices).
+  </Step>
+  <Step title="Open your sessions">
+    Go to [beacon.sh/dashboard](https://beacon.sh/dashboard). Sessions from the last 30 days on
+    the device are uploaded when it connects, so the dashboard is not empty on day one.
+  </Step>
+  <Step title="Connect MCP (optional)">
+    ```bash
+    beacon mcp connect
+    ```
+    See [Beacon Cloud MCP](/deployment/managed-mcp).
+  </Step>
+</Steps>
 
-Your agent history is usually split across different tools and local session files.
+## What leaves your machine
 
-Beacon Cloud brings those traces together into one searchable timeline, so you can quickly find past work, revisit how you solved something, and compare sessions across harnesses.
+Beacon records locally first. Only a connected device forwards, and you choose how much it sends:
 
-## Keep what your agents learn
+- **Standard** sends retained content, such as prompts, responses, tool arguments and results,
+  after local redaction and size limits.
+- **Metadata-only** strips prompts, responses, reasoning, tool arguments and results, command
+  output, diffs and inventory content on the device, before anything is uploaded.
 
-The more you use agents, the more useful history you create.
+See [Beacon Cloud forwarding](/log-forwarding/asymptote#what-leaves-the-machine) for the full data
+flow.
 
-Beacon Cloud keeps that history over time so successful workflows, debugging patterns, repeated corrections, and repository knowledge do not disappear when a session ends.
+## Related
 
-## Bring that history back into your agents
-
-Connect [Beacon Cloud MCP](/deployment/managed-mcp) to search and read your forwarded session
-history from Claude Code, Cursor, Codex CLI, and other MCP clients. The server is read-only and
-uses OAuth by default, so Beacon writes only its URL into supported harness configurations.
-
-## Start in minutes
-
-Install Beacon, connect to Beacon Cloud, and keep using your existing agents.
-
-No database, storage bucket, or indexing infrastructure required.
+<Columns cols={2}>
+  <Card title="Connect devices" icon="laptop" href="/cloud/devices">
+    Enroll a machine, check that it is forwarding, and revoke it.
+  </Card>
+  <Card title="Sessions" icon="list" href="/cloud/sessions">
+    Find, filter and read your agent sessions.
+  </Card>
+  <Card title="Lenses" icon="layer-group" href="/cloud/lenses/adding-lenses">
+    Add focused views to every session.
+  </Card>
+  <Card title="Beacon Cloud MCP" icon="plug" href="/deployment/managed-mcp">
+    Bring your history into the agent you are using.
+  </Card>
+</Columns>

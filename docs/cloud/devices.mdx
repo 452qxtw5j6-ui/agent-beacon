@@ -1,0 +1,75 @@
+---
+title: "Connect devices"
+description: "Enroll a machine in Beacon Cloud, check that it is forwarding, and revoke it"
+---
+
+A device is one machine running Beacon that forwards its sessions to your Beacon Cloud account.
+Each device has its own key, so you can revoke one without touching the others.
+
+## Connect a device
+
+On the machine, sign in and connect:
+
+```bash
+beacon login
+beacon endpoint connect
+```
+
+`beacon login` opens your browser to sign in. Signing in alone sends no telemetry.
+`beacon endpoint connect` registers the device with your account, stores its key locally and starts
+forwarding. If you run `beacon endpoint install` interactively and choose Beacon Cloud, it does
+both steps for you.
+
+Each time a device connects, Beacon also uploads the sessions it already found on
+disk from the last 30 days, so recent work appears right away. Pass `--no-backfill` to skip that.
+
+<Tip>
+  To set up a device with a coding agent, paste this into it:
+  `Read https://beacon.sh/start.md then set me up on Beacon`
+</Tip>
+
+For system-wide installs, privacy modes, offline buffering and every flag, see the
+[`beacon endpoint connect` reference](/cli/endpoint-connect).
+
+## Check a device
+
+The **Devices** page at [beacon.sh/dashboard/devices](https://beacon.sh/dashboard/devices) lists
+every device registered to your account, with its hostname, install ID, key prefix, when it was
+created and when Beacon last heard from it. A new device reads **Waiting for first event** until
+its first batch arrives.
+
+On the machine itself:
+
+```bash
+beacon endpoint status
+```
+
+reports whether the forwarder is running and whether Beacon Cloud accepts the device key.
+
+## Revoke a device
+
+Select **Revoke device** on the device's card. Beacon Cloud rejects that device's uploads
+immediately. History it already sent stays in your account.
+
+A revoked key cannot be restored. To bring the machine back, run `beacon endpoint connect` again
+to enroll it with a new key.
+
+To stop forwarding from the machine itself, run:
+
+```bash
+beacon endpoint disconnect
+```
+
+This stops the forwarder and deletes the local key. It does not revoke the key in Beacon Cloud, so
+revoke it on the **Devices** page too if the machine is lost or retired.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Sessions" icon="list" href="/cloud/sessions">
+    Read what your connected devices recorded.
+  </Card>
+  <Card title="Beacon Cloud forwarding" icon="tower-broadcast" href="/log-forwarding/asymptote">
+    What leaves a device and how it is sent.
+  </Card>
+</Columns>

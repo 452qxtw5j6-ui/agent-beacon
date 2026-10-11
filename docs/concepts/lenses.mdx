@@ -128,7 +128,8 @@ window.beacon.getTrace().then(function (data) {
 
 - A lens is one file of at most 16 MiB, with everything inline.
 - A lens sees one trace. A view across several sessions is not supported yet.
-- Lenses are local. The store is per user on this machine, and there is no hosted gallery
-  or sharing; to share a lens, share the file.
+- Lenses in the local dashboard are local. The store is per user on this machine; to share a
+  local lens, share the file. Beacon Cloud has its own [lens marketplace](/cloud/lenses/adding-lenses),
+  whose lenses use a different data format (see [Creating lenses](/cloud/lenses/creating-lenses#getting-the-session-data)).
 - Very large traces are cut to fit: the lens receives the longest prefix of events that
   fits, and the data says it was truncated.
