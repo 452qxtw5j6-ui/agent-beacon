@@ -105,7 +105,7 @@ type shareServer struct {
 	mu       sync.Mutex
 	server   *httptest.Server
 	auth     []string
-	batches  [][]asymptoteobserve.ShareMessageV1
+	batches  [][]asymptoteobserve.TraceEventV1
 	encoding []string
 	trace    *asymptoteobserve.ShareTraceV1
 	paths    []string
@@ -127,8 +127,8 @@ func newShareServer(t *testing.T) *shareServer {
 			}
 			s.trace = &trace
 			w.WriteHeader(http.StatusCreated)
-			fmt.Fprint(w, `{"id":"k3x","external_id":"claude_code:abc","url":"https://beacon.sh/s/k3x","visibility":"direct","message_count":0,"created":true}`)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/traces/claude_code:abc/messages/batch":
+			fmt.Fprint(w, `{"id":"k3x","external_id":"claude_code:abc","url":"https://beacon.sh/s/k3x","visibility":"direct","event_count":0,"created":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/traces/claude_code:abc/events/batch":
 			s.encoding = append(s.encoding, r.Header.Get("Content-Encoding"))
 			var body io.Reader = r.Body
 			if r.Header.Get("Content-Encoding") == "gzip" {
@@ -139,19 +139,19 @@ func newShareServer(t *testing.T) *shareServer {
 				}
 				body = zr
 			}
-			var batch asymptoteobserve.ShareMessagesBatchV1
+			var batch asymptoteobserve.ShareEventsBatchV1
 			if err := json.NewDecoder(body).Decode(&batch); err != nil {
 				http.Error(w, err.Error(), 400)
 				return
 			}
-			s.batches = append(s.batches, batch.Messages)
+			s.batches = append(s.batches, batch.Events)
 			total := 0
 			for _, b := range s.batches {
 				total += len(b)
 			}
-			fmt.Fprintf(w, `{"accepted":%d,"message_count":%d}`, len(batch.Messages), total)
+			fmt.Fprintf(w, `{"upserted":%d,"event_count":%d}`, len(batch.Events), total)
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/traces/claude_code:abc":
-			fmt.Fprint(w, `{"id":"k3x","url":"https://beacon.sh/s/k3x","visibility":"direct","message_count":2,"last_message_id":"m2","max_order":2}`)
+			fmt.Fprint(w, `{"id":"k3x","url":"https://beacon.sh/s/k3x","visibility":"direct","event_count":2,"last_event_id":"e2","max_number":2}`)
 		default:
 			http.Error(w, `{"detail":"no such trace"}`, http.StatusNotFound)
 		}
@@ -160,16 +160,19 @@ func newShareServer(t *testing.T) *shareServer {
 	return s
 }
 
-func messagesN(n int, textBytes int) []asymptoteobserve.ShareMessageV1 {
-	out := make([]asymptoteobserve.ShareMessageV1, n)
+func eventsN(n int, textBytes int) []asymptoteobserve.TraceEventV1 {
+	out := make([]asymptoteobserve.TraceEventV1, n)
 	for i := range out {
-		out[i] = asymptoteobserve.ShareMessageV1{
-			ID: fmt.Sprintf("m%d", i+1), Order: i + 1, Role: "user", Timestamp: "2026-10-01T00:00:00Z",
-			Text:  strings.Repeat("x", textBytes),
-			Parts: []asymptoteobserve.SharePartV1{{Type: "text", Order: 1, Content: asymptoteobserve.ShareTextContent{Text: "x"}}},
+		out[i] = asymptoteobserve.TraceEventV1{
+			ID: fmt.Sprintf("e%d", i+1), Number: i + 1, Type: "user_message", Action: "prompt.submitted", Timestamp: "2026-10-01T00:00:00Z",
+			Content: &asymptoteobserve.TraceContentV1{Text: strings.Repeat("x", textBytes), Retention: "full", Included: true},
 		}
 	}
 	return out
+}
+
+func shareTrace(visibility string) asymptoteobserve.ShareTraceV1 {
+	return asymptoteobserve.ShareTraceV1{Summary: asymptoteobserve.TraceSummaryV1{Harness: asymptoteobserve.TraceHarnessV1{Name: "claude_code"}}, Visibility: visibility}
 }
 
 func TestShareClientPutGetAndBatches(t *testing.T) {
@@ -179,22 +182,22 @@ func TestShareClientPutGetAndBatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	result, err := client.PutTrace(ctx, "claude_code:abc", asymptoteobserve.ShareTraceV1{AgentID: "claude_code", Visibility: "direct"})
+	result, err := client.PutTrace(ctx, "claude_code:abc", shareTrace("direct"))
 	if err != nil {
 		t.Fatalf("PutTrace: %v", err)
 	}
-	if result.ID != "k3x" || !result.Created || s.trace.SchemaVersion != asymptoteobserve.ShareSchemaVersion {
+	if result.ID != "k3x" || !result.Created || s.trace.SchemaVersion != asymptoteobserve.TraceSchemaVersion {
 		t.Fatalf("result = %+v trace = %+v", result, s.trace)
 	}
 
-	put, err := client.PutMessages(ctx, "claude_code:abc", messagesN(2500, 10))
+	put, err := client.PostEvents(ctx, "claude_code:abc", asymptoteobserve.ShareEventsBatchV1{Events: eventsN(2500, 10)})
 	if err != nil {
-		t.Fatalf("PutMessages: %v", err)
+		t.Fatalf("PostEvents: %v", err)
 	}
-	if put.Batches != 3 || put.Accepted != 2500 || put.MessageCount != 2500 {
+	if put.Batches != 3 || put.Upserted != 2500 || put.EventCount != 2500 {
 		t.Fatalf("put = %+v", put)
 	}
-	if len(s.batches[0]) != 1000 || len(s.batches[2]) != 500 || s.batches[2][499].ID != "m2500" {
+	if len(s.batches[0]) != 1000 || len(s.batches[2]) != 500 || s.batches[2][499].ID != "e2500" {
 		t.Fatalf("batch sizes = %d %d %d", len(s.batches[0]), len(s.batches[1]), len(s.batches[2]))
 	}
 	for _, encoding := range s.encoding {
@@ -204,7 +207,7 @@ func TestShareClientPutGetAndBatches(t *testing.T) {
 	}
 
 	state, found, err := client.GetTrace(ctx, "claude_code:abc")
-	if err != nil || !found || state.LastMessageID != "m2" || state.MaxOrder != 2 {
+	if err != nil || !found || state.LastEventID != "e2" || state.MaxNumber != 2 {
 		t.Fatalf("GetTrace = %+v %v %v", state, found, err)
 	}
 	if _, found, err := client.GetTrace(ctx, "claude_code:missing"); err != nil || found {
@@ -215,13 +218,13 @@ func TestShareClientPutGetAndBatches(t *testing.T) {
 			t.Fatalf("authorization = %q", auth)
 		}
 	}
-	if _, err := client.PutMessages(ctx, "bad id!", messagesN(1, 1)); err == nil {
+	if _, err := client.PostEvents(ctx, "bad id!", asymptoteobserve.ShareEventsBatchV1{Events: eventsN(1, 1)}); err == nil {
 		t.Fatal("expected an invalid external id to be refused")
 	}
 }
 
 func TestShareBatchesHonorTheByteLimit(t *testing.T) {
-	batches, err := ShareBatches(messagesN(10, 1000), 1000, 3500)
+	batches, err := ShareBatches(eventsN(10, 1000), 1000, 3500)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,17 +233,17 @@ func TestShareBatchesHonorTheByteLimit(t *testing.T) {
 		if len(b.Body) > 3500 {
 			t.Fatalf("batch of %d bytes exceeds the limit", len(b.Body))
 		}
-		var decoded asymptoteobserve.ShareMessagesBatchV1
-		if err := json.Unmarshal(b.Body, &decoded); err != nil || len(decoded.Messages) != b.Messages {
+		var decoded asymptoteobserve.ShareEventsBatchV1
+		if err := json.Unmarshal(b.Body, &decoded); err != nil || len(decoded.Events) != b.Events {
 			t.Fatalf("batch does not decode: %v", err)
 		}
-		total += b.Messages
+		total += b.Events
 	}
 	if total != 10 || len(batches) < 4 {
-		t.Fatalf("batches = %d, messages = %d", len(batches), total)
+		t.Fatalf("batches = %d, events = %d", len(batches), total)
 	}
-	if _, err := ShareBatches(messagesN(1, 5000), 1000, 3500); err == nil {
-		t.Fatal("expected an oversized message to be refused")
+	if _, err := ShareBatches(eventsN(1, 5000), 1000, 3500); err == nil {
+		t.Fatal("expected an oversized event to be refused")
 	}
 	if batches, err := ShareBatches(nil, 1000, 3500); err != nil || len(batches) != 0 {
 		t.Fatalf("empty input = %v %v", batches, err)
@@ -259,7 +262,7 @@ func TestShareClientRefusesRedirects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.PutTrace(context.Background(), "claude_code:abc", asymptoteobserve.ShareTraceV1{AgentID: "claude_code"})
+	_, err = client.PutTrace(context.Background(), "claude_code:abc", shareTrace(""))
 	if err == nil || !strings.Contains(err.Error(), "redirect") {
 		t.Fatalf("err = %v", err)
 	}
@@ -291,7 +294,7 @@ func TestShareClientMapsAuthFailures(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = client.PutTrace(context.Background(), "claude_code:abc", asymptoteobserve.ShareTraceV1{AgentID: "claude_code"})
+		_, err = client.PutTrace(context.Background(), "claude_code:abc", shareTrace(""))
 		server.Close()
 		if err == nil {
 			t.Fatalf("%d/%s: expected an error", tc.status, tc.source)
@@ -305,5 +308,20 @@ func TestShareClientMapsAuthFailures(t *testing.T) {
 		if strings.Contains(err.Error(), shareTestToken) {
 			t.Fatalf("%d/%s: the token reached the error: %v", tc.status, tc.source, err)
 		}
+	}
+}
+
+func TestShareClientRefusesAnotherSchema(t *testing.T) {
+	client, err := NewShareClient(shareCred("https://beacon.example.com"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := shareTrace("direct")
+	trace.SchemaVersion = "beacon.share.v1"
+	if _, err := client.PutTrace(context.Background(), "claude_code:abc", trace); err == nil || !strings.Contains(err.Error(), "schema") {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := client.PutTrace(context.Background(), "claude_code:abc", asymptoteobserve.ShareTraceV1{}); err == nil {
+		t.Fatal("expected a trace without a harness to be refused")
 	}
 }
