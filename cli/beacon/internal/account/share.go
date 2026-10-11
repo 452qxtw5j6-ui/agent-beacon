@@ -16,9 +16,10 @@ import (
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
-// Shared traces: `beacon share` uploads one session's messages to beacon.sh with
-// `PUT /v1/traces/{external_id}`, `POST /v1/traces/{external_id}/messages/batch` and reads its own
-// trace back with `GET /v1/traces/{external_id}`. These are explicit, user-initiated requests; no
+// Shared traces: `beacon share` uploads one session to beacon.sh as a beacon.trace.v1 trace: its
+// summary with `PUT /v1/traces/{external_id}`, its events with
+// `POST /v1/traces/{external_id}/events/batch`, and reads its own trace back with
+// `GET /v1/traces/{external_id}`. These are explicit, user-initiated requests; no
 // hook or background job ever makes them.
 //
 // They authorize with the signed-in CLI token when it carries ScopeTracesWrite, or with a Beacon API
@@ -184,13 +185,16 @@ func NewShareClient(cred ShareCredential, client *http.Client) (*ShareClient, er
 // BaseURL is the service the client sends to.
 func (c *ShareClient) BaseURL() string { return c.cred.BaseURL }
 
-// PutTrace creates or updates a trace's metadata.
+// PutTrace creates or updates a trace's summary and sharing settings.
 func (c *ShareClient) PutTrace(ctx context.Context, externalID string, trace asymptoteobserve.ShareTraceV1) (*asymptoteobserve.ShareTraceResultV1, error) {
 	if trace.SchemaVersion == "" {
-		trace.SchemaVersion = asymptoteobserve.ShareSchemaVersion
+		trace.SchemaVersion = asymptoteobserve.TraceSchemaVersion
 	}
-	if strings.TrimSpace(trace.AgentID) == "" {
-		return nil, errors.New("a shared trace needs an agent id")
+	if trace.SchemaVersion != asymptoteobserve.TraceSchemaVersion {
+		return nil, fmt.Errorf("unsupported trace schema %q", trace.SchemaVersion)
+	}
+	if strings.TrimSpace(trace.Summary.Harness.Name) == "" {
+		return nil, errors.New("a shared trace needs the harness that recorded it")
 	}
 	if trace.Visibility != "" && !asymptoteobserve.ValidShareVisibility(trace.Visibility) {
 		return nil, fmt.Errorf("unknown visibility %q", trace.Visibility)
@@ -216,44 +220,44 @@ func (c *ShareClient) PutTrace(ctx context.Context, externalID string, trace asy
 	return &result, nil
 }
 
-// PutMessagesResult sums the batches PutMessages sent.
-type PutMessagesResult struct {
+// PostEventsResult sums the batches PostEvents sent.
+type PostEventsResult struct {
 	Batches  int `json:"batches"`
-	Accepted int `json:"accepted"`
-	// MessageCount is the trace's total after the last batch, as beacon.sh reported it.
-	MessageCount int `json:"message_count"`
+	Upserted int `json:"upserted"`
+	// EventCount is the trace's total after the last batch, as beacon.sh reported it.
+	EventCount int `json:"event_count"`
 }
 
-// PutMessages upserts messages in batches of at most ShareMaxMessagesPerBatch messages and
-// ShareMaxBatchBytes bytes, each gzip-compressed. Re-sending a message is idempotent, so a failed
-// run can simply be repeated. An empty list sends nothing.
-func (c *ShareClient) PutMessages(ctx context.Context, externalID string, messages []asymptoteobserve.ShareMessageV1) (PutMessagesResult, error) {
-	var result PutMessagesResult
-	batches, err := ShareBatches(messages, asymptoteobserve.ShareMaxMessagesPerBatch, ShareMaxBatchBytes)
+// PostEvents upserts the batch's events in requests of at most ShareMaxEventsPerBatch events and
+// ShareMaxBatchBytes bytes, each gzip-compressed. Events are upserted by id, so re-sending one is
+// idempotent and a failed run can simply be repeated. An empty batch sends nothing.
+func (c *ShareClient) PostEvents(ctx context.Context, externalID string, batch asymptoteobserve.ShareEventsBatchV1) (PostEventsResult, error) {
+	var result PostEventsResult
+	batches, err := ShareBatches(batch.Events, asymptoteobserve.ShareMaxEventsPerBatch, ShareMaxBatchBytes)
 	if err != nil {
 		return result, err
 	}
-	for _, batch := range batches {
-		payload, status, err := c.do(ctx, http.MethodPost, externalID, "/messages/batch", batch.Body, true)
+	for _, request := range batches {
+		payload, status, err := c.do(ctx, http.MethodPost, externalID, "/events/batch", request.Body, true)
 		if err != nil {
 			return result, err
 		}
-		if err := c.statusError("upload messages", status, payload); err != nil {
+		if err := c.statusError("upload events", status, payload); err != nil {
 			return result, err
 		}
-		var accepted asymptoteobserve.ShareBatchResultV1
-		if err := json.Unmarshal(payload, &accepted); err != nil {
+		var upserted asymptoteobserve.ShareBatchResultV1
+		if err := json.Unmarshal(payload, &upserted); err != nil {
 			return result, fmt.Errorf("parse batch response: %w", err)
 		}
 		result.Batches++
-		result.Accepted += accepted.Accepted
-		result.MessageCount = accepted.MessageCount
+		result.Upserted += upserted.Upserted
+		result.EventCount = upserted.EventCount
 	}
 	return result, nil
 }
 
-// GetTrace reads the owner's view of a trace. found is false when beacon.sh has no such trace for
-// this credential.
+// GetTrace reads the owner's view of a trace, with the id of the last event beacon.sh holds. found
+// is false when beacon.sh has no such trace for this credential.
 func (c *ShareClient) GetTrace(ctx context.Context, externalID string) (*asymptoteobserve.ShareTraceStateV1, bool, error) {
 	payload, status, err := c.do(ctx, http.MethodGet, externalID, "", nil, false)
 	if err != nil {
@@ -272,16 +276,16 @@ func (c *ShareClient) GetTrace(ctx context.Context, externalID string) (*asympto
 	return &state, true, nil
 }
 
-// ShareBatch is one batch request body and how many messages it carries.
+// ShareBatch is one batch request body and how many events it carries.
 type ShareBatch struct {
-	Body     []byte
-	Messages int
+	Body   []byte
+	Events int
 }
 
-// ShareBatches splits messages into batch bodies of at most maxMessages messages and maxBytes
-// bytes. A single message larger than maxBytes is refused rather than sent to be rejected.
-func ShareBatches(messages []asymptoteobserve.ShareMessageV1, maxMessages, maxBytes int) ([]ShareBatch, error) {
-	const envelope = len(`{"messages":[]}`)
+// ShareBatches splits events into ShareEventsBatchV1 bodies of at most maxEvents events and
+// maxBytes bytes. A single event larger than maxBytes is refused rather than sent to be rejected.
+func ShareBatches(events []asymptoteobserve.TraceEventV1, maxEvents, maxBytes int) ([]ShareBatch, error) {
+	const envelope = len(`{"events":[]}`)
 	var batches []ShareBatch
 	var current [][]byte
 	size := envelope
@@ -290,30 +294,30 @@ func ShareBatches(messages []asymptoteobserve.ShareMessageV1, maxMessages, maxBy
 			return
 		}
 		body := make([]byte, 0, size)
-		body = append(body, `{"messages":[`...)
-		for i, m := range current {
+		body = append(body, `{"events":[`...)
+		for i, e := range current {
 			if i > 0 {
 				body = append(body, ',')
 			}
-			body = append(body, m...)
+			body = append(body, e...)
 		}
 		body = append(body, `]}`...)
-		batches = append(batches, ShareBatch{Body: body, Messages: len(current)})
+		batches = append(batches, ShareBatch{Body: body, Events: len(current)})
 		current, size = nil, envelope
 	}
-	for _, message := range messages {
-		encoded, err := json.Marshal(message)
+	for _, event := range events {
+		encoded, err := json.Marshal(event)
 		if err != nil {
 			return nil, err
 		}
 		if envelope+len(encoded) > maxBytes {
-			return nil, fmt.Errorf("message %s is %d bytes, more than one batch may carry", message.ID, len(encoded))
+			return nil, fmt.Errorf("event %s is %d bytes, more than one batch may carry", event.ID, len(encoded))
 		}
 		extra := len(encoded)
 		if len(current) > 0 {
 			extra++ // the comma
 		}
-		if len(current) >= maxMessages || size+extra > maxBytes {
+		if len(current) >= maxEvents || size+extra > maxBytes {
 			flush()
 			extra = len(encoded)
 		}
