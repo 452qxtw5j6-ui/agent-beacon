@@ -369,3 +369,65 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 		t.Fatalf("note %q lacks the URL", note)
 	}
 }
+
+// The share phase is held to the clock: an upload that never returns, and ignores its context, does
+// not hold up the push. The notes still get the URLs of the uploads that finished, the notes ref is
+// pushed with its full reserve, and the hook returns within its budget.
+func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
+	t.Setenv(gitlink.HookStdinEnv, "1")
+	root, remote := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	stubHandoffSources(t, stubHandoffSource{
+		harness: handoff.HarnessClaude,
+		sessions: []handoff.Session{
+			{Harness: handoff.HarnessClaude, ID: "sess-fast", Directory: env.projectDir, UpdatedAt: time.Now()},
+			{Harness: handoff.HarnessClaude, ID: "sess-stuck", Directory: env.projectDir, UpdatedAt: time.Now()},
+		},
+		events: shareFixtureEvents(env.projectDir),
+	})
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	prevUpload, prevBudget := gitShareUpload, gitShareUploadBudget
+	gitShareUploadBudget = 300 * time.Millisecond
+	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
+		if subject.session.ID == "sess-fast" {
+			return shareResult{SharedURL: "https://beacon.sh/s/fast01"}, subject, nil
+		}
+		<-release // stuck in local work that never looks at ctx
+		return shareResult{SharedURL: "https://beacon.sh/s/late01"}, subject, nil
+	}
+	t.Cleanup(func() { gitShareUpload, gitShareUploadBudget = prevUpload, prevBudget })
+
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", "beacon:claude_code/sess-fast\nbeacon:claude_code/sess-stuck", sha)
+	if out, err := runGit(t, "setup", "--cwd", root, "--share-sessions"); err != nil {
+		t.Fatalf("setup: %v\n%s", err, out)
+	}
+	rootCmd.SetIn(strings.NewReader("refs/heads/main " + sha + " refs/heads/main " + old + "\n"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var stderr bytes.Buffer
+	start := time.Now()
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil {
+		t.Fatalf("pre-push: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > gitShareUploadBudget+gitShareNoteWriteBudget+gitShareNotesReserve {
+		t.Fatalf("pre-push took %s, past its budget", elapsed)
+	}
+	if !strings.Contains(stderr.String(), "ran out of time") {
+		t.Fatalf("stderr %q", stderr.String())
+	}
+	want := "beacon:claude_code/sess-fast https://beacon.sh/s/fast01\nbeacon:claude_code/sess-stuck"
+	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
+		t.Fatalf("local note %q, want %q", note, want)
+	}
+	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
+		t.Fatalf("remote note %q: the notes ref was not pushed", note)
+	}
+}

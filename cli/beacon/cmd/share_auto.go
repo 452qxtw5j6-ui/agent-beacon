@@ -110,7 +110,8 @@ type shareAutoStatus struct {
 	Source          string `json:"source,omitempty"`
 	Project         string `json:"project,omitempty"`
 	UntrustedMarker string `json:"untrusted_marker,omitempty"`
-	// Overridden is the project whose enabled entry the user-wide off switch overrides here.
+	// Overridden is the project whose enabled entry is overridden here: by the off switch for
+	// every session (source "user") or by the repository's opt-out file (source "marker").
 	Overridden     string `json:"overridden,omitempty"`
 	UserEnabled    bool   `json:"user_enabled"`
 	UserState      string `json:"user_state"`
@@ -341,7 +342,11 @@ func runShareAutoStatus(cmd *cobra.Command, args []string) error {
 	case "project":
 		fmt.Fprintf(out, "  decided by your setting for the project %s\n", status.Project)
 	case "marker":
-		fmt.Fprintf(out, "  turned off by %s\n", shareauto.MarkerPath(status.Project))
+		if status.Overridden != "" {
+			fmt.Fprintf(out, "  disabled by the repository file %s, which overrides your setting for this project\n", shareauto.MarkerPath(status.Project))
+		} else {
+			fmt.Fprintf(out, "  disabled by the repository file %s\n", shareauto.MarkerPath(status.Project))
+		}
 	case "user":
 		if status.Overridden != "" {
 			fmt.Fprintf(out, "  turned off for every session, which overrides your setting for the project %s\n", status.Overridden)

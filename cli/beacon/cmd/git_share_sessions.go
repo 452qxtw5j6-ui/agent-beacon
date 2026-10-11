@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
@@ -170,21 +171,122 @@ type gitPushShareReport struct {
 	Skipped string   `json:"skipped,omitempty"`
 }
 
+// gitShareCollector receives what the share phase of a push finds and uploads, as it happens, so
+// the hook can take whatever is there when the upload deadline passes and move on. Once closed it
+// ignores further deliveries: an upload the hook abandoned can no longer reach the notes.
+type gitShareCollector struct {
+	mu       sync.Mutex
+	closed   bool
+	notes    map[string]string // commit -> note, read before anything is uploaded
+	urls     map[string]string // link key -> share URL
+	shared   []string
+	subjects int
+	skipped  string
+	err      error
+}
+
+func (c *gitShareCollector) update(f func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.closed {
+		f()
+	}
+}
+
+func (c *gitShareCollector) fail(err error) {
+	c.update(func() {
+		if c.err == nil {
+			c.err = err
+		}
+	})
+}
+
+// close stops deliveries and returns what was collected.
+func (c *gitShareCollector) close() gitShareCollector {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	urls := make(map[string]string, len(c.urls))
+	for k, v := range c.urls {
+		urls[k] = v
+	}
+	return gitShareCollector{notes: c.notes, urls: urls, shared: append([]string(nil), c.shared...), subjects: c.subjects, skipped: c.skipped, err: c.err}
+}
+
 // gitShareSessionsOnPush shares the sessions linked to the commits being pushed that have no share
 // URL in their note yet, and writes the URLs into the notes, before the notes ref is pushed. A
 // session already shared from this machine only has its URL written. Without a credential it does
-// nothing and says nothing. ctx bounds it; every error is returned for one line on stderr, never
-// to fail the push.
+// nothing and says nothing. Every error is returned for one line on stderr, never to fail the push.
+//
+// The budget is enforced by the clock, not by cooperation: reading the stores and the runtime log,
+// building a payload and recording the share do not all watch a context. The share phase runs in a
+// goroutine that delivers each URL as its upload finishes; the hook waits for it at most
+// gitShareUploadBudget, takes the URLs collected by then and moves on, abandoning the goroutine
+// (the hook process exits soon after). Only this function writes notes, and only from what was
+// collected, so an abandoned upload never touches them; it may still append its session.shared
+// record to the runtime log, which is harmless: that upload did happen. The note writes then get a
+// fresh gitShareNoteWriteBudget, and the caller pushes the notes ref on a fresh
+// gitShareNotesReserve, so neither is starved by the uploads.
 func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, stdin, visibility string) (gitPushShareReport, error) {
 	var report gitPushShareReport
 	gitAllowShareHosts()
-	// The uploads get their own deadline, so running out of it still leaves time to write the URLs
-	// of the uploads that did finish; those run on a short context of their own.
-	ctx, cancelUploads := context.WithTimeout(parent, gitShareUploadBudget)
+	// The uploads end gitShareUploadBudget from now, or earlier when the hook's own deadline leaves
+	// less than the note writes and the notes push need after them.
+	uploadDeadline := time.Now().Add(gitShareUploadBudget)
+	if d, ok := parent.Deadline(); ok {
+		if latest := d.Add(-gitShareNoteWriteBudget - gitShareNotesReserve); latest.Before(uploadDeadline) {
+			uploadDeadline = latest
+		}
+	}
+	ctx, cancelUploads := context.WithDeadline(parent, uploadDeadline)
 	defer cancelUploads()
+	collector := &gitShareCollector{urls: map[string]string{}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		gitShareFindAndUpload(ctx, collector, repo, remote, stdin, visibility)
+	}()
+	timedOut := false
+	select {
+	case <-done:
+	case <-ctx.Done():
+		timedOut = true
+	}
+	got := collector.close()
+	cancelUploads()
+	report.Shared = got.shared
+	report.Skipped = got.skipped
+	shareErr := got.err
+	if timedOut && shareErr == nil && (got.notes == nil || len(got.shared) < got.subjects) {
+		shareErr = errors.New("ran out of time before every linked session was shared; the next push shares the rest")
+	}
+	if len(got.notes) == 0 {
+		return report, shareErr
+	}
+	noteCtx, cancelNotes := context.WithTimeout(context.Background(), gitShareNoteWriteBudget)
+	defer cancelNotes()
+	for sha := range got.notes {
+		changed, err := gitlink.UpdateNote(noteCtx, repo.Git, sha, func(note string) string { return gitlink.SetLinkURLs(note, got.urls) })
+		if err != nil {
+			if shareErr == nil {
+				shareErr = err
+			}
+			continue
+		}
+		if changed {
+			report.Noted++
+		}
+	}
+	return report, shareErr
+}
+
+// gitShareFindAndUpload is the share phase of a push: it reads the pushed commits' notes, finds the
+// linked sessions without a URL, and uploads them, delivering each result to c as it comes.
+func gitShareFindAndUpload(ctx context.Context, c *gitShareCollector, repo gitlink.Repo, remote, stdin, visibility string) {
 	commits, err := gitlink.PushedCommits(ctx, repo, remote, stdin, gitShareMaxCommits)
 	if err != nil {
-		return report, err
+		c.fail(err)
+		return
 	}
 	var order []gitlink.Link
 	wanted := map[string]bool{}
@@ -203,19 +305,19 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 		}
 	}
 	if len(order) == 0 {
-		return report, nil
+		return
 	}
+	c.update(func() { c.notes = notes })
 	known := localShareURLs(shareLogPath())
-	urls := map[string]string{}
 	var toShare []gitlink.Link
 	for _, link := range order {
 		if u := known[gitShareKey(link.Harness, link.SessionID)]; u != "" {
-			urls[link.Key()] = u
+			key := link.Key()
+			c.update(func() { c.urls[key] = u })
 		} else {
 			toShare = append(toShare, link)
 		}
 	}
-	var shareErr error
 	type linkedSubject struct {
 		link    gitlink.Link
 		subject shareSubject
@@ -223,8 +325,7 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 	var subjects []linkedSubject
 	if len(toShare) > 0 {
 		// Resolve first, cap after: a teammate's session, or one this machine no longer has,
-		// must not use up a slot that one of this person's sessions needs. Resolving reads only
-		// the local stores, inside the upload budget.
+		// must not use up a slot that one of this person's sessions needs.
 		stores := newGitShareStoreIndex(handoffSources(handoff.StoreDirs{}))
 		logPath := shareLogPath()
 		var inLog map[string]bool // read once, on the first link the stores do not have
@@ -261,49 +362,32 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 			subjects = append(subjects, linkedSubject{link: link, subject: shareSubject{session: session, fromLog: true, logEvents: events}})
 		}
 	}
-	if len(subjects) > 0 {
-		client, err := newShareClient()
-		if err != nil {
-			report.Skipped = "no Beacon credential"
-		} else {
-			for _, ls := range subjects {
-				if ctx.Err() != nil {
-					break
-				}
-				key := ls.link.Key()
-				result, _, err := gitShareUpload(ctx, client, ls.subject, shareUploadOptions{Visibility: visibility, Record: true})
-				if err != nil && result.SharedURL == "" {
-					if shareErr == nil {
-						shareErr = fmt.Errorf("%s: %w", key, err)
-					}
-					continue
-				}
-				if gitlink.ValidShareURL(result.SharedURL) {
-					urls[key] = result.SharedURL
-					report.Shared = append(report.Shared, key)
-				}
-			}
+	if len(subjects) == 0 {
+		return
+	}
+	c.update(func() { c.subjects = len(subjects) })
+	client, err := newShareClient()
+	if err != nil {
+		c.update(func() { c.skipped = "no Beacon credential" })
+		return
+	}
+	for _, ls := range subjects {
+		if ctx.Err() != nil {
+			return
 		}
-	}
-	if ctx.Err() != nil && shareErr == nil && len(report.Shared) < len(subjects) {
-		shareErr = errors.New("ran out of time before every linked session was shared; the next push shares the rest")
-	}
-	cancelUploads()
-	noteCtx, cancelNotes := context.WithTimeout(parent, gitShareNoteWriteBudget)
-	defer cancelNotes()
-	for sha := range notes {
-		changed, err := gitlink.UpdateNote(noteCtx, repo.Git, sha, func(note string) string { return gitlink.SetLinkURLs(note, urls) })
-		if err != nil {
-			if shareErr == nil {
-				shareErr = err
-			}
+		key := ls.link.Key()
+		result, _, err := gitShareUpload(ctx, client, ls.subject, shareUploadOptions{Visibility: visibility, Record: true})
+		if err != nil && result.SharedURL == "" {
+			c.fail(fmt.Errorf("%s: %w", key, err))
 			continue
 		}
-		if changed {
-			report.Noted++
+		if gitlink.ValidShareURL(result.SharedURL) {
+			c.update(func() {
+				c.urls[key] = result.SharedURL
+				c.shared = append(c.shared, key)
+			})
 		}
 	}
-	return report, shareErr
 }
 
 // readHookStdin reads what git passes a pre-push hook on stdin, bounded.

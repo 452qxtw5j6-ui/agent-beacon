@@ -142,12 +142,15 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(cmd.ErrOrStderr(), "beacon: sessions are shared on push only through the hook `beacon git setup` installs; this push shares commit links only")
 		}
 		if stdin != "" {
-			// Sharing sessions splits the budget itself (uploads, then writing their URLs into the
-			// notes) and leaves gitShareNotesReserve for pushing the notes ref, so the links, with
-			// whatever URLs it recorded, still reach the remote.
+			// Sharing sessions is held to the clock (uploads, then writing their URLs into the
+			// notes), and the notes ref is then pushed on a fresh gitShareNotesReserve, so the
+			// links, with whatever URLs were recorded, still reach the remote in time.
 			if _, err := gitShareSessionsOnPush(ctx, repo, args[0], stdin, visibility); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "beacon: linked sessions were not all shared: %s\n", gitlink.ErrorSummary(err))
 			}
+			pushCtx, cancelPush := context.WithTimeout(context.Background(), gitShareNotesReserve)
+			defer cancelPush()
+			ctx = pushCtx
 		}
 	}
 	if _, err := gitlink.PushNotes(ctx, repo, args[0]); err != nil {
