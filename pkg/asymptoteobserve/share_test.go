@@ -2,6 +2,7 @@ package asymptoteobserve
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -528,5 +529,31 @@ func TestShareMetadataUsesExplicitHomeWithoutLookup(t *testing.T) {
 	meta := ShareMetadataFromEventsWithOptions([]Event{prompt}, ShareOptions{HomeDirectory: "/home/al", NoHomeLookup: true})
 	if meta.Title != "look at ~/secret" {
 		t.Fatalf("title = %q", meta.Title)
+	}
+}
+
+func TestBuildShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) {
+	// The hook adapter labels a PostToolUse for tools without a more specific action (WebFetch,
+	// Grep, Task, ...) tool.invoked, carrying the result. With a PreToolUse tool.invoked for the
+	// same call (Kimi Code, Muse Code) it must still produce a result.
+	pre := shareEventAt("2026-10-01T10:00:00Z", "kimi_code", CollectionMethodHook, "tool.invoked", "tool")
+	pre.Event.ID = "k-pre"
+	pre = withCall(pre, "call_1", "WebFetch", map[string]interface{}{"url": "https://example.com"}, nil)
+	post := shareEventAt("2026-10-01T10:00:01Z", "kimi_code", CollectionMethodHook, "tool.invoked", "tool")
+	post.Event.ID = "k-post"
+	post = withCall(post, "call_1", "WebFetch", nil, "page body")
+	// Alone (Claude: PreToolUse becomes an approval), the post event still yields a call and result.
+	lone := shareEventAt("2026-10-01T10:00:02Z", "claude_code", CollectionMethodHook, "tool.invoked", "tool")
+	lone.Event.ID = "c-post"
+	lone = withCall(lone, "toolu_9", "Grep", map[string]interface{}{"pattern": "x"}, "3 matches")
+
+	messages := BuildShareMessagesWithOptions([]Event{pre, post, lone}, shareTestOpts)
+	want := "assistant/tool_call,assistant/tool_result,assistant/tool_call,assistant/tool_result"
+	if got := partsOf(t, messages); strings.Join(got, ",") != want {
+		t.Fatalf("parts = %v", got)
+	}
+	result := messages[1].Parts[0].Content.(*ShareToolResultContent)
+	if result.CallID != "call_1" || !strings.Contains(fmt.Sprint(result.Output), "page body") {
+		t.Fatalf("result = %+v", result)
 	}
 }
