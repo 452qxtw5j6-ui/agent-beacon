@@ -109,3 +109,133 @@ func TestSanitizeEventRedactsAndTruncates(t *testing.T) {
 		t.Fatalf("tool path was not truncated: %d", len(sanitized.Tool.Path))
 	}
 }
+
+// Credentials an agent routinely reads (.env files, ~/.aws/credentials, a clone URL, an MCP tool's
+// arguments) must not reach the log in any of the shapes they are written in.
+func TestRedactStringRedactsCommonCredentialFormats(t *testing.T) {
+	tests := []struct {
+		name, input, secret string
+	}{
+		{"aws env", "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"},
+		{"aws credentials file", "aws_secret_access_key = wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY", "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"},
+		{"aws access key id", "found AKIAIOSFODNN7EXAMPLE in the config", "AKIAIOSFODNN7EXAMPLE"},
+		{"json api_key", `{"api_key": "f00dfacecafebeef1234"}`, "f00dfacecafebeef1234"},
+		{"json token", `{"token":"opaque-session-value-9"}`, "opaque-session-value-9"},
+		{"escaped json", `{\"password\": \"hunter2hunter2\"}`, "hunter2hunter2"},
+		{"export", `export GITHUB_TOKEN="plain-value-1234567"`, "plain-value-1234567"},
+		{"yaml", "client_secret: s3cr3t-value-abc", "s3cr3t-value-abc"},
+		{"anthropic", "key is sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCd", "sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"},
+		{"openai project", "sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"},
+		{"github classic", "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789", "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"},
+		{"github fine-grained", "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz"},
+		{"clone url", "git clone https://x-access-token:opaqueValue123@github.com/org/repo", "opaqueValue123"},
+		{"database url", "DATABASE_URL=postgres://app:pa55w0rd@db.internal:5432/app", "pa55w0rd"},
+		{"bare database url", "connect to postgres://app:pa55w0rd@db.internal:5432/app", "pa55w0rd"},
+		{"password flag", "mysql --user root --password hunter2hunter2", "hunter2hunter2"},
+		{"token flag", "tool login --token=opaque-flag-value", "opaque-flag-value"},
+		{"basic auth", "Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="},
+		{"slack", "xoxb-1234567890-abcdefghijkl", "abcdefghijkl"},
+		{"stripe", "sk_live_AbCdEfGhIjKlMnOpQrSt", "AbCdEfGhIjKlMnOpQrSt"},
+		{"google", "AIzaSyA-abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345"},
+		{"jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
+		{"beacon device key", "bcn_device_abcdefgh_0123456789abcdef", "0123456789abcdef"},
+		{"rsa key", "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretbody\n-----END RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAsecretbody"},
+		{"openssh key cut short", "cat ~/.ssh/id_ed25519\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA", "b3BlbnNzaC1rZXktdjEAAAAA"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := RedactString(tc.input); strings.Contains(got, tc.secret) || !strings.Contains(got, "[REDACTED]") {
+				t.Fatalf("RedactString(%q) = %q, want %q removed", tc.input, got, tc.secret)
+			}
+		})
+	}
+}
+
+// Redaction keeps the label and the structure around a value, and leaves text that only mentions
+// tokens alone: token counts are the most common numbers in this log.
+func TestRedactStringKeepsLabelsAndOrdinaryText(t *testing.T) {
+	kept := []string{
+		"input_tokens: 812, output_tokens=95, max_tokens=4096",
+		"run go test ./... --max-tokens 10",
+		"the author: Ada",
+		"see https://github.com/org/repo/pull/12 and git@github.com:org/repo.git",
+		"PWD=/home/ada/project",
+		"task-0123456789abcdefghijklmnop",
+	}
+	for _, input := range kept {
+		if got := RedactString(input); got != input {
+			t.Fatalf("RedactString(%q) = %q, want it unchanged", input, got)
+		}
+	}
+	if got := RedactString(`{"api_key": "f00dfacecafebeef1234", "model": "x"}`); got != `{"api_key": "[REDACTED]", "model": "x"}` {
+		t.Fatalf("quoted JSON value = %q, want its quotes and the rest of the object kept", got)
+	}
+	if got := RedactString("git clone https://u:pw123456@example.com/r"); got != "git clone https://u:[REDACTED]@example.com/r" {
+		t.Fatalf("URL credential = %q, want the scheme, user and host kept", got)
+	}
+}
+
+// Events are sanitized again on every read path, so a second pass must not change the first one's
+// output.
+func TestRedactStringIsIdempotent(t *testing.T) {
+	inputs := []string{
+		"config dump\napi_key=sk-abcdefghijklmnopqrstuvwxyz0123\nOPENAI sk-abcdefghijklmnopqrstuvwxyz0123",
+		`{"token": "opaque-session-value-9", "password": "hunter2hunter2"}`,
+		"Authorization: Bearer abc.def.ghi and --password hunter2hunter2",
+		"postgres://app:pa55w0rd@db/app",
+	}
+	for _, input := range inputs {
+		once := RedactString(input)
+		if twice := RedactString(once); twice != once {
+			t.Fatalf("RedactString is not idempotent:\nonce  %q\ntwice %q", once, twice)
+		}
+	}
+}
+
+// A field named for a credential is one, whatever its value looks like.
+func TestSanitizeMapRedactsValuesUnderSecretKeys(t *testing.T) {
+	input := map[string]interface{}{
+		"tool_input": map[string]interface{}{
+			"password": "hunter2",
+			"apiKey":   "plain",
+			"headers":  map[string]interface{}{"X-Api-Key": "abc", "Cookie": "sid=1", "Accept": "application/json"},
+			"env":      map[string]interface{}{"GITHUB_TOKEN": "v1", "AWS_SECRET_ACCESS_KEY": "v2", "PWD": "/home/ada"},
+		},
+		"usage":      map[string]interface{}{"input_tokens": float64(12)},
+		"token_type": "Bearer",
+		"author":     "Ada",
+	}
+	got := SanitizeMap(input, PrivacyOptions{RedactSecrets: true, StringLimit: DefaultRawStringLimit})
+	data, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, secret := range []string{"hunter2", `"plain"`, `"abc"`, "sid=1", `"v1"`, `"v2"`} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("SanitizeMap leaked %s: %s", secret, text)
+		}
+	}
+	for _, keep := range []string{"application/json", "/home/ada", `"input_tokens":12`, `"token_type":"Bearer"`, `"author":"Ada"`} {
+		if !strings.Contains(text, keep) {
+			t.Fatalf("SanitizeMap dropped %s: %s", keep, text)
+		}
+	}
+	if got := SanitizeMap(input, PrivacyOptions{StringLimit: DefaultRawStringLimit}); got["tool_input"].(map[string]interface{})["password"] != "hunter2" {
+		t.Fatal("SanitizeMap redacted by key name with RedactSecrets off")
+	}
+}
+
+// Truncation must not cut a secret into a prefix that no longer matches its pattern.
+func TestCleanStringRedactsBeforeTruncating(t *testing.T) {
+	secret := "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+	value := strings.Repeat("x", 90) + " " + secret
+	got := CleanString(value, 120, true)
+	if strings.Contains(got, "ghp_AbCd") {
+		t.Fatalf("CleanString left part of a secret at the cut: %q", got)
+	}
+	key := strings.Repeat("y", 200) + "\n-----BEGIN OPENSSH PRIVATE KEY-----\n" + strings.Repeat("A", 3000) + "\n-----END OPENSSH PRIVATE KEY-----\n" + strings.Repeat("z", 10000)
+	if got := CleanString(key, 1024, true); strings.Contains(got, "AAAA") || len(got) > 1024 {
+		t.Fatalf("CleanString kept key material or overran its limit: %d bytes", len(got))
+	}
+}
