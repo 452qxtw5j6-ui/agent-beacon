@@ -127,7 +127,7 @@ beacon share --follow                          # this session, until it ends
 beacon share --follow --session 5f0c1d2e --interval 30s
 ```
 
-`--follow` waits for a session that has nothing to share yet. The link is printed after the first upload; with `--json`, each upload prints one JSON document per line, and the last carries `"final":true` (and `"ended":true` when the session ended). The runtime log gets one `session.shared` event when the trace is first shared and one when following stops. `--follow` cannot be combined with `--print` or `--list`.
+`--follow` waits for a session that has nothing to share yet. The link is printed after the first upload; with `--json`, each upload prints one JSON document per line, and the last carries `"final":true` (and `"ended":true` when the session ended). The runtime log gets one `session.shared` event when the trace is first shared and one after each later upload that sent messages, so the dashboard does not show a followed session as out of date. `--follow` cannot be combined with `--print` or `--list`.
 
 ## Auto-share
 
@@ -227,7 +227,7 @@ jobs:
             });
 ```
 
-The URL reaches the script through an environment variable rather than being written into the script, so nothing in the share output can change what the script runs. Sharing failures leave the job green (`exit 0`); drop that to make a missing trace fail the build. To watch the session live, start `beacon share --follow --harness claude_code &` in the step before the agent instead.
+The URL reaches the script through an environment variable rather than being written into the script, so nothing in the share output can change what the script runs. Sharing failures leave the job green (`exit 0`); drop that to make a missing trace fail the build. Share after the agent finishes, as above, rather than with `--follow`: `--follow` needs the session to exist when it starts (it exits with "no agent session found" otherwise), and most CI runners stop background processes when the step that started them ends. Keep `--follow` for watching a session from your own terminal, or for a step that runs it alongside the agent and waits for it.
 
 ### GitLab CI
 

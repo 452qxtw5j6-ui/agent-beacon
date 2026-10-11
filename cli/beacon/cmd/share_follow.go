@@ -90,9 +90,18 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 		fingerprint, end, err := shareFollowState(subject)
 		ended = end
 		if err == nil && fingerprint != lastPrint {
-			opts := shareUploadOptions{Record: uploads == 0}
+			// Every upload that sends messages records a session.shared refresh, so a session
+			// being followed never looks out of date locally; it is at most one per interval.
+			opts := shareUploadOptions{Record: true}
 			if uploads == 0 {
+				// An explicit --visibility or --title applies once, to the trace as it is now
+				// (created or existing). Later uploads leave both alone, so a rename on beacon.sh
+				// while following is kept.
 				opts.Visibility = visibility
+				opts.ExplicitVisibility = visibility != ""
+				if f := cmd.Flags().Lookup("title"); f != nil && f.Changed {
+					opts.ExplicitTitle = true
+				}
 			}
 			result, aligned, upErr := shareUpload(ctx, client, subject, opts)
 			var recordErr *shareRecordError
@@ -147,11 +156,6 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 			return errors.New("stopped before the session had anything to share")
 		}
 		return fmt.Errorf("%s session %s has nothing to share", subject.session.Harness, subject.session.ID)
-	}
-	if uploads > 1 {
-		if err := recordShareEvent(subject.session, last, true); err != nil {
-			fmt.Fprintf(errOut, "warning: the runtime log was not updated: %v\n", err)
-		}
 	}
 	if finalErr != nil {
 		return finalErr
