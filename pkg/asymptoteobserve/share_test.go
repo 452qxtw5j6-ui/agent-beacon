@@ -3,8 +3,10 @@ package asymptoteobserve
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func shareEventAt(ts, harness, method, action, category string) Event {
@@ -32,9 +34,15 @@ func withCall(e Event, id, name string, args interface{}, result interface{}) Ev
 	return e
 }
 
-var shareTestOpts = ShareOptions{HomeDirectory: "/home/dev"}
+var shareTestOpts = ShareOptions{HomeDirectory: "/home/dev", NoHomeLookup: true}
 
-func partsOf(t *testing.T, messages []ShareMessageV1) []string {
+// shareMessages is the chat view of the shared bundle built from events: the path every message a
+// shared trace shows goes through.
+func shareMessages(events []Event, opts ShareOptions) []TraceMessageV1 {
+	return TraceMessages(BuildShareBundle(events, opts))
+}
+
+func partsOf(t *testing.T, messages []TraceMessageV1) []string {
 	t.Helper()
 	var out []string
 	for _, m := range messages {
@@ -45,7 +53,7 @@ func partsOf(t *testing.T, messages []ShareMessageV1) []string {
 	return out
 }
 
-func TestBuildShareMessagesPairsClaudeHookPreAndPost(t *testing.T) {
+func TestShareMessagesPairsClaudeHookPreAndPost(t *testing.T) {
 	prompt := shareEventAt("2026-10-01T10:00:00.000000000Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
 	prompt.Event.ID = "e-prompt"
 	prompt.Prompt = &PromptInfo{Text: "List the files in /home/dev/src/app please"}
@@ -78,7 +86,7 @@ func TestBuildShareMessagesPairsClaudeHookPreAndPost(t *testing.T) {
 
 	// Given out of order, and with the session.shared record that must never become a message.
 	shared := shareEventAt("2026-10-01T11:00:00.000000000Z", "claude_code", "", "session.shared", "session")
-	messages := BuildShareMessagesWithOptions([]Event{answer, otlp, shared, post, usage, pre, prompt}, shareTestOpts)
+	messages := shareMessages([]Event{answer, otlp, shared, post, usage, pre, prompt}, shareTestOpts)
 
 	got := partsOf(t, messages)
 	want := []string{"user/text", "assistant/tool_call", "assistant/tool_result", "assistant/text"}
@@ -96,15 +104,15 @@ func TestBuildShareMessagesPairsClaudeHookPreAndPost(t *testing.T) {
 	if text := messages[0].Text; text != "List the files in . please" {
 		t.Fatalf("prompt text not scrubbed: %q", text)
 	}
-	call := messages[1].Parts[0].Content.(*ShareToolCallContent)
-	if call.CallID != "toolu_1" || call.ToolKind != ShareToolKindTerminalCommand || call.Command != "ls -la ./cmd" {
+	call := messages[1].Parts[0].Content.(*TraceToolCallContentV1)
+	if call.CallID != "toolu_1" || call.ToolKind != TraceToolKindTerminalCommand || call.Command != "ls -la ./cmd" {
 		t.Fatalf("call = %+v", call)
 	}
 	if call.Args["command"] != "ls -la ./cmd" {
 		t.Fatalf("args = %+v", call.Args)
 	}
-	result := messages[2].Parts[0].Content.(*ShareToolResultContent)
-	if result.CallID != "toolu_1" || result.Output != "main.go\n" || result.Status != ShareStatusSuccess {
+	result := messages[2].Parts[0].Content.(*TraceToolResultContentV1)
+	if result.CallID != "toolu_1" || result.Output != "main.go\n" || result.Status != TraceToolStatusSuccess {
 		t.Fatalf("result = %+v", result)
 	}
 	if result.ExitCode == nil || *result.ExitCode != 0 || result.DurationMS == nil || *result.DurationMS != 42 {
@@ -115,34 +123,34 @@ func TestBuildShareMessagesPairsClaudeHookPreAndPost(t *testing.T) {
 	}
 }
 
-func TestBuildShareMessagesSynthesizesCallForPollCompletion(t *testing.T) {
+func TestShareMessagesSynthesizesCallForPollCompletion(t *testing.T) {
 	cmd := shareEventAt("2026-10-01T10:00:00Z", "codex", CollectionMethodPoll, "command.executed", "command")
 	cmd.Event.ID = "e-cmd"
 	cmd = withCall(cmd, "call_9", "exec_command", map[string]interface{}{"cmd": "go test ./..."}, nil)
 	cmd.Command = &CommandInfo{Command: "go test ./...", ExitCode: intPtr(1), Output: "FAIL"}
 
-	messages := BuildShareMessagesWithOptions([]Event{cmd}, shareTestOpts)
+	messages := shareMessages([]Event{cmd}, shareTestOpts)
 	if got := partsOf(t, messages); strings.Join(got, ",") != "assistant/tool_call,assistant/tool_result" {
 		t.Fatalf("parts = %v", got)
 	}
 	if messages[0].ID == "e-cmd" || messages[1].ID != "e-cmd" {
 		t.Fatalf("ids = %s %s", messages[0].ID, messages[1].ID)
 	}
-	again := BuildShareMessagesWithOptions([]Event{cmd}, shareTestOpts)
+	again := shareMessages([]Event{cmd}, shareTestOpts)
 	if again[0].ID != messages[0].ID {
 		t.Fatalf("synthesized call id is not stable: %s vs %s", again[0].ID, messages[0].ID)
 	}
-	call := messages[0].Parts[0].Content.(*ShareToolCallContent)
-	if call.CallID != "call_9" || call.ToolKind != ShareToolKindTerminalCommand || call.Args["cmd"] != "go test ./..." {
+	call := messages[0].Parts[0].Content.(*TraceToolCallContentV1)
+	if call.CallID != "call_9" || call.ToolKind != TraceToolKindTerminalCommand || call.Args["cmd"] != "go test ./..." {
 		t.Fatalf("call = %+v", call)
 	}
-	result := messages[1].Parts[0].Content.(*ShareToolResultContent)
-	if result.Status != ShareStatusError || result.ExitCode == nil || *result.ExitCode != 1 {
+	result := messages[1].Parts[0].Content.(*TraceToolResultContentV1)
+	if result.Status != TraceToolStatusError || result.ExitCode == nil || *result.ExitCode != 1 {
 		t.Fatalf("result = %+v", result)
 	}
 }
 
-func TestBuildShareMessagesPairsCallsWithoutRuntimeIDs(t *testing.T) {
+func TestShareMessagesPairsCallsWithoutRuntimeIDs(t *testing.T) {
 	// Cursor-shaped: no tool call id on either hook. The edit's diff arrives on the completion and
 	// belongs on the call.
 	before := shareEventAt("2026-10-01T10:00:00Z", "cursor", CollectionMethodHook, "tool.invoked", "tool")
@@ -160,27 +168,27 @@ func TestBuildShareMessagesPairsCallsWithoutRuntimeIDs(t *testing.T) {
 	read.Event.ID = "c-read"
 	read.File = &FileInfo{Path: "/home/dev/notes.txt", Operation: "read"}
 
-	messages := BuildShareMessagesWithOptions([]Event{before, after, edit, read}, shareTestOpts)
+	messages := shareMessages([]Event{before, after, edit, read}, shareTestOpts)
 	want := "assistant/tool_call,assistant/tool_result,assistant/tool_call,assistant/tool_result,assistant/tool_call"
 	if got := partsOf(t, messages); strings.Join(got, ",") != want {
 		t.Fatalf("parts = %v", got)
 	}
-	call := messages[0].Parts[0].Content.(*ShareToolCallContent)
-	result := messages[1].Parts[0].Content.(*ShareToolResultContent)
+	call := messages[0].Parts[0].Content.(*TraceToolCallContentV1)
+	result := messages[1].Parts[0].Content.(*TraceToolResultContentV1)
 	if result.CallID != call.CallID || call.CallID != "c-before" {
 		t.Fatalf("not paired: call %q result %q", call.CallID, result.CallID)
 	}
-	editCall := messages[2].Parts[0].Content.(*ShareToolCallContent)
-	if editCall.FilePath != "main.go" || editCall.ToolKind != ShareToolKindEdit || editCall.Diff == "" {
+	editCall := messages[2].Parts[0].Content.(*TraceToolCallContentV1)
+	if editCall.FilePath != "main.go" || editCall.ToolKind != TraceToolKindEdit || editCall.Diff == "" {
 		t.Fatalf("edit call = %+v", editCall)
 	}
-	readCall := messages[4].Parts[0].Content.(*ShareToolCallContent)
-	if readCall.FilePath != "~/notes.txt" || readCall.ToolKind != ShareToolKindRead {
+	readCall := messages[4].Parts[0].Content.(*TraceToolCallContentV1)
+	if readCall.FilePath != "~/notes.txt" || readCall.ToolKind != TraceToolKindRead {
 		t.Fatalf("read call = %+v", readCall)
 	}
 }
 
-func TestBuildShareMessagesTranscriptMCPAndApproval(t *testing.T) {
+func TestShareMessagesTranscriptMCPAndApproval(t *testing.T) {
 	invoke := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodPoll, "mcp.tool_invoked", "mcp")
 	invoke.Event.ID = "m-invoke"
 	invoke = withCall(invoke, "toolu_m", "mcp__github__search", map[string]interface{}{"q": "beacon"}, nil)
@@ -201,34 +209,34 @@ func TestBuildShareMessagesTranscriptMCPAndApproval(t *testing.T) {
 	reasoning.Event.ID = "m-think"
 	reasoning.GenAI = &GenAIInfo{Output: &GenAIOutputInfo{Messages: ReasoningOutputMessages("Consider the cache.")}}
 
-	messages := BuildShareMessagesWithOptions([]Event{invoke, done, approval, start, failure, reasoning}, shareTestOpts)
+	messages := shareMessages([]Event{invoke, done, approval, start, failure, reasoning}, shareTestOpts)
 	want := "system/system_event,assistant/tool_call,assistant/tool_result,system/system_event,system/error,assistant/thinking"
 	if got := partsOf(t, messages); strings.Join(got, ",") != want {
 		t.Fatalf("parts = %v", got)
 	}
-	call := messages[1].Parts[0].Content.(*ShareToolCallContent)
-	if call.ToolKind != ShareToolKindMCP || call.Args["q"] != "beacon" {
+	call := messages[1].Parts[0].Content.(*TraceToolCallContentV1)
+	if call.ToolKind != TraceToolKindMCP || call.Args["q"] != "beacon" {
 		t.Fatalf("mcp call = %+v", call)
 	}
-	if result := messages[2].Parts[0].Content.(*ShareToolResultContent); result.Output != "3 results" || result.CallID != "toolu_m" {
+	if result := messages[2].Parts[0].Content.(*TraceToolResultContentV1); result.Output != "3 results" || result.CallID != "toolu_m" {
 		t.Fatalf("mcp result = %+v", result)
 	}
 	ev := messages[3].Parts[0].Content.(map[string]interface{})
 	if ev["subtype"] != "approval" || ev["decision"] != "deny" || ev["toolName"] != "bash" {
 		t.Fatalf("approval = %+v", ev)
 	}
-	if messages[4].Parts[0].Content.(ShareErrorContent).Message != "provider returned 500" {
+	if messages[4].Parts[0].Content.(TraceErrorContentV1).Message != "provider returned 500" {
 		t.Fatalf("error = %+v", messages[4])
 	}
 }
 
-func TestBuildShareMessagesSanitizesContent(t *testing.T) {
+func TestShareMessagesSanitizesContent(t *testing.T) {
 	prompt := shareEventAt("2026-10-01T10:00:00Z", "codex", CollectionMethodHook, "prompt.submitted", "prompt")
 	prompt.Prompt = &PromptInfo{Text: "use api_key=supersecretvalue123 to call it"}
 	cmd := shareEventAt("2026-10-01T10:00:01Z", "codex", CollectionMethodHook, "command.executed", "command")
 	cmd.Command = &CommandInfo{Command: "curl -H 'Authorization: Bearer abc.def.ghi' x", Output: "token=zzzzzzzzzzzz"}
 
-	messages := BuildShareMessagesWithOptions([]Event{prompt, cmd}, shareTestOpts)
+	messages := shareMessages([]Event{prompt, cmd}, shareTestOpts)
 	data, err := json.Marshal(messages)
 	if err != nil {
 		t.Fatal(err)
@@ -238,64 +246,64 @@ func TestBuildShareMessagesSanitizesContent(t *testing.T) {
 			t.Fatalf("secret %q reached the payload: %s", secret, data)
 		}
 	}
-	if messages[0].ID == "" || messages[0].ID != ShareMessageID(prompt) {
+	if messages[0].ID == "" || messages[0].ID != ShareEventID(prompt) {
 		t.Fatalf("derived id %q does not match ShareMessageID", messages[0].ID)
 	}
 }
 
-func TestBuildShareMessagesIsDeterministic(t *testing.T) {
+func TestShareMessagesIsDeterministic(t *testing.T) {
 	a := shareEventAt("2026-10-01T10:00:00Z", "codex", CollectionMethodHook, "prompt.submitted", "prompt")
 	a.Event.ID = "b"
 	a.Prompt = &PromptInfo{Text: "one"}
 	b := shareEventAt("2026-10-01T10:00:00Z", "codex", CollectionMethodHook, "prompt.submitted", "prompt")
 	b.Event.ID = "a"
 	b.Prompt = &PromptInfo{Text: "two"}
-	first, _ := json.Marshal(BuildShareMessagesWithOptions([]Event{a, b}, shareTestOpts))
-	second, _ := json.Marshal(BuildShareMessagesWithOptions([]Event{b, a}, shareTestOpts))
+	first, _ := json.Marshal(shareMessages([]Event{a, b}, shareTestOpts))
+	second, _ := json.Marshal(shareMessages([]Event{b, a}, shareTestOpts))
 	if string(first) != string(second) {
 		t.Fatalf("order depends on input:\n%s\n%s", first, second)
 	}
-	if !strings.Contains(string(first), `"id":"a","order":1`) {
+	if messages := shareMessages([]Event{a, b}, shareTestOpts); messages[0].ID != "a" || messages[0].Order != 1 {
 		t.Fatalf("ties are not broken by id: %s", first)
 	}
 }
 
-func TestShareToolKind(t *testing.T) {
+func TestTraceToolKind(t *testing.T) {
 	cases := []struct {
 		name, action, category string
 		mcp                    bool
 		want                   string
 	}{
-		{"Bash", "tool.invoked", "tool", false, ShareToolKindTerminalCommand},
-		{"exec_command", "", "", false, ShareToolKindTerminalCommand},
-		{"run_terminal_cmd", "", "", false, ShareToolKindTerminalCommand},
-		{"shell", "", "", false, ShareToolKindTerminalCommand},
-		{"Read", "", "", false, ShareToolKindRead},
-		{"view", "", "", false, ShareToolKindRead},
-		{"read_file", "", "", false, ShareToolKindRead},
-		{"Edit", "", "", false, ShareToolKindEdit},
-		{"MultiEdit", "", "", false, ShareToolKindEdit},
-		{"apply_patch", "", "", false, ShareToolKindEdit},
-		{"str_replace_editor", "", "", false, ShareToolKindEdit},
-		{"Write", "", "", false, ShareToolKindWrite},
-		{"create_file", "", "", false, ShareToolKindWrite},
-		{"Grep", "", "", false, ShareToolKindGrep},
-		{"Glob", "", "", false, ShareToolKindGlob},
-		{"WebSearch", "", "", false, ShareToolKindWebSearch},
-		{"WebFetch", "", "", false, ShareToolKindWebFetch},
-		{"Task", "", "", false, ShareToolKindTask},
-		{"TodoWrite", "", "", false, ShareToolKindTodo},
-		{"update_plan", "", "", false, ShareToolKindTodo},
-		{"mcp__github__search", "", "", false, ShareToolKindMCP},
-		{"search_issues", "mcp.tool_invoked", "mcp", true, ShareToolKindMCP},
-		{"", "file.read", "file", false, ShareToolKindRead},
-		{"", "file.created", "file", false, ShareToolKindWrite},
-		{"", "command.executed", "command", false, ShareToolKindTerminalCommand},
-		{"frobnicate", "tool.invoked", "tool", false, ShareToolKindOther},
+		{"Bash", "tool.invoked", "tool", false, TraceToolKindTerminalCommand},
+		{"exec_command", "", "", false, TraceToolKindTerminalCommand},
+		{"run_terminal_cmd", "", "", false, TraceToolKindTerminalCommand},
+		{"shell", "", "", false, TraceToolKindTerminalCommand},
+		{"Read", "", "", false, TraceToolKindRead},
+		{"view", "", "", false, TraceToolKindRead},
+		{"read_file", "", "", false, TraceToolKindRead},
+		{"Edit", "", "", false, TraceToolKindEdit},
+		{"MultiEdit", "", "", false, TraceToolKindEdit},
+		{"apply_patch", "", "", false, TraceToolKindEdit},
+		{"str_replace_editor", "", "", false, TraceToolKindEdit},
+		{"Write", "", "", false, TraceToolKindWrite},
+		{"create_file", "", "", false, TraceToolKindWrite},
+		{"Grep", "", "", false, TraceToolKindGrep},
+		{"Glob", "", "", false, TraceToolKindGlob},
+		{"WebSearch", "", "", false, TraceToolKindWebSearch},
+		{"WebFetch", "", "", false, TraceToolKindWebFetch},
+		{"Task", "", "", false, TraceToolKindTask},
+		{"TodoWrite", "", "", false, TraceToolKindTodo},
+		{"update_plan", "", "", false, TraceToolKindTodo},
+		{"mcp__github__search", "", "", false, TraceToolKindMCP},
+		{"search_issues", "mcp.tool_invoked", "mcp", true, TraceToolKindMCP},
+		{"", "file.read", "file", false, TraceToolKindRead},
+		{"", "file.created", "file", false, TraceToolKindWrite},
+		{"", "command.executed", "command", false, TraceToolKindTerminalCommand},
+		{"frobnicate", "tool.invoked", "tool", false, TraceToolKindOther},
 	}
 	for _, tc := range cases {
-		if got := ShareToolKind(tc.name, tc.action, tc.category, tc.mcp); got != tc.want {
-			t.Errorf("ShareToolKind(%q, %q) = %q, want %q", tc.name, tc.action, got, tc.want)
+		if got := TraceToolKind(tc.name, tc.action, tc.category, tc.mcp); got != tc.want {
+			t.Errorf("TraceToolKind(%q, %q) = %q, want %q", tc.name, tc.action, got, tc.want)
 		}
 	}
 }
@@ -325,7 +333,7 @@ func TestShareExternalID(t *testing.T) {
 	}
 }
 
-func TestShareMetadataFromEvents(t *testing.T) {
+func TestShareBundleSummary(t *testing.T) {
 	start := shareEventAt("2026-10-01T10:00:00Z", "claude", CollectionMethodHook, "session.started", "session")
 	start.Branch = "main"
 	prompt := shareEventAt("2026-10-01T10:00:01Z", "claude", CollectionMethodHook, "prompt.submitted", "prompt")
@@ -347,34 +355,54 @@ func TestShareMetadataFromEvents(t *testing.T) {
 	handoff := shareEventAt("2026-10-01T10:00:01Z", "claude", CollectionMethodHook, "session.handoff", "session")
 	handoff.Handoff = &HandoffInfo{SourceHarness: "codex", SourceSessionID: "abc123"}
 
-	meta := ShareMetadataFromEventsWithOptions([]Event{link, m3, m2, m1, prompt, handoff, start}, shareTestOpts)
-	if meta.SchemaVersion != ShareSchemaVersion || meta.AgentID != "claude_code" || meta.Source != ShareSourceCLI {
-		t.Fatalf("identity = %+v", meta)
+	opts := shareTestOpts
+	opts.BeaconVersion = "v0.0.99"
+	opts.GeneratedAt = time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	bundle := BuildShareBundle([]Event{link, m3, m2, m1, prompt, handoff, start}, opts)
+	summary := bundle.Summary
+	if bundle.SchemaVersion != TraceSchemaVersion || bundle.ID != "session:claude_code:sess-1" || summary.ID != bundle.ID {
+		t.Fatalf("identity = %q %q", bundle.SchemaVersion, bundle.ID)
 	}
-	if meta.Title != "Fix the flaky login test in ./login_test.go, it fails about one run in ten on C…" {
-		t.Fatalf("title = %q", meta.Title)
+	if bundle.Provenance != (TraceProvenanceV1{Source: ShareSourceCLI, GeneratedAt: "2026-10-02T00:00:00.000000000Z", BeaconVersion: "v0.0.99"}) {
+		t.Fatalf("provenance = %+v", bundle.Provenance)
 	}
-	if n := len([]rune(meta.Title)); n > ShareTitleMaxRunes {
+	// The commit link is bookkeeping: it is not an event of the shared trace, but it names the commit.
+	if summary.EventCount != 6 || len(bundle.Events) != 6 {
+		t.Fatalf("event count = %d, events = %d", summary.EventCount, len(bundle.Events))
+	}
+	if summary.Model == nil || len(summary.Model.Names) != 2 {
+		t.Fatalf("model = %+v", summary.Model)
+	}
+	want := TraceUsageV1{InputTokens: 150, OutputTokens: 20, CacheReadInputTokens: 5, ReasoningOutputTokens: 7, CostUSD: 0.25}
+	if summary.TokenUsage == nil || *summary.TokenUsage != want {
+		t.Fatalf("usage = %+v", summary.TokenUsage)
+	}
+	wantRepo := TraceRepositoryV1{RemoteURL: "https://github.com/acme/repo.git", Branch: "main", Ref: "abc123def", Path: "repo"}
+	if summary.Repository == nil || *summary.Repository != wantRepo {
+		t.Fatalf("repository = %+v", summary.Repository)
+	}
+	if summary.Session == nil || summary.Session.ID != "sess-1" || summary.Session.WorkingDirectory != "" {
+		t.Fatalf("session = %+v", summary.Session)
+	}
+	if summary.StartedAt != "2026-10-01T10:00:00Z" || summary.EndedAt != "2026-10-01T10:00:04Z" {
+		t.Fatalf("range = %s .. %s", summary.StartedAt, summary.EndedAt)
+	}
+	if summary.Harness.Name != "claude" || strings.Join(summary.Harness.CollectionMethods, ",") != "hook,otlp" {
+		t.Fatalf("harness = %+v", summary.Harness)
+	}
+
+	trace := NewShareTrace(bundle, ShareVisibilityDirect)
+	if trace.SchemaVersion != TraceSchemaVersion || trace.Source != ShareSourceCLI || trace.Visibility != ShareVisibilityDirect {
+		t.Fatalf("trace = %+v", trace)
+	}
+	if trace.Title != "Fix the flaky login test in ./login_test.go, it fails about one run in ten on C…" {
+		t.Fatalf("title = %q", trace.Title)
+	}
+	if n := len([]rune(trace.Title)); n > ShareTitleMaxRunes {
 		t.Fatalf("title has %d runes", n)
 	}
-	if meta.Model != "claude-sonnet-5-5" {
-		t.Fatalf("model = %q", meta.Model)
-	}
-	want := ShareTokenUsageV1{InputTokens: 150, OutputTokens: 20, CacheReadInputTokens: 5, ReasoningOutputTokens: 7}
-	if meta.TokenUsage == nil || *meta.TokenUsage != want || meta.CostUSD == nil || *meta.CostUSD != 0.25 {
-		t.Fatalf("usage = %+v cost = %v", meta.TokenUsage, meta.CostUSD)
-	}
-	if meta.GitRemoteURL != "https://github.com/acme/repo.git" || meta.GitBranch != "main" || meta.GitRef != "abc123def" {
-		t.Fatalf("git = %q %q %q", meta.GitRemoteURL, meta.GitBranch, meta.GitRef)
-	}
-	if meta.ProjectName != "repo" {
-		t.Fatalf("project = %q", meta.ProjectName)
-	}
-	if meta.SourceSessionID != "sess-1" || meta.SourceCreatedAt != "2026-10-01T10:00:00Z" || meta.SourceUpdatedAt != "2026-10-01T10:00:05Z" {
-		t.Fatalf("source = %+v", meta)
-	}
-	if meta.RelatedTo != "codex_cli:abc123" || meta.RelationshipType != ShareRelationshipResume {
-		t.Fatalf("related = %q %q", meta.RelatedTo, meta.RelationshipType)
+	if trace.Summary.Sharing.Visibility != ShareVisibilityDirect || trace.Provenance != bundle.Provenance {
+		t.Fatalf("sharing = %+v, provenance = %+v", trace.Summary.Sharing, trace.Provenance)
 	}
 }
 
@@ -400,80 +428,100 @@ func TestShareRemoteURL(t *testing.T) {
 	}
 }
 
-// TestShareWireShape pins the JSON field names and shapes of the beacon.share.v1 contract, so a
-// rename here cannot drift from what beacon.sh accepts.
+// TestShareWireShape pins the JSON field names and shapes of the shared-trace contract, so a rename
+// here cannot drift from what beacon.sh accepts.
 func TestShareWireShape(t *testing.T) {
-	message := ShareMessageV1{
-		ID: "m1", Order: 1, Role: ShareRoleAssistant, Timestamp: "2026-10-01T10:00:00Z", Model: "m", Text: "t",
-		Parts: []SharePartV1{
-			{Type: SharePartToolCall, Order: 1, Content: &ShareToolCallContent{CallID: "c", ToolName: "Bash", ToolKind: ShareToolKindTerminalCommand, Args: map[string]interface{}{}, Command: "ls", FilePath: "a", Diff: "d"}},
-			{Type: SharePartToolResult, Order: 2, Content: &ShareToolResultContent{CallID: "c", ToolName: "Bash", Output: "o", Status: ShareStatusSuccess, ExitCode: intPtr(0), DurationMS: int64Ptr(3)}},
-			{Type: SharePartText, Order: 3, Content: ShareTextContent{Text: "x"}},
-			{Type: SharePartError, Order: 4, Content: ShareErrorContent{Message: "e"}},
-			{Type: SharePartSystemEvent, Order: 5, Content: map[string]interface{}{"subtype": "session.started"}},
-		},
-		TokenUsage: &ShareTokenUsageV1{InputTokens: 1},
-	}
-	got, err := json.Marshal(message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `{"id":"m1","order":1,"role":"assistant","timestamp":"2026-10-01T10:00:00Z","model":"m","text":"t","parts":[` +
-		`{"type":"tool_call","order":1,"content":{"callId":"c","toolName":"Bash","toolKind":"terminal_command","args":{},"command":"ls","filePath":"a","diff":"d"}},` +
-		`{"type":"tool_result","order":2,"content":{"callId":"c","toolName":"Bash","output":"o","status":"success","exitCode":0,"durationMs":3}},` +
-		`{"type":"text","order":3,"content":{"text":"x"}},` +
-		`{"type":"error","order":4,"content":{"message":"e"}},` +
-		`{"type":"system_event","order":5,"content":{"subtype":"session.started"}}],` +
-		`"token_usage":{"input_tokens":1,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"reasoning_output_tokens":0}}`
-	if string(got) != want {
-		t.Fatalf("message JSON drifted:\n got %s\nwant %s", got, want)
-	}
-
 	trace := ShareTraceV1{
-		SchemaVersion: ShareSchemaVersion, AgentID: "claude_code", Title: "t", Visibility: ShareVisibilityDirect, Model: "m",
-		ProjectName: "p", GitRemoteURL: "u", GitBranch: "b", GitRef: "r", TokenUsage: &ShareTokenUsageV1{}, CostUSD: float64Ptr(0),
-		SourceSessionID: "s", SourceCreatedAt: "c", SourceUpdatedAt: "d", RelatedTo: "x", RelationshipType: ShareRelationshipSubagent, Source: ShareSourceCLI,
+		SchemaVersion: TraceSchemaVersion,
+		Summary:       TraceSummaryV1{ID: "session:claude_code:s", EventCount: 1, Harness: TraceHarnessV1{Name: "claude_code"}, Content: TraceContentSummaryV1{Retention: "full"}, Sharing: TraceSharingV1{State: "shared", Visibility: "direct"}},
+		Visibility:    ShareVisibilityDirect,
+		Title:         "t",
+		Source:        ShareSourceCLI,
+		Provenance:    TraceProvenanceV1{Source: "cli", GeneratedAt: "g"},
 	}
-	got, err = json.Marshal(trace)
+	got, err := json.Marshal(trace)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = `{"schema_version":"beacon.share.v1","agent_id":"claude_code","title":"t","visibility":"direct","model":"m",` +
-		`"project_name":"p","git_remote_url":"u","git_branch":"b","git_ref":"r",` +
-		`"token_usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"reasoning_output_tokens":0},` +
-		`"cost_usd":0,"source_session_id":"s","source_created_at":"c","source_updated_at":"d","related_to":"x","relationship_type":"subagent","source":"cli"}`
+	want := `{"schema_version":"beacon.trace.v1","summary":{"id":"session:claude_code:s","event_count":1,"harness":{"name":"claude_code"},` +
+		`"content":{"retention":"full","has_redactions":false,"has_truncations":false},"sharing":{"state":"shared","visibility":"direct"}},` +
+		`"visibility":"direct","title":"t","source":"cli","provenance":{"source":"cli","generated_at":"g"}}`
 	if string(got) != want {
 		t.Fatalf("trace JSON drifted:\n got %s\nwant %s", got, want)
 	}
 
-	var state ShareTraceStateV1
-	if err := json.Unmarshal([]byte(`{"id":"k3x","url":"https://beacon.sh/s/k3x","visibility":"direct","message_count":4,"last_message_id":"m4","max_order":4}`), &state); err != nil {
+	batch := ShareEventsBatchV1{Events: []TraceEventV1{{ID: "e1", Number: 1, Timestamp: "ts", Type: "command", Action: "command.executed", PromptID: "p", SourceEventID: "e1",
+		Command: &TraceCommandV1{Command: "ls", ExitCode: intPtr(0)}}}}
+	got, err = json.Marshal(batch)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if state.LastMessageID != "m4" || state.MaxOrder != 4 || state.MessageCount != 4 {
+	want = `{"events":[{"id":"e1","number":1,"timestamp":"ts","type":"command","action":"command.executed","prompt_id":"p","command":{"command":"ls","exit_code":0},"source_event_id":"e1"}]}`
+	if string(got) != want {
+		t.Fatalf("batch JSON drifted:\n got %s\nwant %s", got, want)
+	}
+
+	var state ShareTraceStateV1
+	if err := json.Unmarshal([]byte(`{"id":"k3x","external_id":"claude_code:abc","url":"https://beacon.sh/s/k3x","title":"t","visibility":"direct","event_count":4,"last_event_id":"e4","max_number":4,"created_at":"c","updated_at":"u"}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if state != (ShareTraceStateV1{ID: "k3x", ExternalID: "claude_code:abc", URL: "https://beacon.sh/s/k3x", Title: "t", Visibility: "direct", EventCount: 4, LastEventID: "e4", MaxNumber: 4, CreatedAt: "c", UpdatedAt: "u"}) {
 		t.Fatalf("state = %+v", state)
 	}
 	var put ShareTraceResultV1
-	if err := json.Unmarshal([]byte(`{"id":"k3x","external_id":"claude_code:abc","url":"https://beacon.sh/s/k3x","visibility":"direct","message_count":0,"created":true}`), &put); err != nil {
+	if err := json.Unmarshal([]byte(`{"id":"k3x","external_id":"claude_code:abc","url":"https://beacon.sh/s/k3x","visibility":"direct","event_count":0,"created":true}`), &put); err != nil {
 		t.Fatal(err)
 	}
-	if !put.Created || put.ExternalID != "claude_code:abc" {
+	if put != (ShareTraceResultV1{ID: "k3x", ExternalID: "claude_code:abc", URL: "https://beacon.sh/s/k3x", Visibility: "direct", Created: true}) {
 		t.Fatalf("put = %+v", put)
+	}
+	var result ShareBatchResultV1
+	if err := json.Unmarshal([]byte(`{"upserted":2,"event_count":6}`), &result); err != nil || result != (ShareBatchResultV1{Upserted: 2, EventCount: 6}) {
+		t.Fatalf("batch result = %+v, %v", result, err)
 	}
 }
 
-func TestShareMetadataLeavesOutDetachedHeadAndTheHomeDirectoryName(t *testing.T) {
+// The wire types survive a JSON round trip unchanged, so what the CLI sends is what beacon.sh
+// stores and serves back.
+func TestShareWireTypesRoundTrip(t *testing.T) {
+	events := shareFieldEvents()
+	bundle := BuildShareBundle(events, shareTestOpts)
+	for name, value := range map[string]interface{}{
+		"trace": NewShareTrace(bundle, ShareVisibilityPublic),
+		"batch": ShareEventsBatchV1{Events: bundle.Events},
+		"bundle": bundle,
+	} {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		decoded := reflect.New(reflect.TypeOf(value))
+		if err := json.Unmarshal(data, decoded.Interface()); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		again, err := json.Marshal(decoded.Elem().Interface())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(again) != string(data) {
+			t.Fatalf("%s changed in a round trip:\n%s\n%s", name, data, again)
+		}
+	}
+}
+
+func TestShareSummaryLeavesOutDetachedHeadAndTheHomeDirectoryName(t *testing.T) {
 	event := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodPoll, "prompt.submitted", "prompt")
 	event.Session.WorkingDirectory = "/home/dev"
+	event.Repository = "/home/dev"
 	event.Branch = "HEAD"
 	event.Prompt = &PromptInfo{Text: "hi"}
-	meta := ShareMetadataFromEventsWithOptions([]Event{event}, shareTestOpts)
-	if meta.GitBranch != "" || meta.ProjectName != "" {
-		t.Fatalf("branch = %q, project = %q", meta.GitBranch, meta.ProjectName)
+	if repo := BuildShareBundle([]Event{event}, shareTestOpts).Summary.Repository; repo != nil {
+		t.Fatalf("repository = %+v", repo)
 	}
 	event.Session.WorkingDirectory = "/home/dev/src/app"
-	if meta := ShareMetadataFromEventsWithOptions([]Event{event}, shareTestOpts); meta.ProjectName != "app" {
-		t.Fatalf("project = %q", meta.ProjectName)
+	event.Repository = "/home/dev/src/app"
+	if repo := BuildShareBundle([]Event{event}, shareTestOpts).Summary.Repository; repo == nil || repo.Path != "app" || repo.Branch != "" {
+		t.Fatalf("repository = %+v", repo)
 	}
 }
 
@@ -508,7 +556,7 @@ func TestPathScrubberReplacesWholePathsOnly(t *testing.T) {
 	}
 }
 
-func TestBuildShareMessagesKeepsRepeatedPhaselessCallsApart(t *testing.T) {
+func TestShareMessagesKeepsRepeatedPhaselessCallsApart(t *testing.T) {
 	// Cursor's beforeReadFile records file.read with a path and nothing else. Reading the same file
 	// twice is two calls, not a call and its result.
 	var events []Event
@@ -518,23 +566,24 @@ func TestBuildShareMessagesKeepsRepeatedPhaselessCallsApart(t *testing.T) {
 		read.File = &FileInfo{Path: "/home/dev/src/app/main.go", Operation: "read"}
 		events = append(events, read)
 	}
-	messages := BuildShareMessagesWithOptions(events, shareTestOpts)
+	messages := shareMessages(events, shareTestOpts)
 	want := "assistant/tool_call,assistant/tool_call,assistant/tool_call"
 	if got := partsOf(t, messages); strings.Join(got, ",") != want {
 		t.Fatalf("parts = %v", got)
 	}
 }
 
-func TestShareMetadataUsesExplicitHomeWithoutLookup(t *testing.T) {
+func TestShareTitleUsesExplicitHomeWithoutLookup(t *testing.T) {
 	prompt := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	prompt.Session.WorkingDirectory = ""
 	prompt.Prompt = &PromptInfo{Text: "look at /home/al/secret"}
-	meta := ShareMetadataFromEventsWithOptions([]Event{prompt}, ShareOptions{HomeDirectory: "/home/al", NoHomeLookup: true})
-	if meta.Title != "look at ~/secret" {
-		t.Fatalf("title = %q", meta.Title)
+	trace := NewShareTrace(BuildShareBundle([]Event{prompt}, ShareOptions{HomeDirectory: "/home/al", NoHomeLookup: true}), ShareVisibilityDirect)
+	if trace.Title != "look at ~/secret" {
+		t.Fatalf("title = %q", trace.Title)
 	}
 }
 
-func TestBuildShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) {
+func TestShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) {
 	// The hook adapter labels a PostToolUse for tools without a more specific action (WebFetch,
 	// Grep, Task, ...) tool.invoked, carrying the result. With a PreToolUse tool.invoked for the
 	// same call (Kimi Code, Muse Code) it must still produce a result.
@@ -549,18 +598,18 @@ func TestBuildShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) 
 	lone.Event.ID = "c-post"
 	lone = withCall(lone, "toolu_9", "Grep", map[string]interface{}{"pattern": "x"}, "3 matches")
 
-	messages := BuildShareMessagesWithOptions([]Event{pre, post, lone}, shareTestOpts)
+	messages := shareMessages([]Event{pre, post, lone}, shareTestOpts)
 	want := "assistant/tool_call,assistant/tool_result,assistant/tool_call,assistant/tool_result"
 	if got := partsOf(t, messages); strings.Join(got, ",") != want {
 		t.Fatalf("parts = %v", got)
 	}
-	result := messages[1].Parts[0].Content.(*ShareToolResultContent)
+	result := messages[1].Parts[0].Content.(*TraceToolResultContentV1)
 	if result.CallID != "call_1" || !strings.Contains(fmt.Sprint(result.Output), "page body") {
 		t.Fatalf("result = %+v", result)
 	}
 }
 
-func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
+func TestShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
 	// Claude Code logs each prompt from the UserPromptSubmit hook and from the OTLP export, with
 	// different event ids and the same prompt.id. The export copy may carry no text.
 	otlp := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodOTLP, "prompt.submitted", "prompt")
@@ -573,7 +622,7 @@ func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
 	next.Event.ID = "p-next"
 	next.Prompt = &PromptInfo{ID: "prompt-2", Text: "fix the test"}
 
-	messages := BuildShareMessagesWithOptions([]Event{otlp, hook, next}, shareTestOpts)
+	messages := shareMessages([]Event{otlp, hook, next}, shareTestOpts)
 	if len(messages) != 2 {
 		t.Fatalf("messages = %d, want 2: %+v", len(messages), messages)
 	}
@@ -582,7 +631,7 @@ func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
 	}
 }
 
-func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
+func TestShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
 	prompt := func(id, ts, method, promptID, text string) Event {
 		e := shareEventAt(ts, "claude_code", method, "prompt.submitted", "prompt")
 		e.Event.ID = id
@@ -590,7 +639,7 @@ func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
 		return e
 	}
 	// Hook first, export second: one message.
-	got := BuildShareMessagesWithOptions([]Event{
+	got := shareMessages([]Event{
 		prompt("h1", "2026-10-01T10:00:00Z", CollectionMethodHook, "", "continue"),
 		prompt("o1", "2026-10-01T10:00:01Z", CollectionMethodOTLP, "p-1", ""),
 	}, shareTestOpts)
@@ -598,7 +647,7 @@ func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
 		t.Fatalf("hook then export = %+v", got)
 	}
 	// Two hook prompts with the same text moments apart are two submissions.
-	got = BuildShareMessagesWithOptions([]Event{
+	got = shareMessages([]Event{
 		prompt("h1", "2026-10-01T10:00:00Z", CollectionMethodHook, "", "continue"),
 		prompt("h2", "2026-10-01T10:00:03Z", CollectionMethodHook, "", "continue"),
 	}, shareTestOpts)
@@ -606,7 +655,7 @@ func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
 		t.Fatalf("two hook prompts = %+v", got)
 	}
 	// A keyless copy far from the keyed one, or with different text, stays separate.
-	got = BuildShareMessagesWithOptions([]Event{
+	got = shareMessages([]Event{
 		prompt("o1", "2026-10-01T10:00:00Z", CollectionMethodOTLP, "p-1", "first"),
 		prompt("h1", "2026-10-01T10:05:00Z", CollectionMethodHook, "", "first"),
 		prompt("o2", "2026-10-01T10:06:00Z", CollectionMethodOTLP, "p-2", "second"),
@@ -614,5 +663,283 @@ func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
 	}, shareTestOpts)
 	if len(got) != 4 {
 		t.Fatalf("unrelated prompts merged: %+v", got)
+	}
+}
+
+// shareFieldEvents is one session whose events put the sharer's home directory in every kind of
+// field the trace projection reads.
+func shareFieldEvents() []Event {
+	prompt := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	prompt.Event.ID = "f-prompt"
+	prompt.Prompt = &PromptInfo{ID: "p1", Text: "read /home/dev/notes/todo.md"}
+	prompt.Repository = "/home/dev/src/app"
+
+	cmd := shareEventAt("2026-10-01T10:00:01Z", "claude_code", CollectionMethodHook, "command.executed", "command")
+	cmd.Event.ID = "f-cmd"
+	cmd = withCall(cmd, "toolu_c", "Bash", map[string]interface{}{"command": "cat /home/dev/.config/app.toml"}, nil)
+	cmd.Tool.Command = "cat /home/dev/.config/app.toml"
+	cmd.Command = &CommandInfo{Command: "cat /home/dev/.config/app.toml", ExitCode: intPtr(1), Output: "cat: /home/dev/.config/app.toml: No such file"}
+	cmd.Message = "ran cat /home/dev/.config/app.toml"
+
+	edit := shareEventAt("2026-10-01T10:00:02Z", "claude_code", CollectionMethodHook, "file.modified", "file")
+	edit.Event.ID = "f-edit"
+	edit = withCall(edit, "toolu_e", "Edit", map[string]interface{}{"file_path": "/home/dev/src/app/main.go", "nested": []interface{}{map[string]interface{}{"p": "/home/dev/x"}}}, map[string]interface{}{"path": "/home/dev/src/app/main.go"})
+	edit.Tool.Path = "/home/dev/src/app/main.go"
+	edit.File = &FileInfo{Path: "/home/dev/src/app/main.go", Operation: "modify", Diff: "--- /home/dev/src/app/main.go\n+++ /home/dev/src/app/main.go\n"}
+
+	mcp := shareEventAt("2026-10-01T10:00:03Z", "claude_code", CollectionMethodHook, "mcp.tool_invoked", "mcp")
+	mcp.Event.ID = "f-mcp"
+	mcp = withCall(mcp, "toolu_m", "mcp__fs__read", map[string]interface{}{"path": "/home/dev/secret.txt"}, []interface{}{map[string]interface{}{"type": "text", "text": "from /home/dev/secret.txt"}})
+	mcp.MCP = &MCPInfo{Server: "fs", Tool: "read", Resource: &MCPResourceInfo{URI: "file:///home/dev/secret.txt"}}
+
+	approval := shareEventAt("2026-10-01T10:00:04Z", "claude_code", CollectionMethodHook, "approval.denied", "approval")
+	approval.Event.ID = "f-approval"
+	approval.Approval = &ApprovalInfo{Required: true, Decision: "deny", Reason: "writes to /home/dev/.ssh"}
+	approval.Policy = &PolicyInfo{Name: "home /home/dev guard", Decision: "deny", Reason: "path /home/dev/.ssh is protected"}
+
+	failure := shareEventAt("2026-10-01T10:00:05Z", "claude_code", CollectionMethodHook, "session.error", "session")
+	failure.Event.ID = "f-error"
+	failure.Message = "open /home/dev/src/app/go.mod: permission denied"
+	failure.Error = &ErrorInfo{Type: "/home/dev/bin/tool exited"}
+
+	answer := shareEventAt("2026-10-01T10:00:06Z", "claude_code", CollectionMethodHook, "agent.message", "agent")
+	answer.Event.ID = "f-answer"
+	answer.GenAI = &GenAIInfo{Output: &GenAIOutputInfo{Messages: TextOutputMessages("I changed /home/dev/src/app/main.go")}}
+	answer.Raw = map[string]interface{}{"cwd": "/home/dev/src/app"}
+
+	return []Event{prompt, cmd, edit, mcp, approval, failure, answer}
+}
+
+// Every field the shared bundle carries is scrubbed of the sharer's home and session directory:
+// command lines and output, file paths and diffs, tool arguments and results, MCP fields, approval
+// and policy text, errors, retained text, the working directory and the repository.
+func TestShareBundleScrubsEveryFieldType(t *testing.T) {
+	events := shareFieldEvents()
+	bundle := BuildShareBundle(events, shareTestOpts)
+	data, err := json.Marshal(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "/home/dev") {
+		t.Fatalf("a local path reached the bundle: %s", data)
+	}
+	messages, err := json.Marshal(TraceMessages(bundle))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(messages), "/home/dev") {
+		t.Fatalf("a local path reached the messages: %s", messages)
+	}
+	byID := map[string]TraceEventV1{}
+	for _, event := range bundle.Events {
+		byID[event.ID] = event
+	}
+	checks := map[string]string{
+		"prompt":          byID["f-prompt"].Content.Text,
+		"command":         byID["f-cmd"].Command.Command,
+		"command output":  byID["f-cmd"].Command.Output.Text,
+		"tool command":    byID["f-cmd"].Tool.Command,
+		"tool argument":   fmt.Sprint(byID["f-cmd"].Tool.Arguments),
+		"message":         byID["f-cmd"].Summary,
+		"file path":       byID["f-edit"].File.Path,
+		"file title":      byID["f-edit"].Title,
+		"tool path":       byID["f-edit"].Tool.Path,
+		"diff":            byID["f-edit"].File.Diff.Text,
+		"nested argument": fmt.Sprint(byID["f-edit"].Tool.Arguments),
+		"tool result":     fmt.Sprint(byID["f-edit"].Tool.Result),
+		"mcp argument":    fmt.Sprint(byID["f-mcp"].Tool.Arguments),
+		"mcp result":      fmt.Sprint(byID["f-mcp"].Tool.Result),
+		"mcp resource":    byID["f-mcp"].MCP.ResourceURI,
+		"approval reason": byID["f-approval"].Approval.Reason,
+		"policy name":     byID["f-approval"].Policy.Name,
+		"policy reason":   byID["f-approval"].Policy.Reason,
+		"error message":   byID["f-error"].Summary,
+		"error type":      byID["f-error"].Error.Type,
+		"assistant text":  byID["f-answer"].Content.Text,
+	}
+	want := map[string]string{
+		"prompt":          "read ~/notes/todo.md",
+		"command":         "cat ~/.config/app.toml",
+		"command output":  "cat: ~/.config/app.toml: No such file",
+		"file path":       "main.go",
+		"tool path":       "main.go",
+		"mcp resource":    "file://~/secret.txt",
+		"error message":   "open ./go.mod: permission denied",
+		"approval reason": "writes to ~/.ssh",
+		"assistant text":  "I changed ./main.go",
+	}
+	for name, got := range checks {
+		if strings.Contains(got, "/home/dev") || got == "" {
+			t.Errorf("%s = %q", name, got)
+		}
+		if w, ok := want[name]; ok && got != w {
+			t.Errorf("%s = %q, want %q", name, got, w)
+		}
+	}
+	if repo := bundle.Summary.Repository; repo == nil || repo.Path != "app" {
+		t.Errorf("repository = %+v", repo)
+	}
+	// The caller's events are not rewritten.
+	if events[1].Command.Command != "cat /home/dev/.config/app.toml" || events[2].File.Path != "/home/dev/src/app/main.go" ||
+		events[3].GenAI.Tool.Call.Arguments.(map[string]interface{})["path"] != "/home/dev/secret.txt" {
+		t.Fatal("BuildShareBundle changed the caller's events")
+	}
+}
+
+func TestShareProjects(t *testing.T) {
+	event := func(action, category string) Event {
+		return shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, action, category)
+	}
+	usage := event("token.usage", "metric")
+	usage.GenAI = &GenAIInfo{Usage: &GenAIUsageInfo{InputTokens: int64Ptr(3)}}
+	metricWithoutUsage := event("", "metric")
+	metricWithoutUsage.Raw = map[string]interface{}{"metric_name": "claude_code.lines_of_code.count"}
+	cases := []struct {
+		name  string
+		event Event
+		want  bool
+	}{
+		{"prompt", event("prompt.submitted", "prompt"), true},
+		{"tool", event("tool.invoked", "tool"), true},
+		{"command", event("command.executed", ""), true},
+		{"session start", event("session.started", "session"), true},
+		{"handoff", event("session.handoff", "session"), true},
+		{"reasoning", event("agent.reasoning", "agent"), true},
+		{"token usage", usage, true},
+		{"metric without usage", metricWithoutUsage, false},
+		{"shared record", event("session.shared", "session"), false},
+		{"share request", event("session.share_requested", "session"), false},
+		{"commit link", event("session.commit_linked", "session"), false},
+		{"heartbeat", event("endpoint.heartbeat", "health"), false},
+		{"inventory", event("inventory.snapshot", "inventory"), false},
+		{"idle", event("session.idle", "session"), false},
+		{"tool listing", event("mcp.tool_listed", "mcp"), false},
+		{"no action", event("", ""), false},
+	}
+	for _, tc := range cases {
+		if got := ShareProjects(tc.event); got != tc.want {
+			t.Errorf("ShareProjects(%s) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// The bundle carries exactly what ShareProjects accepts.
+	var events []Event
+	accepted := 0
+	for i, tc := range cases {
+		e := tc.event
+		e.Event.ID = fmt.Sprintf("e-%02d", i)
+		events = append(events, e)
+		if tc.want {
+			accepted++
+		}
+	}
+	if bundle := BuildShareBundle(events, shareTestOpts); len(bundle.Events) != accepted || bundle.Summary.EventCount != accepted {
+		t.Fatalf("bundle carries %d events (summary %d), ShareProjects accepts %d", len(bundle.Events), bundle.Summary.EventCount, accepted)
+	}
+}
+
+func TestShareBundleOrdersNumbersAndDeduplicates(t *testing.T) {
+	pre := shareEventAt("2026-10-01T10:00:01Z", "claude_code", CollectionMethodHook, "tool.invoked", "tool")
+	pre.Event.ID = "z-pre"
+	pre = withCall(pre, "toolu_1", "Bash", map[string]interface{}{"command": "ls"}, nil)
+	post := shareEventAt("2026-10-01T10:00:01Z", "claude_code", CollectionMethodHook, "command.executed", "command")
+	post.Event.ID = "a-post"
+	post = withCall(post, "toolu_1", "Bash", nil, nil)
+	post.Command = &CommandInfo{Command: "ls", ExitCode: intPtr(0)}
+	prompt := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	prompt.Prompt = &PromptInfo{Text: "list"}
+	untimed := shareEventAt("not a time", "claude_code", CollectionMethodHook, "session.ended", "session")
+	untimed.Event.ID = "u"
+
+	bundle := BuildShareBundle([]Event{untimed, post, pre, prompt, post}, shareTestOpts)
+	var got []string
+	for i, event := range bundle.Events {
+		if event.Number != i+1 {
+			t.Fatalf("event %d is numbered %d", i, event.Number)
+		}
+		got = append(got, event.ID)
+	}
+	// The invocation sorts ahead of its completion at one instant, the duplicate is carried once,
+	// and the untimed event comes last.
+	if want := ShareEventID(prompt) + ",z-pre,a-post,u"; strings.Join(got, ",") != want {
+		t.Fatalf("events = %v, want %s", got, want)
+	}
+	if bundle.Spans != nil && len(bundle.Spans) != 0 {
+		t.Fatalf("spans = %+v", bundle.Spans)
+	}
+	if again := BuildShareBundle([]Event{untimed, post, pre, prompt, post}, ShareOptions{HomeDirectory: "/home/dev", NoHomeLookup: true, GeneratedAt: time.Unix(0, 0)}); again.Events[0].ID != got[0] {
+		t.Fatal("derived event id is not stable")
+	}
+	if empty := BuildShareBundle(nil, shareTestOpts); empty.Events == nil || len(empty.Events) != 0 || empty.Summary.EventCount != 0 {
+		t.Fatalf("empty bundle = %+v", empty)
+	}
+}
+
+// TraceMessages reads any bundle, including the local dashboard's, which still holds bookkeeping
+// and status events: they are never messages.
+func TestTraceMessagesSkipsBookkeepingInALocalBundle(t *testing.T) {
+	builder := NewTraceBuilder("session:claude_code:sess-1", Event{})
+	for i, e := range []Event{
+		shareEventAt("2026-10-01T10:00:00Z", "claude_code", "", "session.shared", "session"),
+		shareEventAt("2026-10-01T10:00:01Z", "claude_code", "", "session.share_requested", "session"),
+		shareEventAt("2026-10-01T10:00:02Z", "claude_code", "", "session.commit_linked", "session"),
+		shareEventAt("2026-10-01T10:00:03Z", "claude_code", CollectionMethodOTLP, "token.usage", "metric"),
+		shareEventAt("2026-10-01T10:00:04Z", "claude_code", CollectionMethodHook, "session.started", "session"),
+	} {
+		builder.Add(e, TraceEventFromEvent(e, fmt.Sprintf("line-%d", i), 0))
+	}
+	messages := TraceMessages(builder.Bundle(TraceProvenanceV1{}))
+	if got := partsOf(t, messages); strings.Join(got, ",") != "system/system_event" || messages[0].Kind != TraceMessageKindSystem {
+		t.Fatalf("parts = %v", got)
+	}
+}
+
+func TestTraceMessageRoundTrip(t *testing.T) {
+	messages := TraceMessages(BuildShareBundle(shareFieldEvents(), shareTestOpts))
+	kinds := map[string]bool{}
+	for _, m := range messages {
+		kinds[m.Kind] = true
+	}
+	for _, kind := range []string{TraceMessageKindPrompt, TraceMessageKindToolCall, TraceMessageKindToolResult, TraceMessageKindApproval, TraceMessageKindError, TraceMessageKindAssistant} {
+		if !kinds[kind] {
+			t.Fatalf("no %s message in %+v", kind, messages)
+		}
+	}
+	data, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []TraceMessageV1
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	again, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != string(data) {
+		t.Fatalf("messages changed in a round trip:\n%s\n%s", data, again)
+	}
+	if _, ok := decoded[1].Parts[0].Content.(*TraceToolCallContentV1); !ok {
+		t.Fatalf("tool call decoded as %T", decoded[1].Parts[0].Content)
+	}
+	want := `{"id":"m1","role":"assistant","kind":"tool_call","order":1,"timestamp":"t","model":"m","text":"x","parts":[` +
+		`{"type":"tool_call","order":1,"content":{"callId":"c","toolName":"Bash","toolKind":"terminal_command","args":{},"command":"ls","filePath":"a","diff":"d"}},` +
+		`{"type":"tool_result","order":2,"content":{"callId":"c","toolName":"Bash","output":"o","status":"success","exitCode":0,"durationMs":3}},` +
+		`{"type":"text","order":3,"content":{"text":"x"}},` +
+		`{"type":"error","order":4,"content":{"message":"e"}},` +
+		`{"type":"system_event","order":5,"content":{"subtype":"session.started"}}],` +
+		`"token_usage":{"input_tokens":1}}`
+	pinned := TraceMessageV1{ID: "m1", Role: TraceRoleAssistant, Kind: TraceMessageKindToolCall, Order: 1, Timestamp: "t", Model: "m", Text: "x",
+		Parts: []TraceMessagePartV1{
+			{Type: TracePartToolCall, Order: 1, Content: &TraceToolCallContentV1{CallID: "c", ToolName: "Bash", ToolKind: TraceToolKindTerminalCommand, Args: map[string]interface{}{}, Command: "ls", FilePath: "a", Diff: "d"}},
+			{Type: TracePartToolResult, Order: 2, Content: &TraceToolResultContentV1{CallID: "c", ToolName: "Bash", Output: "o", Status: TraceToolStatusSuccess, ExitCode: intPtr(0), DurationMS: int64Ptr(3)}},
+			{Type: TracePartText, Order: 3, Content: TraceTextContentV1{Text: "x"}},
+			{Type: TracePartError, Order: 4, Content: TraceErrorContentV1{Message: "e"}},
+			{Type: TracePartSystemEvent, Order: 5, Content: map[string]interface{}{"subtype": "session.started"}},
+		},
+		TokenUsage: &TraceUsageV1{InputTokens: 1},
+	}
+	if got, _ := json.Marshal(pinned); string(got) != want {
+		t.Fatalf("message JSON drifted:\n got %s\nwant %s", got, want)
 	}
 }
