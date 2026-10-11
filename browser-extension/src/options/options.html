@@ -10,6 +10,8 @@
       .site { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 6px 0; }
       button { margin-top: 16px; padding: 8px 14px; font: inherit; }
       .saved { color: #2a7; margin-left: 10px; }
+      .error { color: #b00020; margin: 8px 0 0; }
+      .hint { color: #555; margin: 4px 0 0; font-size: 12px; }
       .perm { margin: 12px 0; padding: 10px; border: 1px solid #e0a800; background: #fff8e1; border-radius: 4px; }
       .perm p { margin: 0 0 8px; }
       .perm button { margin-top: 0; }
@@ -27,6 +29,7 @@
 
     <label for="endpoint">OTLP logs endpoint</label>
     <input type="text" id="endpoint" data-testid="endpoint" />
+    <p class="hint">Loopback only: an http(s) URL on 127.0.0.1, localhost or [::1] with a port.</p>
 
     <label>Sites</label>
     <label class="site"><input type="checkbox" id="site_claude_web" /><span>claude.ai</span></label>
@@ -35,6 +38,7 @@
     <div>
       <button id="save">Save</button>
       <span class="saved" id="saved" hidden>Saved ✓</span>
+      <p class="error" id="error" data-testid="settings-error" role="alert" hidden></p>
     </div>
 
     <script src="options.js"></script>

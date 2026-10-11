@@ -22,7 +22,14 @@ $('save').addEventListener('click', async () => {
       chatgpt_web: ($('site_chatgpt_web') as HTMLInputElement).checked,
     },
   };
-  await ext.runtime.sendMessage({ type: 'SET_SETTINGS', patch });
+  const res = (await ext.runtime.sendMessage({ type: 'SET_SETTINGS', patch })) as {
+    error?: string;
+  };
+  // The service worker validates every patch; a rejected one changes nothing.
+  const error = $('error');
+  error.textContent = res?.error ?? '';
+  error.hidden = !res?.error;
+  if (res?.error) return;
   const saved = $('saved');
   saved.hidden = false;
   setTimeout(() => (saved.hidden = true), 1500);

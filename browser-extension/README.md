@@ -23,7 +23,7 @@ flowchart LR
         direction TB
         MAIN["interceptor.js<br/>MAIN world · tee fetch SSE"]
         ISO["content.js<br/>ISOLATED world · relay"]
-        MAIN -->|postMessage| ISO
+        MAIN -->|private MessagePort| ISO
     end
 
     subgraph SW["Extension service worker"]
@@ -315,12 +315,19 @@ dashboard), including interleaved sessions with no cross-contamination.
   currently missed. That resume stream is also SSE-over-fetch (no WebSocket needed for tokens; the
   `wss://ws.chatgpt.com` socket only carries control messages), so teeing the resume GET is a
   follow-up, not a rearchitecture. ChatGPT web (like Claude web) doesn't stream token usage.
-- **Telemetry integrity on the injected page.** The MAIN-world interceptor and any other page script
-  share the same JS world, so the ISOLATED content script cannot cryptographically distinguish the
-  extension's own `postMessage` events from forged ones. A malicious script already running on
-  claude.ai could therefore inject fabricated chat records into the local collector. Impact is
-  telemetry *integrity* only (no credential/code exposure). A proper fix is service-worker-driven
-  MAIN injection (`chrome.scripting`) with a per-tab nonce the page can't read; deferred for V0.
+- **Telemetry integrity on the injected page.** The MAIN-world interceptor and the ISOLATED content
+  script talk over a private `MessageChannel` whose port is handed over once, by a synchronously
+  dispatched event at `document_start`, before any page script runs (`src/shared/channel.ts`). The
+  content script never reads `window` messages, request ids are random, and the service worker
+  checks every relayed event's shape and size and bounds how many open streams it holds, so a page
+  script can no longer inject or splice into telemetry. What remains: a script in the page's own
+  world can still change what the page fetches, or wrap `window.fetch` itself, because the page is
+  the data source; and if the interceptor failed to run at all, a page script could offer the
+  content script its own port while the document is still loading.
+- **Loopback-only delivery.** The OTLP endpoint must be `http(s)` on `127.0.0.1`, `localhost` or
+  `[::1]` with an explicit port. The service worker enforces this when settings are saved and again
+  before every send (redirects are refused), and it takes settings changes only from the
+  extension's own popup and options pages, never from a content script.
 
 > **Fixtures.** The committed `*.sse` files are **real, sanitized** captures (via
 > `npm run record:fixtures`): `fixtures/claude/simple-turn.sse` (claude.ai) and

@@ -30,7 +30,7 @@ test('popup and options name withheld hosts and clear once they are granted', as
   // needs the browser UI. So simulate the withheld state the way the page sees
   // it: a permissions API that reports two hosts missing until they are
   // requested. Everything else -- markup, CSS, the click wiring -- is real.
-  const withheld = ['*://chatgpt.com/*', 'http://127.0.0.1/*'];
+  const withheld = ['https://chatgpt.com/*', 'http://127.0.0.1/*'];
   await context.addInitScript((missing: string[]) => {
     if (location.protocol !== 'chrome-extension:') return;
     const perms = chrome.permissions;
