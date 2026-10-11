@@ -1317,8 +1317,8 @@ func ShareMetadataFromEventsWithOptions(events []Event, opts ShareOptions) Share
 				meta.GitRemoteURL = ShareRemoteURL(event.VCS.Repository.URL.Full)
 			}
 			if event.VCS.Ref != nil && event.VCS.Ref.Head != nil {
-				if event.VCS.Ref.Head.Name != "" && meta.GitBranch == "" {
-					meta.GitBranch = event.VCS.Ref.Head.Name
+				if ShareBranch(event.VCS.Ref.Head.Name) != "" && meta.GitBranch == "" {
+					meta.GitBranch = ShareBranch(event.VCS.Ref.Head.Name)
 				}
 				// The newest commit wins: a session that made several is described by the last.
 				if event.VCS.Ref.Head.Revision != "" {
@@ -1331,14 +1331,14 @@ func ShareMetadataFromEventsWithOptions(events []Event, opts ShareOptions) Share
 				meta.GitRef = event.Run.Commit
 			}
 			if meta.GitBranch == "" {
-				meta.GitBranch = event.Run.Branch
+				meta.GitBranch = ShareBranch(event.Run.Branch)
 			}
 			if meta.ProjectName == "" {
 				meta.ProjectName = lastPathSegment(event.Run.Repository)
 			}
 		}
-		if meta.GitBranch == "" && strings.TrimSpace(event.Branch) != "" {
-			meta.GitBranch = strings.TrimSpace(event.Branch)
+		if meta.GitBranch == "" {
+			meta.GitBranch = ShareBranch(event.Branch)
 		}
 		if meta.ProjectName == "" && strings.TrimSpace(event.Repository) != "" {
 			meta.ProjectName = lastPathSegment(event.Repository)
@@ -1348,14 +1348,14 @@ func ShareMetadataFromEventsWithOptions(events []Event, opts ShareOptions) Share
 			meta.RelationshipType = ShareRelationshipResume
 		}
 	}
-	if firstPrompt != "" {
-		home := ""
-		if !opts.NoHomeLookup {
-			home = opts.HomeDirectory
-			if home == "" {
-				home, _ = os.UserHomeDir()
-			}
+	home := ""
+	if !opts.NoHomeLookup {
+		home = opts.HomeDirectory
+		if home == "" {
+			home, _ = os.UserHomeDir()
 		}
+	}
+	if firstPrompt != "" {
 		meta.Title = ShareTitle(newPathScrubber(firstNonEmptyString(opts.WorkingDirectory, workDir), home).text(firstPrompt))
 	}
 	best := 0
@@ -1367,7 +1367,8 @@ func ShareMetadataFromEventsWithOptions(events []Event, opts ShareOptions) Share
 	if meta.ProjectName == "" && meta.GitRemoteURL != "" {
 		meta.ProjectName = strings.TrimSuffix(lastPathSegment(meta.GitRemoteURL), ".git")
 	}
-	if meta.ProjectName == "" && workDir != "" {
+	// The directory's own name, unless it is the home directory, whose name is the local account's.
+	if meta.ProjectName == "" && workDir != "" && !samePath(workDir, home) && !samePath(workDir, opts.HomeDirectory) {
 		meta.ProjectName = lastPathSegment(workDir)
 	}
 	if !usage.IsZero() {
@@ -1425,6 +1426,21 @@ func ShareRemoteURL(raw string) string {
 		}
 	}
 	return raw
+}
+
+// ShareBranch is a branch name worth reporting: "HEAD", which runtimes record for a detached
+// checkout, names no branch.
+func ShareBranch(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "HEAD" {
+		return ""
+	}
+	return name
+}
+
+func samePath(a, b string) bool {
+	a, b = strings.TrimRight(strings.TrimSpace(a), `/\`), strings.TrimRight(strings.TrimSpace(b), `/\`)
+	return a != "" && a == b
 }
 
 func lastPathSegment(value string) string {

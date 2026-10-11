@@ -453,3 +453,18 @@ func TestShareWireShape(t *testing.T) {
 		t.Fatalf("put = %+v", put)
 	}
 }
+
+func TestShareMetadataLeavesOutDetachedHeadAndTheHomeDirectoryName(t *testing.T) {
+	event := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodPoll, "prompt.submitted", "prompt")
+	event.Session.WorkingDirectory = "/home/dev"
+	event.Branch = "HEAD"
+	event.Prompt = &PromptInfo{Text: "hi"}
+	meta := ShareMetadataFromEventsWithOptions([]Event{event}, shareTestOpts)
+	if meta.GitBranch != "" || meta.ProjectName != "" {
+		t.Fatalf("branch = %q, project = %q", meta.GitBranch, meta.ProjectName)
+	}
+	event.Session.WorkingDirectory = "/home/dev/src/app"
+	if meta := ShareMetadataFromEventsWithOptions([]Event{event}, shareTestOpts); meta.ProjectName != "app" {
+		t.Fatalf("project = %q", meta.ProjectName)
+	}
+}
