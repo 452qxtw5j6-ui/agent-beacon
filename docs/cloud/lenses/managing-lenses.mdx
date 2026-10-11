@@ -1,57 +1,75 @@
 ---
 title: "Managing lenses"
-description: "Upload new versions, change the current version, and choose who can find a lens"
+description: "Edit a lens, upload new versions, change the current version, choose who can find it, and delete it"
 ---
 
-After you create a lens, you can change its details, upload new versions, roll back, and decide
-whether it is listed in the marketplace. You manage lenses through
-[Beacon Cloud MCP](/cloud/lenses/lenses-mcp): ask your agent, and it calls the tools for you.
+After you create a lens, you can change its details, upload new versions, roll back, decide whether
+it is listed in the marketplace, and delete it. Only the lens's owner can change it.
 
-Only the lens's owner can change it.
+## Your lenses
 
-## Change details
+The **Lenses** page at [beacon.sh/dashboard/lenses](https://beacon.sh/dashboard/lenses), under
+**Observe** in the dashboard sidebar, lists:
 
-The title, description and icon can change at any time. Ask your agent, for example:
+- **Your lenses:** every lens you created, public or private, with its current version and how
+  many people added it. Select **Manage** to open a lens's settings.
+- **Added from the marketplace:** lenses by other authors that run on your sessions. Select
+  **Remove** to stop one reading your sessions.
 
-```text
-Rename my files-changed-plus lens to "Files Changed+" and update its description.
-```
+You can also open a lens's settings with **Manage** on its page at `/lenses/<key>`, or with
+**Manage lenses** at the bottom of a session's **+** menu.
+
+## Edit details
+
+On the lens's settings page, change the title, icon and description under **Details**, then select
+**Save details**. They appear on the marketplace card, the lens page and the session lens menu.
 
 The key is permanent. To use a different key, create a new lens.
 
 ## Upload a new version
 
-Every upload is a new, immutable version with its own semantic version number, such as `1.0.1`
-or `1.1.0`. A version number can be used only once, so to change the HTML, upload another version.
+Under **Versions**, choose the new HTML file. Beacon fills in the next patch version, such as
+`1.0.3`; change it if you want `1.1.0` or `2.0.0`. Select **Upload version**.
 
-Uploading a version does not change what anyone sees. It stays a draft until you release it.
+Every version is immutable, and a version number can be used only once. Uploading does not change
+what anyone sees unless you tick **Make it the current version now**.
 
-## Release or roll back
+## Change the current version
 
-Releasing a version makes it the **current version**: the one the lens page, the marketplace and
-everyone who added the lens see. Releasing takes effect immediately.
+The current version is the one the lens page, the marketplace and everyone who added the lens see.
+To publish a version, select **Make current** next to it. It takes effect immediately.
 
-To roll back, release an earlier version. Nothing is re-uploaded, and every version stays
-available to release again.
+To roll back, make an earlier version current. Nothing is re-uploaded, and every version stays in
+the list.
 
 ## Who can see a lens
 
 | Visibility | Who can see and add it |
 | --- | --- |
-| **Private** | Only you. New lenses are private unless you choose otherwise. |
-| **Public** | Everyone. The lens is listed in the marketplace once it has a released version. |
+| **Just me** | Only you. New lenses are private unless you choose otherwise. |
+| **Everyone** | Everyone. The lens is listed in the marketplace once it has a current version. |
 
-Change visibility by asking your agent, for example "Make my token-heatmap lens public."
+Change it under **Who can find and add this lens?** and save.
 
 Making a public lens private removes it from the marketplace straight away, and it disappears from
 the sessions of everyone else who added it. You keep it.
 
-## Your lenses
+## Delete a lens
 
-Ask your agent to list your lenses. It shows every lens you own, public or private, with its
-current version. You can also list the lenses you added, or browse the marketplace, the same way.
+At the bottom of the settings page, type the lens's key and select **Delete lens**. This deletes
+every version and removes the lens from everyone who added it. It cannot be undone.
 
-Lenses cannot be deleted yet. To retire one, make it private.
+The key of a deleted lens is retired: no one, including you, can create a lens with it again. That
+way an old link to the lens can never open a different lens published under the same key.
+
+## Manage lenses with your agent
+
+Everything on this page except deleting can also be done by your coding agent through
+[Beacon Cloud MCP](/cloud/lenses/lenses-mcp). Ask it, for example:
+
+```text
+Upload ./lens.html as version 1.1.0 of my failed-commands lens and make it current.
+```
 
 ## Related
 
