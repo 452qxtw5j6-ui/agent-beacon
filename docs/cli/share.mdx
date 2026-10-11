@@ -7,6 +7,8 @@ description: "Share a local agent session as a trace on beacon.sh"
 
 `beacon share` publishes one local agent session as a shared trace on beacon.sh and prints its link. The trace shows the session's prompts, the agent's answers and reasoning, and every tool call with its result, in order.
 
+For a walkthrough of every way to share (from the CLI, an agent skill, auto-share, git hooks or CI), see [Sharing sessions](/sharing/index).
+
 ```bash title="Command syntax"
 beacon share [--current | --session <id> | --source-path <path> | --cwd <dir>] [flags]
 beacon share --list [--cwd <dir>] [--harness <runtime>]

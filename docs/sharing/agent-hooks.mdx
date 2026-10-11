@@ -1,0 +1,73 @@
+---
+title: "Sharing via Agent Hooks"
+description: "Publish new agent sessions automatically with auto-share and Beacon Cloud"
+---
+
+Auto-share publishes your agent sessions as shared traces without running `beacon share` each time. Beacon's agent hooks mark each new session for sharing, [Beacon Cloud forwarding](/cli/endpoint-connect) carries that mark with the rest of the session's events, and beacon.sh builds the trace and keeps it current as the session continues.
+
+The hooks themselves never upload anything or touch the network. They write one local event per session; forwarding, which you already turned on, does the rest.
+
+## Requirements
+
+- Beacon installed with hooks for your runtimes: [`beacon endpoint install`](/cli/endpoint-install).
+- The endpoint connected to Beacon Cloud: [`beacon endpoint connect`](/cli/endpoint-connect). Without it, the request is written and stays local, so nothing is published.
+- Standard privacy mode, if the traces should show content. In Metadata-only mode, forwarding removes prompts, answers, reasoning and tool output before upload, so the trace shows what happened but not what was said.
+
+## Turn on auto-share
+
+```bash
+beacon share auto enable                      # every new session, direct (link only)
+beacon share auto enable --project .          # only sessions in this repository
+beacon share auto enable --visibility private
+```
+
+`enable` warns when the endpoint is not connected to Beacon Cloud or forwards in Metadata-only mode. `--visibility public` lists every new session in Discover, so it asks first, and without a terminal it is refused unless you add `--yes`.
+
+## How it works
+
+1. **A session starts.** On the first event Beacon's hooks see for a session (its `SessionStart` where the runtime has one), they write one `session.share_requested` event to the local runtime log, with the session id, runtime and visibility. Each session is requested once.
+2. **Forwarding ships it.** Beacon Cloud forwarding sends that event along with the session's prompts, tool calls and other events, through the same local privacy transform as everything else.
+3. **beacon.sh publishes the trace.** It builds the shared trace from the session's forwarded events, with the same projection and redaction `beacon share` uses, and updates it as more events arrive while the agent works.
+
+A trace published this way has the same id as one shared with `beacon share`, so a session shared both ways is one trace.
+
+Sessions that were already running when you turned auto-share on are requested on their next event. Earlier sessions are not; share those with [`beacon share`](/sharing/cli).
+
+## Supported runtimes
+
+Auto-share covers every runtime Beacon captures through its hooks or a Beacon-managed plugin, including Claude Code, Codex CLI, Cursor, Cline, OpenCode, Pi, Oh My Pi, Prime Agent, Senpi, OpenClaw, Kimi Code, Kiro, Factory Droid, Devin, Grok Build, Hermes Agent, Qwen Code, Antigravity CLI, OpenHands, Muse Code, VS Code and DeepSeek Harness. See [Agent Harness Integrations](/runtimes/index) for how each one is captured.
+
+Runtimes Beacon sees only through OpenTelemetry or by reading their session store, such as Gemini CLI, GitHub Copilot CLI, Claude Cowork and fx, have no hook to write the request. Share their sessions with [`beacon share`](/sharing/cli).
+
+## Per-project settings
+
+`--project <dir>` applies the choice to one project. It is recorded for you by path in `~/.beacon/endpoint/share.json`, and in `<dir>/.beacon/share.json` so it can be committed to the repository.
+
+- A repository's file can turn auto-share **off** for everyone who works in it, and an off file wins over your own setting for that directory.
+- A repository's file can turn auto-share **on** only for someone who also ran `beacon share auto enable --project` there, and the visibility always comes from that person's own setting. A cloned repository can never publish your sessions.
+- The nearest directory with a setting decides.
+
+```bash
+beacon share auto status                      # what applies here, and why
+beacon share auto status --project ~/src/app
+```
+
+## Turn it off
+
+```bash
+beacon share auto disable                     # every project
+beacon share auto disable --project .         # only this one
+```
+
+`disable` without `--project` is a switch over every project: it keeps the projects you enabled, so a later `enable` restores exactly what was on before. Turning auto-share off stops new requests. Traces already published stay until you unshare them on beacon.sh.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Auto-share reference" icon="book" href="/cli/share#auto-share">
+    The full settings model and `status` output.
+  </Card>
+  <Card title="Sharing via Git Hooks" icon="code-branch" href="/sharing/git-hooks">
+    Share only the sessions behind the commits you push.
+  </Card>
+</Columns>

@@ -1,0 +1,89 @@
+---
+title: "Sharing sessions"
+description: "Publish agent sessions as shared traces on beacon.sh, by hand or automatically"
+---
+
+A shared trace is one agent session published on beacon.sh with a link you can send to anyone you choose. It shows the session's prompts, the agent's answers and reasoning, and every tool call, command, file edit and MCP call with its result, in order. Secrets are redacted and local paths are made relative before anything leaves your machine.
+
+Sharing is always something you turn on. Beacon's hooks and background jobs never upload a session unless you set up one of the automatic workflows below.
+
+## Choose a sharing workflow
+
+<Columns cols={2}>
+  <Card title="Sharing via CLI" icon="terminal" href="/sharing/cli">
+    Share a session from your terminal with `beacon share`, pick its visibility, and keep it current.
+  </Card>
+  <Card title="Sharing via Agent Skills" icon="wand-magic-sparkles" href="/sharing/agent-skills">
+    Install the `beacon-trace-share` skill, then ask your agent to share the session it is in.
+  </Card>
+  <Card title="Sharing via Agent Hooks" icon="bolt" href="/sharing/agent-hooks">
+    Turn on auto-share and every new session is published through Beacon Cloud as the agent works.
+  </Card>
+  <Card title="Sharing via Git Hooks" icon="code-branch" href="/sharing/git-hooks">
+    Link commits to the sessions that wrote them, and share those sessions when you push.
+  </Card>
+  <Card title="Sharing via API Key" icon="key" href="/sharing/api-key">
+    Share from CI, containers and other machines where nobody can run `beacon login`.
+  </Card>
+  <Card title="Sharing from Beacon Cloud" icon="cloud" href="#sharing-from-beacon-cloud">
+    Share a forwarded session from its page in the Beacon Cloud dashboard.
+  </Card>
+</Columns>
+
+| Workflow | Who starts the upload | Needs |
+|----------|----------------------|-------|
+| [CLI](/sharing/cli) | You, with `beacon share` | `beacon login` or an API key |
+| [Agent Skills](/sharing/agent-skills) | Your agent, when you ask it to | `beacon login` or an API key, and the skill installed |
+| [Agent Hooks](/sharing/agent-hooks) | beacon.sh, from the events forwarding already sends | An endpoint [connected to Beacon Cloud](/cli/endpoint-connect) |
+| [Git Hooks](/sharing/git-hooks) | The pre-push hook, during a push you started | `beacon git setup --share-sessions`, and `beacon login` or an API key |
+| [API Key](/sharing/api-key) | Your CI job, with `beacon share` | A `bcn_api_` key with the `traces:write` permission |
+
+## Visibility levels
+
+Every shared trace has one of three visibility levels:
+
+| Visibility | Who can view the trace |
+|------------|------------------------|
+| `direct` | Anyone with the link. It is never listed or indexed. The default for a new trace |
+| `private` | Only you, while signed in to beacon.sh |
+| `public` | Anyone. The trace is listed in Discover |
+
+Making a trace public always asks for confirmation first, and without a terminal to ask on it is refused unless you pass `--yes`. Sharing a session again updates the same trace and keeps its visibility unless you name a new one. You can change a trace's visibility, copy its link or unshare it from the **Shared** page of the Beacon Cloud dashboard, or from the trace page itself.
+
+## What a shared trace contains
+
+Every workflow publishes the same thing: a `beacon.trace.v1` trace built from the session's Beacon events, the same projection the local [dashboard](/cli/dashboard) and [lenses](/concepts/lenses) read. Before anything is uploaded:
+
+- Every event goes through Beacon's secret redaction and size limits.
+- Paths under the session's directory are written relative to it, and your home directory becomes `~`.
+- The working directory and repository path are left out. The project is named by the repository's or directory's name, and the remote is sent without credentials.
+- Cost is sent only when the runtime reported one, never a list-price estimate.
+
+beacon.sh redacts every string again on its side. Redaction catches common credential shapes, not everything sensitive, so run `beacon share --print` to read exactly what would be uploaded before sharing a session that touched secrets. [`beacon share`](/cli/share#what-is-uploaded) has the full details.
+
+Each session has one stable id on beacon.sh (`<runtime>:<session-id>`), so a session shared more than one way, for example by hand and then by the pre-push hook, is still one trace.
+
+## Sharing from Beacon Cloud
+
+When an endpoint is [connected to Beacon Cloud](/cli/endpoint-connect), its sessions appear in [Agent Activity](/cloud/sessions). Open a session and select **Share** to publish a snapshot of it from the events your device forwarded, with a visibility and an optional title. **Update snapshot** refreshes it later. What the trace can show depends on the device's [privacy mode](/deployment/managed#what-leaves-your-machine): a Metadata-only device forwards no prompts, answers or tool output, so neither does its trace.
+
+## Credentials
+
+Sharing from the CLI, a skill or the pre-push hook uses the first of these that is available:
+
+1. A Beacon API key passed with `--key` (`bcn_api_...`).
+2. Your [`beacon login`](/cli/account-auth) sign-in, when it carries the `traces:write` permission. A sign-in from an older `beacon login` lacks it; run `beacon login` again.
+3. A Beacon API key in the `BEACON_API_KEY` environment variable.
+
+The credential is sent only in the request's `Authorization` header, redirects are refused, and it is never printed or written into config. See [Sharing via API Key](/sharing/api-key) for creating a key.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="beacon share" icon="terminal" href="/cli/share">
+    Every flag, the upload format and the output.
+  </Card>
+  <Card title="beacon git" icon="code-branch" href="/cli/git">
+    Commit-to-session links and sharing them with a team.
+  </Card>
+</Columns>
