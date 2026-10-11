@@ -76,7 +76,7 @@ picked the newest session in the directory rather than one it knew was this one.
 Sharing again later updates the same trace. To add only the steps since the last upload:
 
 ```bash
-beacon share refresh --json
+beacon share refresh --harness <runtime> --json
 ```
 
 ## Troubleshooting
