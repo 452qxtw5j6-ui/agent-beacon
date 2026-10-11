@@ -672,6 +672,7 @@ func (b *shareBuilder) addTool(item shareEvent) {
 	callID := ToolCallID(&event)
 	toolName := shareToolName(event)
 	invocation := isShareInvocation(event)
+	explicit := invocation
 	completion := !invocation && isShareCompletion(event)
 
 	if !invocation && !completion {
@@ -703,7 +704,9 @@ func (b *shareBuilder) addTool(item shareEvent) {
 		message := b.append(item, ShareRoleAssistant, shareToolCallText(call), SharePartV1{Type: SharePartToolCall, Content: call})
 		b.calls[callID] = call
 		b.callMessage[callID] = message
-		if !named {
+		// Only an explicit invocation waits for a result. A phase-less event promoted to a call
+		// is already whole; queuing it would turn the next read of the same file into its result.
+		if !named && explicit {
 			b.pending = append(b.pending, callID)
 		}
 		return
