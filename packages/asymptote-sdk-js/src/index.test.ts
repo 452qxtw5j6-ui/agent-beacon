@@ -94,6 +94,100 @@ describe("resolveExporterConfig", () => {
     expect(config.observeUrl).toBe("http://127.0.0.1:9999/v1/observe");
   });
 
+  it("does not send the api key to a foreign OTLP endpoint from env", () => {
+    process.env.ASYMPTOTE_API_KEY = "secret-key";
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "http://collector.example:4318";
+
+    const config = resolveExporterConfig();
+
+    expect(config.mode).toBe("otlp");
+    expect(config.observeUrl).toBe("http://collector.example:4318/v1/observe");
+    expect(config.headers.authorization).toBeUndefined();
+    expect(JSON.stringify(config.headers)).not.toContain("secret-key");
+  });
+
+  it("does not send the api key to a foreign OTLP endpoint option", () => {
+    const config = resolveExporterConfig({ apiKey: "secret-key", otlpEndpoint: "https://otel.vendor.example" });
+
+    expect(config.mode).toBe("otlp");
+    expect(config.headers.authorization).toBeUndefined();
+  });
+
+  it("does not treat a different port or scheme as the Asymptote origin", () => {
+    expect(
+      resolveExporterConfig({ apiKey: "k", otlpEndpoint: "https://api.asymptotelabs.ai:8443" }).headers.authorization,
+    ).toBeUndefined();
+    expect(
+      resolveExporterConfig({ apiKey: "k", otlpEndpoint: "http://api.asymptotelabs.ai" }).headers.authorization,
+    ).toBeUndefined();
+  });
+
+  it("sends the api key to an OTLP endpoint on the Asymptote origin", () => {
+    const config = resolveExporterConfig({ apiKey: "test-key", otlpEndpoint: "https://api.asymptotelabs.ai:443/v1/observe" });
+
+    expect(config.mode).toBe("otlp");
+    expect(config.headers.authorization).toBe("Bearer test-key");
+  });
+
+  it("sends the api key to an OTLP endpoint on a configured base URL origin", () => {
+    process.env.ASYMPTOTE_BASE_URL = "https://observe.example";
+    process.env.OTEL_EXPORTER_OTLP_ENDPOINT = "https://observe.example/";
+
+    const config = resolveExporterConfig({ apiKey: "test-key" });
+
+    expect(config.mode).toBe("otlp");
+    expect(config.headers.authorization).toBe("Bearer test-key");
+  });
+
+  it("refuses to send the api key over http to a non-loopback base URL", () => {
+    expect(() => resolveExporterConfig({ apiKey: "test-key", baseUrl: "http://observe.example" })).toThrow(
+      /refuses to send ASYMPTOTE_API_KEY over http/,
+    );
+  });
+
+  it("refuses an insecure base URL from env when the key would be sent", () => {
+    process.env.ASYMPTOTE_API_KEY = "env-key";
+    process.env.ASYMPTOTE_BASE_URL = "http://observe.example";
+
+    expect(() => resolveExporterConfig()).toThrow(/https/);
+  });
+
+  it("ignores an insecure base URL when the key goes nowhere", () => {
+    process.env.ASYMPTOTE_BASE_URL = "http://observe.example";
+
+    const config = resolveExporterConfig({ apiKey: "k", otlpEndpoint: "http://127.0.0.1:4318" });
+
+    expect(config.headers.authorization).toBeUndefined();
+  });
+
+  it("allows the api key over http to loopback base URLs", () => {
+    for (const baseUrl of ["http://127.0.0.1:4318", "http://localhost:4318", "http://[::1]:4318"]) {
+      const config = resolveExporterConfig({ apiKey: "test-key", baseUrl });
+
+      expect(config.mode).toBe("hosted");
+      expect(config.headers.authorization).toBe("Bearer test-key");
+    }
+  });
+
+  it("preserves a caller-supplied authorization header", () => {
+    const hosted = resolveExporterConfig({ apiKey: "test-key", headers: { Authorization: "Basic custom" } });
+    expect(hosted.headers).toEqual({ Authorization: "Basic custom" });
+
+    const foreign = resolveExporterConfig({
+      apiKey: "test-key",
+      otlpEndpoint: "http://collector.example:4318",
+      headers: { authorization: "Bearer collector-token" },
+    });
+    expect(foreign.headers).toEqual({ authorization: "Bearer collector-token" });
+  });
+
+  it("does not attach the api key in custom mode", () => {
+    const config = resolveExporterConfig({ apiKey: "test-key", disableDefaultExporter: true });
+
+    expect(config.mode).toBe("custom");
+    expect(config.headers.authorization).toBeUndefined();
+  });
+
   it("throws when neither hosted credentials nor explicit OTLP are configured", () => {
     expect(() => resolveExporterConfig()).toThrow(/ASYMPTOTE_API_KEY/);
   });

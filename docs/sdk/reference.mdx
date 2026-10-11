@@ -64,6 +64,8 @@ Function exports are also available for the same operations, including `initiali
 | `otlp` | `otlpEndpoint` or `OTEL_EXPORTER_OTLP_ENDPOINT` is present |
 | `custom` | Default exporter is disabled or a custom span exporter is provided |
 
+The API key is sent as `authorization: Bearer <api key>` only to Beacon Cloud: in `hosted` mode, or in `otlp` mode when the endpoint has the same origin as `baseUrl`. It is never attached in `custom` mode or to an OTLP endpoint on another origin, and a caller-supplied `authorization` header in `headers` always wins. A URL that carries the key must be `https://`, except loopback (`localhost`, `127.0.0.1`, `[::1]`) over `http://`; otherwise `initialize()` throws.
+
 ## Beacon compatibility attributes
 
 Cloud SDKs should prefer standard OpenTelemetry attributes when they exist, especially `gen_ai.*` attributes for model and prompt metadata. Use Beacon attributes for fields that need to normalize into Beacon endpoint-style events.

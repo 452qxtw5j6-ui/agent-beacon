@@ -26,6 +26,10 @@ Hosted Observe contract:
 - Observe path: `/v1/observe` is appended when the endpoint does not already include it.
 - Auth: `authorization: Bearer <ASYMPTOTE_API_KEY>`.
 - Override base URL with `ASYMPTOTE_BASE_URL` or `initialize({ baseUrl })`.
+- The base URL must be `https://`. Plain `http://` is accepted only for
+  loopback (`localhost`, `127.0.0.1`, `[::1]`); any other `http://` base URL
+  with an API key makes `initialize()` throw rather than send the key in
+  cleartext.
 
 The TypeScript SDK preserves this hosted contract, but this repository does not
 implement the managed ingest service. Use `baseUrl` with a local stub in tests.
@@ -49,6 +53,14 @@ Endpoint precedence:
 1. `initialize({ otlpEndpoint })`
 2. `OTEL_EXPORTER_OTLP_ENDPOINT`
 3. hosted `baseUrl` when an API key is present
+
+The API key is sent only to Asymptote. When an explicit OTLP endpoint wins,
+the SDK attaches `authorization: Bearer <ASYMPTOTE_API_KEY>` only if that
+endpoint has the same origin (scheme, host and port) as the Asymptote base URL.
+A service that has both `ASYMPTOTE_API_KEY` and a generic
+`OTEL_EXPORTER_OTLP_ENDPOINT` for another collector exports to that collector
+without the key. Headers you pass in `initialize({ headers })`, including your
+own `authorization`, are sent unchanged.
 
 Beacon endpoint installs remain local-first and never require hosted credentials.
 
