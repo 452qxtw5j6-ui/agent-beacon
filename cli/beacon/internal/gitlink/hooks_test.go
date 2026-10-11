@@ -372,7 +372,7 @@ func TestAmendCarriesLinksThroughRewriteRef(t *testing.T) {
 	}
 	r.write("a", "1")
 	r.commitWithEnv("c")
-	if _, err := AddLinks(ctx, repo.Git, r.git("rev-parse", "HEAD"), []Link{{"codex_cli", "s"}}); err != nil {
+	if _, err := AddLinks(ctx, repo.Git, r.git("rev-parse", "HEAD"), []Link{{Harness: "codex_cli", SessionID: "s"}}); err != nil {
 		t.Fatal(err)
 	}
 	r.git("commit", "-q", "--amend", "-m", "c (amended)")

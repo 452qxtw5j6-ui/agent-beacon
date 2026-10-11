@@ -312,18 +312,19 @@ func HookCall(hook string) string {
 var hookPurpose = map[string]string{
 	"post-commit":  "links the new commit to the agent sessions that wrote it.",
 	"post-rewrite": "tidies the Beacon note on commits an amend or rebase rewrote.",
-	"pre-push":     "shares refs/notes/beacon with the remote being pushed to.",
+	"pre-push":     "shares refs/notes/beacon with the remote being pushed to (and, with --share-sessions, the linked sessions).",
 }
 
 func hookScript(hook, beaconPath string) string {
-	// post-rewrite reads the rewritten commits from stdin; the others get nothing to read.
-	// pre-push needs the remote git passes, and keeps stderr so a failure to share says so.
+	// post-rewrite reads the rewritten commits from stdin; post-commit gets nothing to read.
+	// pre-push needs the remote git passes and the refs being pushed (stdin, which
+	// --share-sessions reads), and keeps stderr so a failure to share says so.
 	stdin, args, output := " </dev/null", "", " >/dev/null 2>&1"
 	switch hook {
 	case "post-rewrite":
 		stdin, args = "", ` "$@"`
 	case ShareHook:
-		args, output = ` "$@"`, " >/dev/null"
+		stdin, args, output = "", ` "$@"`, " >/dev/null"
 	}
 	return `#!/bin/sh
 # Beacon ` + hook + ` hook: ` + hookPurpose[hook] + `
@@ -339,7 +340,7 @@ exit 0
 
 func hookScope(hook string) string {
 	if hook == ShareHook {
-		return "Pushes only Beacon's notes ref, only to this push's remote, and never fails the push."
+		return "Pushes only Beacon's notes ref, only to this push's remote, and never fails the push. With --share-sessions it also shares the linked sessions to beacon.sh."
 	}
 	return "Reads the local runtime log and writes a git note; never touches the network or fails the commit."
 }
@@ -370,6 +371,8 @@ type RemoveResult struct {
 	Reports           []HookReport  `json:"reports"`
 	RewriteRefRemoved bool          `json:"rewrite_ref_removed"`
 	FetchRemoved      []string      `json:"fetch_removed,omitempty"`
+	// ShareSessionsRemoved is true when pushes had been sharing linked sessions.
+	ShareSessionsRemoved bool `json:"share_sessions_removed,omitempty"`
 }
 
 func removeHook(dir, hook string) (HookReport, error) {
@@ -418,6 +421,12 @@ func RemoveHooks(ctx context.Context, repo Repo) (RemoveResult, error) {
 	if result.FetchRemoved, err = UnconfigureFetch(ctx, repo); err != nil {
 		return result, err
 	}
+	if enabled, _ := ShareSessionsConfig(ctx, repo); enabled {
+		if err := SetShareSessions(ctx, repo, false, ""); err != nil {
+			return result, err
+		}
+		result.ShareSessionsRemoved = true
+	}
 	removed, err := removeRewriteRef(ctx, repo)
 	if err != nil {
 		return result, err
@@ -454,6 +463,10 @@ type Status struct {
 	// fetches bring their links along.
 	Sharing      bool     `json:"sharing"`
 	FetchRemotes []string `json:"fetch_remotes,omitempty"`
+	// ShareSessions is true when pushes also share linked sessions to beacon.sh, with
+	// ShareVisibility for new traces ("" for the server default, direct).
+	ShareSessions   bool   `json:"share_sessions"`
+	ShareVisibility string `json:"share_visibility,omitempty"`
 }
 
 // Installed is true when every managed hook is installed. Sharing is optional and not counted.
@@ -502,6 +515,7 @@ func HookStatus(ctx context.Context, repo Repo) (Status, error) {
 			}
 		}
 	}
+	status.ShareSessions, status.ShareVisibility = ShareSessionsConfig(ctx, repo)
 	status.RewriteRef, err = hasRewriteRef(ctx, repo)
 	return status, err
 }

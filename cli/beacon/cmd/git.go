@@ -85,6 +85,7 @@ func runGitLink(cmd *cobra.Command, args []string) error {
 		MinLookback: gitOpts.minLookback,
 		MaxLookback: gitOpts.maxLookback,
 		DryRun:      gitOpts.dryRun,
+		ShareURL:    gitShareURLLookup(gitRuntimeLogPath()),
 	})
 	if err != nil {
 		return err
@@ -161,6 +162,7 @@ func runGitNotes(cmd *cobra.Command, args []string) error {
 	if len(args) == 1 {
 		rev = args[0]
 	}
+	gitAllowShareHosts()
 	commits, err := gitlink.ListLinked(ctx, repo.Git, rev, gitOpts.limit)
 	if err != nil {
 		return err
@@ -179,6 +181,10 @@ func runGitNotes(cmd *cobra.Command, args []string) error {
 	for _, c := range commits {
 		fmt.Fprintf(out, "%s  %s  %s\n", shortSHA(c.SHA), c.CommitTime.Local().Format(time.DateTime), c.Subject)
 		for _, link := range c.Links {
+			if link.URL != "" {
+				fmt.Fprintf(out, "    %s/%s  %s\n", link.Harness, link.SessionID, link.URL)
+				continue
+			}
 			fmt.Fprintf(out, "    %s/%s\n", link.Harness, link.SessionID)
 		}
 	}
@@ -200,7 +206,7 @@ func shortSHA(sha string) string {
 
 func containsLink(links []gitlink.Link, link gitlink.Link) bool {
 	for _, l := range links {
-		if l == link {
+		if l.Key() == link.Key() {
 			return true
 		}
 	}

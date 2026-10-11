@@ -49,10 +49,10 @@ func TestPushNotesMergesTeammatesInsteadOfOverwriting(t *testing.T) {
 	tm := newTeam(t)
 	ctx := context.Background()
 	alice, bob := tm.alice.open(), tm.bob.open()
-	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{"codex_cli", "alice"}}); err != nil {
+	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{Harness: "codex_cli", SessionID: "alice"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AddLinks(ctx, bob.Git, tm.first, []Link{{"cursor", "bob"}}); err != nil {
+	if _, err := AddLinks(ctx, bob.Git, tm.first, []Link{{Harness: "cursor", SessionID: "bob"}}); err != nil {
 		t.Fatal(err)
 	}
 	res, err := PushNotes(ctx, alice, "origin")
@@ -98,7 +98,7 @@ func TestPushNotesEdgeCases(t *testing.T) {
 		t.Fatalf("fetch from a remote without links: %v %v", found, err)
 	}
 	// A push to a URL rather than a named remote uses a throwaway incoming ref.
-	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{"codex_cli", "a"}}); err != nil {
+	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{Harness: "codex_cli", SessionID: "a"}}); err != nil {
 		t.Fatal(err)
 	}
 	if res, err := PushNotes(ctx, alice, tm.remote); err != nil || !res.Pushed {
@@ -117,14 +117,14 @@ func TestFetchKeepsLocalLinksAndListsTeammates(t *testing.T) {
 	tm := newTeam(t)
 	ctx := context.Background()
 	alice, bob := tm.alice.open(), tm.bob.open()
-	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{"codex_cli", "alice"}}); err != nil {
+	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{Harness: "codex_cli", SessionID: "alice"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := PushNotes(ctx, alice, "origin"); err != nil {
 		t.Fatal(err)
 	}
 	// Bob has an unpushed link of his own on the same commit.
-	if _, err := AddLinks(ctx, bob.Git, tm.first, []Link{{"cursor", "bob"}}); err != nil {
+	if _, err := AddLinks(ctx, bob.Git, tm.first, []Link{{Harness: "cursor", SessionID: "bob"}}); err != nil {
 		t.Fatal(err)
 	}
 	if added, err := ConfigureFetch(ctx, bob, []string{"origin"}); err != nil || !reflect.DeepEqual(added, []string{"origin"}) {
@@ -172,7 +172,7 @@ func TestMergeNotesFromIntoEmptyAndUpToDate(t *testing.T) {
 	tm := newTeam(t)
 	ctx := context.Background()
 	alice, bob := tm.alice.open(), tm.bob.open()
-	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{"codex_cli", "alice"}}); err != nil {
+	if _, err := AddLinks(ctx, alice.Git, tm.first, []Link{{Harness: "codex_cli", SessionID: "alice"}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := PushNotes(ctx, alice, "origin"); err != nil {

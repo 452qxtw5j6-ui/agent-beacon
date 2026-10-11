@@ -57,7 +57,7 @@ func TestParseNoteDedupesInOrder(t *testing.T) {
 
 func TestMergeNoteKeepsOtherLinesAndAppends(t *testing.T) {
 	note := "Reviewed-by: a person\nbeacon:codex/a\nbeacon:v2 something newer\n"
-	got := MergeNote(note, []Link{{"codex", "a"}, {"claude_code", "b"}, {"BAD", "c"}})
+	got := MergeNote(note, []Link{{Harness: "codex", SessionID: "a"}, {Harness: "claude_code", SessionID: "b"}, {Harness: "BAD", SessionID: "c"}})
 	want := "Reviewed-by: a person\nbeacon:codex/a\nbeacon:v2 something newer\nbeacon:claude_code/b\n"
 	if got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
@@ -65,7 +65,7 @@ func TestMergeNoteKeepsOtherLinesAndAppends(t *testing.T) {
 }
 
 func TestMergeNoteIsIdempotent(t *testing.T) {
-	links := []Link{{"codex", "a"}, {"cursor", "b"}}
+	links := []Link{{Harness: "codex", SessionID: "a"}, {Harness: "cursor", SessionID: "b"}}
 	once := MergeNote("", links)
 	if twice := MergeNote(once, links); twice != once {
 		t.Fatalf("second merge changed the note:\n%q\n%q", once, twice)
@@ -84,5 +84,52 @@ func TestMergeNoteNormalizesBlankLinesAndRepeats(t *testing.T) {
 	}
 	if MergeNote("\n\n", nil) != "" {
 		t.Fatal("an empty note must stay empty")
+	}
+}
+
+func TestNoteLinesCarryAllowlistedShareURLs(t *testing.T) {
+	link, ok := ParseLine("beacon:claude_code/s1 https://beacon.sh/s/k3x future-field")
+	if !ok || link.URL != "https://beacon.sh/s/k3x" || link.Key() != "claude_code/s1" {
+		t.Fatalf("link = %+v %v", link, ok)
+	}
+	for _, line := range []string{
+		"beacon:claude_code/s1 https://evil.example/s/k3x",
+		"beacon:claude_code/s1 http://beacon.sh/s/k3x",
+		"beacon:claude_code/s1 https://user:pw@beacon.sh/s/k3x",
+		"beacon:claude_code/s1 not-a-url",
+	} {
+		link, ok := ParseLine(line)
+		if !ok || link.URL != "" || link.SessionID != "s1" {
+			t.Errorf("%q = %+v %v; want the link without a URL", line, link, ok)
+		}
+	}
+	if got := (Link{Harness: "codex", SessionID: "a", URL: "https://evil.example/x"}).Line(); got != "beacon:codex/a" {
+		t.Fatalf("disallowed URL written: %q", got)
+	}
+	AllowShareHost("beacon.internal.example")
+	if !ValidShareURL("https://beacon.internal.example/s/1") {
+		t.Fatal("configured host refused")
+	}
+}
+
+func TestMergeNoteAndSetLinkURLsKeepTheURL(t *testing.T) {
+	// cat_sort_uniq puts the bare line first; the URL line must win.
+	merged := MergeNote("beacon:codex/a\nbeacon:codex/a https://beacon.sh/s/1\nReviewed-by: x\n", nil)
+	if merged != "beacon:codex/a https://beacon.sh/s/1\nReviewed-by: x\n" {
+		t.Fatalf("merged = %q", merged)
+	}
+	merged = MergeNote("beacon:codex/a\n", []Link{{Harness: "codex", SessionID: "a", URL: "https://beacon.sh/s/2"}, {Harness: "cursor", SessionID: "b", URL: "https://beacon.sh/s/3"}})
+	if merged != "beacon:codex/a https://beacon.sh/s/2\nbeacon:cursor/b https://beacon.sh/s/3\n" {
+		t.Fatalf("merged = %q", merged)
+	}
+	note := "beacon:codex/a\nbeacon:codex/b https://beacon.sh/s/old\nbeacon:codex/c newer-field\nperson line\n"
+	got := SetLinkURLs(note, map[string]string{"codex/a": "https://beacon.sh/s/1", "codex/b": "https://beacon.sh/s/2", "codex/c": "https://beacon.sh/s/3", "codex/x": "https://evil.example/"})
+	want := "beacon:codex/a https://beacon.sh/s/1\nbeacon:codex/b https://beacon.sh/s/old\nbeacon:codex/c newer-field\nperson line\n"
+	if got != want {
+		t.Fatalf("SetLinkURLs = %q, want %q", got, want)
+	}
+	links := ParseNote("beacon:codex/a\nbeacon:codex/a https://beacon.sh/s/1\n")
+	if len(links) != 1 || links[0].URL != "https://beacon.sh/s/1" {
+		t.Fatalf("ParseNote = %+v", links)
 	}
 }
