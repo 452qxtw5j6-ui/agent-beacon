@@ -159,7 +159,7 @@ Approval telemetry comes from Qwen's `PermissionRequest` event and is recorded a
 
 Beacon's `PreToolUse` hook answers with an empty object. Qwen's `PreToolUse` contract reads a decision from `hookSpecificOutput.permissionDecision`, where `allow` means run the tool without the usual approval prompt. A hook that answered `allow` would disarm the user's own permission prompts for every tool call. An empty object carries no decision, so Qwen's normal permission flow runs untouched.
 
-Enforcement stays behind the optional, off-by-default policy provider seam (`BEACON_POLICY_PROVIDER`), which is inert unless it names an executable and fails open on any error. When a provider denies a call, Qwen uses Claude Code's deny shape: `hookSpecificOutput.permissionDecision` with a `permissionDecisionReason`.
+Enforcement stays behind the optional, off-by-default policy provider seam (`BEACON_POLICY_PROVIDER`), which is inert unless it names an executable and fails open on any error. When a provider denies a call, Qwen uses Claude Code's deny shapes, one per phase: from `PreToolUse`, `hookSpecificOutput.permissionDecision` with a `permissionDecisionReason`; from `PermissionRequest`, `hookSpecificOutput.decision` with `behavior: "deny"` and the reason as `message`.
 
 ## Data handling
 
