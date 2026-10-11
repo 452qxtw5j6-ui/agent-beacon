@@ -47,6 +47,7 @@ beacon endpoint hooks install --harness devin-cli --level project
 |------|---------|
 | Prompt telemetry | Supported through `UserPromptSubmit` hooks |
 | Command, tool, and file telemetry | Supported for session, prompt, pre-tool, post-tool, permission request, stop, session-end, approval, and file telemetry where Devin CLI exposes payloads |
+| Approvals | Permission requests are recorded as `approval.requested`. Devin CLI does not report the operator's answer to hooks, so Beacon does not record one, and the hook returns no decision: Devin asks the operator as it would without Beacon |
 | Local JSONL and dashboard | Supported |
 | MDM deployment | Supported for the endpoint agent. Devin CLI hooks are installed separately in the logged-in user's context or project context |
 

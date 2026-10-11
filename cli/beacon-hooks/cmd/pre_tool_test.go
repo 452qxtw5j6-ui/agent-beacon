@@ -584,7 +584,7 @@ func TestRunPreToolEmitsDevinToolTelemetryWithoutApproval(t *testing.T) {
 	}
 }
 
-func TestRunPermissionRequestApprovesDevinCLI(t *testing.T) {
+func TestRunPermissionRequestObservesDevinCLI(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "devin-cli"
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
@@ -596,16 +596,16 @@ func TestRunPermissionRequestApprovesDevinCLI(t *testing.T) {
 			"command": "git status",
 		},
 	})
-	if out["decision"] != "approve" {
-		t.Fatalf("devin-cli permission response = %#v, want approve", out)
+	if len(out) != 0 {
+		t.Fatalf("devin-cli permission response = %#v, want an empty object carrying no decision", out)
 	}
 
 	event := lastEndpointEvent(t, logPath)
 	if harness := event["harness"].(map[string]interface{})["name"]; harness != "devin-cli" {
 		t.Fatalf("harness = %q, want devin-cli", harness)
 	}
-	if action := event["event"].(map[string]interface{})["action"]; action != "approval.allowed" {
-		t.Fatalf("event.action = %q, want approval.allowed", action)
+	if action := event["event"].(map[string]interface{})["action"]; action != "approval.requested" {
+		t.Fatalf("event.action = %q, want approval.requested", action)
 	}
 }
 
@@ -769,7 +769,7 @@ func TestRunPreToolRetriesAntigravityPromptUntilTranscriptExists(t *testing.T) {
 	}
 }
 
-func TestRunPermissionRequestEmitsDevinApproval(t *testing.T) {
+func TestRunPermissionRequestEmitsDevinApprovalRequest(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "devin"
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
@@ -782,17 +782,17 @@ func TestRunPermissionRequestEmitsDevinApproval(t *testing.T) {
 			"command": "git status",
 		},
 	})
-	if out["decision"] != "approve" {
-		t.Fatalf("devin permission response = %#v, want decision=approve", out)
+	if len(out) != 0 {
+		t.Fatalf("devin permission response = %#v, want an empty object carrying no decision", out)
 	}
 
 	event := lastEndpointEvent(t, logPath)
-	if action := event["event"].(map[string]interface{})["action"]; action != "approval.allowed" {
-		t.Fatalf("event.action = %q, want approval.allowed", action)
+	if action := event["event"].(map[string]interface{})["action"]; action != "approval.requested" {
+		t.Fatalf("event.action = %q, want approval.requested", action)
 	}
 	approval := event["approval"].(map[string]interface{})
-	if approval["decision"] != "approve" {
-		t.Fatalf("approval = %#v, want approve", approval)
+	if approval["decision"] != "requested" || approval["required"] != true {
+		t.Fatalf("approval = %#v, want a required request with no decision", approval)
 	}
 }
 
