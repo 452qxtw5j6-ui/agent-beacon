@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/asymptote"
+	endpointconfig "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/config"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 )
 
@@ -113,5 +114,38 @@ func TestInstallWithoutStartingServicesLeavesTheForwarderToTheCaller(t *testing.
 	}
 	if called || result.ManagedForwarder != nil {
 		t.Fatal("a --no-start install reconciled the forwarder")
+	}
+}
+
+// Repair's teardown keeps config.json, so the reinstall carries the managed_ingest block over
+// instead of rewriting the file as if the still-forwarding endpoint were not connected.
+func TestRepairTeardownKeepsTheManagedIngestRecord(t *testing.T) {
+	for _, withManifest := range []bool{false, true} {
+		testenv.SetHome(t, t.TempDir())
+		writeConnectedState(t)
+		cfg := endpointconfig.Default(true, filepath.Join(t.TempDir(), "runtime.jsonl"))
+		cfg.ManagedIngest = &endpointconfig.ManagedIngest{Enabled: true, IngestURL: "https://ingest.example", DeviceID: "d", PrivacyMode: "metadata_only"}
+		configPath, err := endpointconfig.Save(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if withManifest {
+			if _, err := writeManifest(true, Manifest{Files: []string{configPath}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := Uninstall(repairUninstallOptions(InstallOptions{UserMode: true})); err != nil {
+			t.Fatal(err)
+		}
+		kept, err := endpointconfig.Load(true)
+		if err != nil {
+			t.Fatalf("manifest=%v: repair's teardown removed config.json: %v", withManifest, err)
+		}
+		if kept.ManagedIngest == nil || kept.ManagedIngest.PrivacyMode != "metadata_only" {
+			t.Fatalf("manifest=%v: managed_ingest = %+v, want it kept", withManifest, kept.ManagedIngest)
+		}
+		if got := buildConfig(InstallOptions{UserMode: true}); got.ManagedIngest == nil {
+			t.Fatalf("manifest=%v: the reinstall's config dropped managed_ingest", withManifest)
+		}
 	}
 }

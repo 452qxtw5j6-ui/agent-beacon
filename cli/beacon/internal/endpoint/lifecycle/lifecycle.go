@@ -668,7 +668,14 @@ func Uninstall(opts UninstallOptions) error {
 	if !opts.KeepConfig {
 		restoreBackups(manifest.Backups)
 	}
+	// KeepConfig (repair) keeps config.json so the reinstall carries over what connect,
+	// disconnect and the operator own in it (managed_ingest, inventory, auto_update); without it
+	// a repaired endpoint that kept forwarding read as unconnected on disk.
+	endpointConfigPath := endpointconfig.ConfigPath(cfg.UserMode)
 	for _, path := range manifest.Files {
+		if opts.KeepConfig && path == endpointConfigPath {
+			continue
+		}
 		fail("remove "+path, os.Remove(path))
 	}
 	if len(manifest.Files) == 0 {
@@ -676,7 +683,9 @@ func Uninstall(opts UninstallOptions) error {
 			fail("remove "+path, os.Remove(path))
 		}
 		fail("remove "+cfg.Collector.ConfigPath, os.Remove(cfg.Collector.ConfigPath))
-		fail("remove endpoint config", os.Remove(endpointconfig.ConfigPath(cfg.UserMode)))
+		if !opts.KeepConfig {
+			fail("remove endpoint config", os.Remove(endpointConfigPath))
+		}
 	}
 	if !opts.KeepLogs {
 		for _, path := range runtimeLogFiles(cfg.LogPath) {
