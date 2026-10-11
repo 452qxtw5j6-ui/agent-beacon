@@ -32,10 +32,22 @@ const redactSeparator = `(?:\\?["'` + "`" + `])?\s*[:=]\s*`
 // redactOpenQuote opens a quoted value, escaped or not.
 const redactOpenQuote = `\\?["'` + "`" + `]`
 
-// redactQuoted is a quoted value, up to its closing quote: spaces, commas and brackets inside the
-// quotes are part of it. An escaped character is taken whole, except an escaped quote, which is how
-// a value quoted inside a JSON string ends.
-const redactQuoted = `(?:[^"'` + "`" + `\\\n]|\\[^"'` + "`" + `\n])+`
+// redactQuotedBy is a value quoted with q, up to its own closing quote: spaces, commas, brackets
+// and the other quote characters inside it are part of it (`"it's-mine"`). An escaped character is
+// taken whole, except an escaped q, which is how a value quoted inside a JSON string ends.
+func redactQuotedBy(q string) string {
+	return `(?:[^` + q + `\\\n]|\\[^` + q + `\n])+`
+}
+
+// quotedAssignmentRule redacts a labeled value quoted with q: `token="x"`, `{"api_key": "x"}`.
+func quotedAssignmentRule(q string) redactionRule {
+	return redactionRule{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + `\\?` + q + `)(?P<value>` + redactQuotedBy(q) + `)`), "${1}" + redactedValue, isAuthScheme}
+}
+
+// quotedFlagRule redacts a secret-named flag's value quoted with q: `--password "x y"`.
+func quotedFlagRule(q string) redactionRule {
+	return redactionRule{regexp.MustCompile(`(?i)(` + redactFlag + `\\?` + q + `)(` + redactQuotedBy(q) + `)`), "${1}" + redactedValue, nil}
+}
 
 // redactUnquoted is an unquoted value, up to a quote, a comma or whitespace. Brackets, braces and
 // backslashes are part of it: a generated password is full of them. It never starts with a quote,
@@ -97,7 +109,7 @@ var redactionRules = []redactionRule{
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
 	// rule never starts at a quote, so it leaves a value the quoted rule already replaced alone.
-	{regexp.MustCompile(`(?i)(\b` + redactLabel + redactSeparator + redactOpenQuote + `)(?P<value>` + redactQuoted + `)`), "${1}" + redactedValue, isAuthScheme},
+	quotedAssignmentRule(`"`), quotedAssignmentRule(`'`), quotedAssignmentRule("`"),
 	// A quoted label with a bare value is JSON (or a YAML or Python mapping) holding a number, a
 	// literal or a structure. The replacement is quoted the way the label is, so the text still
 	// parses where something decodes it again (string-encoded tool arguments do); null, true, false
@@ -106,7 +118,7 @@ var redactionRules = []redactionRule{
 	{regexp.MustCompile(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`), "${1}" + redactedValue, isAuthScheme},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`, and quoted, the way agents
 	// usually write arguments: `--password "x y"`, `--token='x'`.
-	{regexp.MustCompile(`(?i)(` + redactFlag + redactOpenQuote + `)(` + redactQuoted + `)`), "${1}" + redactedValue, nil},
+	quotedFlagRule(`"`), quotedFlagRule(`'`), quotedFlagRule("`"),
 	{regexp.MustCompile(`(?i)(` + redactFlag + `)([^\s"'-][^\s"']*)`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
 	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}", nil},
@@ -149,10 +161,11 @@ func (rule redactionRule) apply(value string) string {
 	return string(append(out, value[last:]...))
 }
 
-// redactAssignedPattern captures the value of a labeled assignment, quoted (${1}) or not (${2}), so
-// a bare copy of it elsewhere in the same text is removed too.
-var redactAssignedPattern = regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator +
-	`(?:` + redactOpenQuote + `(` + redactQuoted + `)|(` + redactUnquoted + `))`)
+// redactAssignedPattern captures the value of a labeled assignment, quoted with ", ' or a backtick
+// (${1} to ${3}) or not (${4}), so a bare copy of it elsewhere in the same text is
+// removed too.
+var redactAssignedPattern = regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator + `(?:` +
+	`\\?"(` + redactQuotedBy(`"`) + `)|\\?'(` + redactQuotedBy(`'`) + `)|\\?` + "`(" + redactQuotedBy("`") + `)|(` + redactUnquoted + `))`)
 
 // redactWindow is how far past a string's limit redaction reads before the string is cut, so a
 // secret that straddles the cut is recognized whole rather than left as a recognizable prefix. It
@@ -171,7 +184,7 @@ func RedactString(value string) string {
 	// refers to `value` by itself.
 	var assigned []string
 	for _, match := range redactAssignedPattern.FindAllStringSubmatch(value, -1) {
-		copied := match[1] + match[2]
+		copied := match[1] + match[2] + match[3] + match[4]
 		if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
 			assigned = append(assigned, copied)
 		}
@@ -263,9 +276,38 @@ func SanitizeMap(input map[string]interface{}, opts PrivacyOptions) map[string]i
 		case map[string]interface{}:
 			out[key] = SanitizeMap(typed, opts)
 		case []interface{}:
+			// A multi-valued header (`{"Cookie": ["sid=1"]}`, OTel's http.request.header.*) is as
+			// much a credential as a single value.
+			if opts.RedactSecrets && isSecretKeyName(key) {
+				out[key] = redactAllStrings(typed, opts)
+				continue
+			}
 			out[key] = SanitizeSlice(typed, opts)
 		default:
 			out[key] = typed
+		}
+	}
+	return out
+}
+
+// redactAllStrings replaces every non-empty string in a slice held under a secret-named field,
+// at any depth of nested slices; maps inside it are sanitized by their own field names.
+func redactAllStrings(input []interface{}, opts PrivacyOptions) []interface{} {
+	out := make([]interface{}, len(input))
+	for index, value := range input {
+		switch typed := value.(type) {
+		case string:
+			if typed == "" {
+				out[index] = typed
+			} else {
+				out[index] = redactedValue
+			}
+		case []interface{}:
+			out[index] = redactAllStrings(typed, opts)
+		case map[string]interface{}:
+			out[index] = SanitizeMap(typed, opts)
+		default:
+			out[index] = typed
 		}
 	}
 	return out

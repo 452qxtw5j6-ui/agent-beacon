@@ -233,6 +233,15 @@ func TestSanitizeMapRedactsValuesUnderSecretKeys(t *testing.T) {
 			t.Fatalf("SanitizeMap dropped %s: %s", keep, text)
 		}
 	}
+	headers := SanitizeMap(map[string]interface{}{
+		"Authorization": []interface{}{"Basic dXNlcjpwYXNz"},
+		"Cookie":        []interface{}{"sid=abcdef123", ""},
+		"Accept":        []interface{}{"application/json"},
+	}, PrivacyOptions{RedactSecrets: true, StringLimit: DefaultRawStringLimit})
+	if data, _ := json.Marshal(headers); strings.Contains(string(data), "dXNlcjpwYXNz") || strings.Contains(string(data), "abcdef123") ||
+		!strings.Contains(string(data), "application/json") {
+		t.Fatalf("multi-valued headers = %s, want credential values redacted and the rest kept", data)
+	}
 	if got := SanitizeMap(input, PrivacyOptions{StringLimit: DefaultRawStringLimit}); got["tool_input"].(map[string]interface{})["password"] != "hunter2" {
 		t.Fatal("SanitizeMap redacted by key name with RedactSecrets off")
 	}
@@ -264,6 +273,10 @@ func TestRedactStringTakesWholeValues(t *testing.T) {
 		{"quoted with spaces", `secret: "correct horse, battery staple"`, `secret: "[REDACTED]"`},
 		{"single quoted symbols", `password='p]a}s\\s'`, `password='[REDACTED]'`},
 		{"escaped json", `{\"token\": \"a]b}c d\"}`, `{\"token\": \"[REDACTED]\"}`},
+		{"apostrophe in double quotes", `DB_PASSWORD="ab'cdEFGH12345" next`, `DB_PASSWORD="[REDACTED]" next`},
+		{"apostrophe in json", `{"password": "it's-my-pass"}`, `{"password": "[REDACTED]"}`},
+		{"double quote in single quotes", `password='say "hi" 123'`, `password='[REDACTED]'`},
+		{"quoted flag with apostrophe", `tool --token "ab'cd ef"`, `tool --token "[REDACTED]"`},
 		{"quoted flag", `docker login --password "hunter2 hunter2" registry`, `docker login --password "[REDACTED]" registry`},
 		{"single quoted flag", `mysql --password 'p@ss' db`, `mysql --password '[REDACTED]' db`},
 		{"quoted flag with equals", `tool --token="opaque-value" run`, `tool --token="[REDACTED]" run`},
