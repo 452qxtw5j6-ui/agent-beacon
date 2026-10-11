@@ -11,6 +11,7 @@ description: "Share a local agent session as a trace on beacon.sh"
 beacon share [--current | --session <id> | --source-path <path> | --cwd <dir>] [flags]
 beacon share --list [--cwd <dir>] [--harness <runtime>]
 beacon share refresh [<external-id> | <session-id>] [flags]
+beacon share --follow [--interval 10s] [selector flags]
 beacon share auto enable [--visibility direct|private|public] [--project <dir>] [--yes]
 beacon share auto disable [--project <dir>]
 beacon share auto status [--project <dir>]
@@ -117,6 +118,17 @@ beacon share refresh 5f0c1d2e
 beacon share refresh            # this session, found like --current
 ```
 
+## Follow a running session
+
+`--follow` keeps the trace current while the session runs. It shares the session, then checks it again every `--interval` (default `10s`, at least `1s`) and uploads what changed, until the session records its end (`session.ended`) or you press Ctrl+C. A check is a local read; a request is made only when the session's messages changed, and it sends only what beacon.sh lacks, the same way `refresh` does. A failed upload after the first is reported and retried on the next check.
+
+```bash
+beacon share --follow                          # this session, until it ends
+beacon share --follow --session 5f0c1d2e --interval 30s
+```
+
+`--follow` waits for a session that has nothing to share yet. The link is printed after the first upload; with `--json`, each upload prints one JSON document per line, and the last carries `"final":true` (and `"ended":true` when the session ended). The runtime log gets one `session.shared` event when the trace is first shared and one when following stops. `--follow` cannot be combined with `--print` or `--list`.
+
 ## Auto-share
 
 `beacon share auto enable` publishes new sessions without running `beacon share` each time. It works through [Beacon Cloud forwarding](/cli/endpoint-connect), never from the hooks over the network:
@@ -146,7 +158,100 @@ The `session.share_requested` event is marked `event.fidelity=inferred` because 
 2. Your [`beacon login`](/cli/account-auth) sign-in, when it carries the `traces:write` permission.
 3. A Beacon API key in `BEACON_API_KEY`.
 
-A sign-in from an older `beacon login` lacks `traces:write`; run `beacon login` again. An API key is sent to beacon.sh, or to `--auth-url` / `BEACON_AUTH_URL` when set. Either credential goes only in the request's `Authorization` header, redirects are refused, and neither is printed.
+A sign-in from an older `beacon login` lacks `traces:write`; run `beacon login` again.
+
+### API keys for CI and other headless machines
+
+Where nobody can run `beacon login` (CI runners, containers, scheduled jobs), use a Beacon API key:
+
+1. On beacon.sh, create an API key with the `traces:write` permission. It starts with `bcn_api_`.
+2. Store it as a secret in your CI system, for example a GitHub Actions secret or a masked GitLab CI/CD variable named `BEACON_API_KEY`.
+3. Expose it to the step that runs `beacon share` as the `BEACON_API_KEY` environment variable. Prefer the variable to `--key`, which puts the key on the command line where process listings can see it.
+4. Run `beacon share` in the same job as the agent, after it: the session is read from the runner's own disk.
+
+With no sign-in on the machine, `BEACON_API_KEY` is used. On a machine that also has a sign-in carrying `traces:write`, the sign-in wins unless you pass `--key`. A key for a self-hosted Beacon service goes with `BEACON_AUTH_URL` (or `--auth-url`) set to that service. An API key is sent to beacon.sh, or to `--auth-url` / `BEACON_AUTH_URL` when set. Either credential goes only in the request's `Authorization` header, redirects are refused, and neither is printed.
+
+## CI examples
+
+These run an agent and share its session in the same job. Claude Code and Codex CLI keep their sessions in stores `beacon share` reads directly, so nothing else needs to be installed. For a runtime whose sessions Beacon reads only from its runtime log, start [Beacon CI telemetry](/cli/ci-start) before the agent and pass the CI log with `--log-path`. Without a terminal, `--visibility public` needs `--yes`; the default, `direct`, makes the trace viewable by anyone with the link.
+
+### GitHub Actions
+
+```yaml title=".github/workflows/agent.yml"
+name: Agent
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Beacon
+        run: curl -fsSL https://github.com/asymptote-labs/agent-beacon/releases/latest/download/install.sh | bash
+
+      - name: Run the agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx -y @anthropic-ai/claude-code --print "Fix the failing test and explain the change"
+
+      - name: Share the agent session
+        id: share
+        if: always()
+        env:
+          BEACON_API_KEY: ${{ secrets.BEACON_API_KEY }}
+        run: |
+          out="$(beacon share --cwd . --harness auto --json)" || { echo "$out"; exit 0; }
+          url="$(printf '%s' "$out" | jq -r '.data.shared_url')"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Agent session" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Link the session on the pull request
+        if: github.event_name == 'pull_request' && steps.share.outputs.url != ''
+        uses: actions/github-script@v7
+        env:
+          SHARE_URL: ${{ steps.share.outputs.url }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Agent session: ${process.env.SHARE_URL}`,
+            });
+```
+
+The URL reaches the script through an environment variable rather than being written into the script, so nothing in the share output can change what the script runs. Sharing failures leave the job green (`exit 0`); drop that to make a missing trace fail the build. To watch the session live, start `beacon share --follow --harness claude_code &` in the step before the agent instead.
+
+### GitLab CI
+
+```yaml title=".gitlab-ci.yml"
+agent:
+  image: node:22
+  variables:
+    # BEACON_API_KEY and ANTHROPIC_API_KEY are masked CI/CD variables.
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq jq sudo
+    - curl -fsSL https://github.com/asymptote-labs/agent-beacon/releases/latest/download/install.sh | bash
+  script:
+    - npx -y @anthropic-ai/claude-code --print "Fix the failing test and explain the change"
+  after_script:
+    - beacon share --cwd "$CI_PROJECT_DIR" --harness auto --json | tee beacon-share.json || true
+    - echo "Agent session: $(jq -r '.data.shared_url // empty' beacon-share.json)"
+  artifacts:
+    when: always
+    paths:
+      - beacon-share.json
+```
+
+`after_script` runs in the same job even when the agent fails, so the session is still on disk.
 
 ## Local record
 
@@ -179,6 +284,8 @@ The link goes to stdout and a summary to stderr. `--json` prints one document:
 | `--limit <n>` | With `--list`, the most sessions to show |
 | `--print`, `--dry-run` | Print the payload and send nothing |
 | `--yes` | Share publicly without asking |
+| `--follow` | Keep uploading new messages until the session ends or Ctrl+C |
+| `--interval <duration>` | With `--follow`, how often to check the session (default `10s`) |
 | `--json` | Print the result as JSON |
 | `--store-dir <runtime>=<path>` | Read a runtime's sessions from this directory (repeatable) |
 | `--log-path <path>` | Runtime log to read from and record the share in |

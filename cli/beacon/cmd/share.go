@@ -37,6 +37,9 @@ import (
 // trace list and dashboard show the session as shared. That event is inferred bookkeeping: no
 // harness collected it.
 
+// errShareNothingYet is a session with no messages to share yet. --follow waits for some.
+var errShareNothingYet = errors.New("has nothing to share yet")
+
 // SessionSharedAction is the runtime-log action recorded after a session is shared or refreshed.
 const SessionSharedAction = "session.shared"
 
@@ -75,6 +78,8 @@ type shareOptions struct {
 	key        string
 	authURL    string
 	jsonOutput bool
+	follow     bool
+	interval   time.Duration
 	current    bool
 	list       bool
 	print      bool
@@ -158,6 +163,8 @@ func init() {
 	f.BoolVar(&shareOpts.list, "list", false, "List the sessions that could be shared, newest first, and share nothing")
 	f.IntVar(&shareOpts.limit, "limit", 20, "With --list, the most sessions to show (0 for all)")
 	f.BoolVar(&shareOpts.yes, "yes", false, "Share publicly without asking")
+	f.BoolVar(&shareOpts.follow, "follow", false, "Keep uploading the session's new messages until it ends or Ctrl+C")
+	f.DurationVar(&shareOpts.interval, "interval", shareFollowDefaultInterval, "With --follow, how often to check the session for new messages")
 	shareCmd.MarkFlagsMutuallyExclusive("session", "source-path", "cwd", "current")
 }
 
@@ -209,7 +216,7 @@ func runShare(cmd *cobra.Command) error {
 		return err
 	}
 	payload, err := buildSharePayload(subject)
-	if err != nil {
+	if err != nil && !(shareOpts.follow && errors.Is(err, errShareNothingYet)) {
 		return err
 	}
 	if cmd.Flags().Changed("visibility") {
@@ -227,6 +234,13 @@ func runShare(cmd *cobra.Command) error {
 	client, err := newShareClient()
 	if err != nil {
 		return err
+	}
+	if shareOpts.follow {
+		visibility := ""
+		if cmd.Flags().Changed("visibility") {
+			visibility = shareOpts.visibility
+		}
+		return runShareFollow(cmd, client, subject, visibility)
 	}
 	if !shareOpts.jsonOutput {
 		fmt.Fprintf(errOut, "Sharing %s session %s (%d messages)%s.\n", subject.session.Harness, subject.session.ID, len(payload.Messages), shareSourceNote(subject))
@@ -403,7 +417,12 @@ func validateShareFlags(cmd *cobra.Command) error {
 			return errors.New("--list shows candidates; combine it with --cwd or --harness, not --session, --source-path or --current")
 		case shareOpts.printOnly():
 			return errors.New("--list and --print cannot be combined")
+		case shareOpts.follow:
+			return errors.New("--list and --follow cannot be combined")
 		}
+	}
+	if shareOpts.follow && shareOpts.printOnly() {
+		return errors.New("--follow uploads; it cannot be combined with --print")
 	}
 	if shareOpts.limit < 0 {
 		return errors.New("--limit cannot be negative")
@@ -798,7 +817,7 @@ func buildSharePayload(subject shareSubject) (sharePayload, error) {
 	opts := asymptoteobserve.ShareOptions{WorkingDirectory: session.Directory}
 	messages := asymptoteobserve.BuildShareMessagesWithOptions(events, opts)
 	if len(messages) == 0 {
-		return sharePayload{}, fmt.Errorf("%s session %s has nothing to share yet", session.Harness, session.ID)
+		return sharePayload{}, fmt.Errorf("%s session %s %w", session.Harness, session.ID, errShareNothingYet)
 	}
 	trace := asymptoteobserve.ShareMetadataFromEventsWithOptions(events, opts)
 	agent := asymptoteobserve.NormalizeHarnessName(session.Harness)
