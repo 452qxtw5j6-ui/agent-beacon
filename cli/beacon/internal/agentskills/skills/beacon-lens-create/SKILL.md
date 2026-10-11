@@ -69,7 +69,9 @@ The dashboard enforces these; a lens that breaks them fails to install or fails 
   error). The `id` is lowercase letters, digits and hyphens, and cannot be a built-in lens's id.
 - **No network and nothing loaded by URL.** The frame's Content Security Policy blocks `fetch`,
   XHR, WebSockets, `EventSource`, `sendBeacon`, remote scripts, stylesheets, fonts and images,
-  `@import`, workers, nested frames, `eval` and `new Function`.
+  `@import`, workers, nested frames, `eval` and `new Function`. The host also removes WebRTC and
+  refuses `<iframe>`/`srcdoc` and other nested frames, `<link>` elements (resource hints such as
+  `preconnect`), speculation rules and `document.write`, because the CSP does not govern them.
 - **No dashboard access.** The frame is `sandbox="allow-scripts"` with an opaque origin: no
   cookies, `localStorage`, `sessionStorage` or IndexedDB, no access to the parent page, no popups
   or forms. Keep state in memory.
@@ -179,8 +181,9 @@ beacon lenses lint --strict path/to/my-lens.lens.html
 
 Errors (size, a missing or invalid manifest) stop the lens from running. Warnings name the line
 where the lens does something the sandbox blocks or the spec forbids: HTML parsing of content,
-network calls, resources loaded by URL, browser storage, navigation, viewport-height layouts, or
-never calling `getTrace()`. Fix both.
+network calls, resources loaded by URL, browser storage, navigation, WebRTC, nested frames, links
+and resource hints, speculation rules, viewport-height layouts, or never calling `getTrace()`.
+Fix both.
 
 ## Step 6: preview it against real sessions
 
@@ -210,6 +213,11 @@ Only after the user has seen it in preview and is happy with it:
 ```bash
 beacon lenses add path/to/my-lens.lens.html
 ```
+
+A lens sees the full content of every trace it is shown and is code the user must trust, so
+`add` asks for confirmation on a terminal and refuses without one. Let the user run it, or, once
+the user has told you in this conversation to install this lens, run it with `--yes`. Never pass
+`--yes` for a lens the user has not read or previewed.
 
 It now appears in the **+** menu on every session page. To change it later, edit the source
 file, bump `version` in its manifest, and run `beacon lenses add` again; an equal or lower

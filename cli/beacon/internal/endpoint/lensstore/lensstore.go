@@ -108,6 +108,9 @@ type InstallOptions struct {
 	Reserved map[string]bool
 	// Force replaces an installed lens even when the new file's version is not newer.
 	Force bool
+	// Confirm, when set, is asked once the file has passed every check and before anything is
+	// written, with the manifest of the bytes that will be installed. An error stops the install.
+	Confirm func(asymptoteobserve.LensManifestV1) error
 }
 
 // Install checks the lens file at src and copies it into dir under its manifest ID. It returns
@@ -139,6 +142,11 @@ func Install(dir, src string, opts InstallOptions) (Lens, int, error) {
 	} else if _, statErr := os.Stat(dest); statErr == nil {
 		// An unreadable or invalid file is in the way. Replacing it is what the user asked for.
 		replaced = -1
+	}
+	if opts.Confirm != nil {
+		if err := opts.Confirm(manifest); err != nil {
+			return Lens{}, 0, err
+		}
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return Lens{}, 0, err

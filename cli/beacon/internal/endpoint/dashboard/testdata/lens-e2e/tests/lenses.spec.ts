@@ -78,9 +78,29 @@ test('a lens cannot reach the network, the dashboard, storage or code evaluation
   for (const probe of [
     'fetchSameOrigin', 'fetchRemote', 'xhr', 'websocket', 'image', 'nestedFrame',
     'parentDocument', 'topLocation', 'localStorage', 'cookie', 'eval', 'newFunction', 'popup', 'worker',
+    'rtcDirect', 'rtcComputed', 'rtcWebkit', 'rtcDataChannel', 'rtcDelete', 'rtcRedefine',
+    // Reaching a fresh realm through a child frame, then every way to put a frame, a resource hint
+    // or speculation rules into the document. The prelude's guard is best-effort hardening; these
+    // pin the paths it covers.
+    'rtcChildNoSrc', 'rtcChildAboutBlank', 'rtcChildSrcdoc', 'rtcChildDocumentWrite', 'rtcChildIndexed',
+    'rtcChildFrames', 'rtcChildOwnScript',
+    'frameCreateNS', 'frameInnerHTML', 'frameOuterHTML', 'frameInsertAdjacentHTML', 'frameSetHTMLUnsafe',
+    'frameDocumentWrite', 'frameParsedAdopt', 'frameFragment', 'frameShadow', 'frameTemplateClone', 'frameStatic',
+    'hintCreate', 'hintInnerHTML', 'hintStatic',
+    'rulesTypeProperty', 'rulesSetAttribute', 'rulesMutateManifest', 'rulesInnerHTML', 'rulesStatic',
+    // Markup the real parser reads differently from a plain document parse: <noscript> with scripting
+    // on, foreign content contexts, and closed declarative shadow roots.
+    'noscriptInnerHTML', 'noscriptInsertAdjacentHTML', 'noscriptSetHTMLUnsafe', 'noscriptOuterHTML',
+    'foreignSvg', 'foreignMath', 'templateClosedShadow', 'parseHTMLUnsafeClosedShadow', 'execCommandInsertHTML',
   ]) {
     expect(r[probe], probe).toBe('blocked');
   }
+  // The guard parses markup itself; benign markup must come out exactly as the browser builds it
+  // (children, beside-insertion, context-dependent tbody, inert innerHTML scripts, <noscript> as text).
+  expect(r.benignParsing).toBe('u+s+script+i+svg+table,before,inert,svg,tbody,tr,em,3');
+  expect(r.dnsPrefetchMeta).toBe(true); // implicit DNS prefetching is off in the document
+  const frameResponse = await page.request.get('/lenses/frame/probe');
+  expect(frameResponse.headers()['x-dns-prefetch-control']).toBe('off');
   // Spoofed window messages to the host changed nothing.
   const height = await page.locator('iframe.lens-frame').evaluate((f: HTMLIFrameElement) => f.style.height);
   expect(height).not.toBe('99999px');

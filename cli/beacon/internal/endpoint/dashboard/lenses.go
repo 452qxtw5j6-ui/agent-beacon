@@ -235,9 +235,15 @@ func (r *lensRegistry) list() LensListResponse {
 
 // lensPrelude is what the dashboard puts ahead of every lens: the style tokens, then the script
 // that defines window.beacon. Both are inline because the frame's CSP allows nothing else.
+//
+// The meta element repeats the X-DNS-Prefetch-Control header in the document itself, so a lens
+// file opened outside the frame route still has implicit DNS prefetching turned off.
 func lensPrelude() []byte {
-	return []byte("<style>" + lensTokensCSS + "</style><script>" + lensPreludeJS + "</script>")
+	return []byte("<style>" + lensTokensCSS + "</style>" + lensDNSPrefetchMeta + "<script>" + lensPreludeJS + "</script>")
 }
+
+// lensDNSPrefetchMeta turns off the browser's implicit DNS prefetching of hostnames in the page.
+const lensDNSPrefetchMeta = `<meta http-equiv="x-dns-prefetch-control" content="off">`
 
 // withLensPrelude inserts the prelude right after the lens's doctype, so the document keeps its
 // standards mode and the prelude still runs before any lens script. A prelude ahead of <html> is
@@ -295,6 +301,8 @@ func (r *lensRegistry) serveLensFrame(w http.ResponseWriter, req *http.Request) 
 	h.Set("Content-Type", "text/html; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
+	// Implicit DNS prefetching resolves hostnames the page mentions, which the CSP does not govern.
+	h.Set("X-DNS-Prefetch-Control", "off")
 	w.WriteHeader(http.StatusOK)
 	if req.Method == http.MethodHead {
 		return

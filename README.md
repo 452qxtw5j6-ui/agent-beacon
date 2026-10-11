@@ -275,9 +275,11 @@ Use it to explore session history across harnesses and understand what your agen
 
 Each session page can also show **lenses**: purpose-built views of one trace, such as files
 changed with their diffs, an itemized token bill, a security review grouped by risk, or the
-approval timeline. A lens is a single HTML file running in a sandboxed, network-less frame,
-so you can have your coding agent write your own (`beacon lenses spec`, `lint`, `preview`,
-`add`). See [Lenses](https://docs.beacon.sh/concepts/lenses).
+approval timeline. A lens is a single HTML file running in a sandboxed frame with no access to
+Beacon or the dashboard and no ordinary network APIs, so you can have your coding agent write
+your own (`beacon lenses spec`, `lint`, `preview`, `add`). The sandbox cannot block every way a
+browser can send data out, so install only lenses you trust with your traces. See
+[Lenses](https://docs.beacon.sh/concepts/lenses).
 
 The underlying JSONL remains directly accessible, so you're never dependent on the UI.
 
