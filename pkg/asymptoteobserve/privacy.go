@@ -35,35 +35,72 @@ const secretValue = "[^\"'`,\\s}\\]\\\\\\[][^\"'`,\\s}\\]\\\\]*"
 type secretRule struct {
 	pattern     *regexp.Regexp
 	replacement string
+	// keep, when set, leaves a match alone if its value (${2}) passes.
+	keep func(value string) bool
+}
+
+// isAuthScheme reports whether a labeled value is an Authorization scheme rather than a
+// credential. `Authorization: Bearer x` is redacted to `Authorization: Bearer [REDACTED]` by the
+// header rule, and the assignment rule must not then take `Bearer` for the value and erase what
+// kind of credential the line held.
+func isAuthScheme(value string) bool {
+	switch strings.ToLower(value) {
+	case "bearer", "basic", "token", "digest":
+		return true
+	}
+	return false
 }
 
 var secretRules = []secretRule{
 	// A private key block, or the rest of the text when the block was cut before its END line.
-	{regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|[\s\S]*$)`), redactedValue},
+	{regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|[\s\S]*$)`), redactedValue, nil},
 	// An Authorization header's credential after its scheme: Bearer, Basic, Token, Digest.
-	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+)([^"'\s,]+)()`), "${1}" + redactedValue},
-	{regexp.MustCompile(`(?i)(\bbearer\s+)([a-z0-9._~+/=-]+)()`), "${1}" + redactedValue},
+	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+)([^"'\s,]+)()`), "${1}" + redactedValue, nil},
+	{regexp.MustCompile(`(?i)(\bbearer\s+)([a-z0-9._~+/=-]+)()`), "${1}" + redactedValue, nil},
 	// A labeled assignment in prose, shell, env files, YAML, TOML or JSON: `token=x`,
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator.
-	{regexp.MustCompile(`(?i)(\b` + secretKeyName + secretAssignment + `)(` + secretValue + `)()`), "${1}" + redactedValue},
+	{regexp.MustCompile(`(?i)(\b` + secretKeyName + secretAssignment + `)(` + secretValue + `)()`), "${1}" + redactedValue, isAuthScheme},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`.
-	{regexp.MustCompile(`(?i)((?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+))([^\s"'-][^\s"']*)()`), "${1}" + redactedValue},
+	{regexp.MustCompile(`(?i)((?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|secret|api-?key|access-?key)(?:=|\s+))([^\s"'-][^\s"']*)()`), "${1}" + redactedValue, nil},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
-	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}"},
-	// Credentials recognizable by their own shape, wherever they appear.
-	{regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}`), redactedValue},                                         // Anthropic sk-ant-, OpenAI sk-proj- and sk-
-	{regexp.MustCompile(`\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b`), redactedValue},                         // AWS access key id
-	{regexp.MustCompile(`\bgh[pousr]_[A-Za-z0-9]{30,}`), redactedValue},                                    // GitHub tokens
-	{regexp.MustCompile(`\bgithub_pat_[A-Za-z0-9_]{22,}`), redactedValue},                                  // GitHub fine-grained tokens
-	{regexp.MustCompile(`\bglpat-[A-Za-z0-9_-]{20,}`), redactedValue},                                      // GitLab
-	{regexp.MustCompile(`\bxox[abposr]-[A-Za-z0-9-]{10,}`), redactedValue},                                 // Slack
-	{regexp.MustCompile(`\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}`), redactedValue},                          // Stripe
-	{regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}`), redactedValue},                                         // Google API key
-	{regexp.MustCompile(`\bnpm_[A-Za-z0-9]{36}`), redactedValue},                                           // npm
-	{regexp.MustCompile(`\bhf_[A-Za-z0-9]{30,}`), redactedValue},                                           // Hugging Face
-	{regexp.MustCompile(`\bbcn_(?:api|device|mcp)_[A-Za-z0-9_-]{8,}`), redactedValue},                      // Beacon's own keys
-	{regexp.MustCompile(`\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), redactedValue}, // JWT
+	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}", nil},
+	// Credentials recognizable by their own shape, wherever they appear. The type prefix is public
+	// and stays (`ghp_[REDACTED]`, `AKIA[REDACTED]`), the way secret scanners report a finding: the
+	// line still says a GitHub token or an AWS key was there, which is what detection rules match on
+	// in the log, and none of the credential is left.
+	{regexp.MustCompile(`\b(sk-)[A-Za-z0-9_-]{20,}`), "${1}" + redactedValue, nil},                                         // Anthropic sk-ant-, OpenAI sk-proj- and sk-
+	{regexp.MustCompile(`\b(AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b`), "${1}" + redactedValue, nil},                             // AWS access key id
+	{regexp.MustCompile(`\b(gh[pousr]_)[A-Za-z0-9]{30,}`), "${1}" + redactedValue, nil},                                    // GitHub tokens
+	{regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]{22,}`), "${1}" + redactedValue, nil},                                  // GitHub fine-grained tokens
+	{regexp.MustCompile(`\b(glpat-)[A-Za-z0-9_-]{20,}`), "${1}" + redactedValue, nil},                                      // GitLab
+	{regexp.MustCompile(`\b(xox[abposr]-)[A-Za-z0-9-]{10,}`), "${1}" + redactedValue, nil},                                 // Slack
+	{regexp.MustCompile(`\b([rs]k_(?:live|test)_)[A-Za-z0-9]{16,}`), "${1}" + redactedValue, nil},                          // Stripe
+	{regexp.MustCompile(`\b(AIza)[0-9A-Za-z_-]{35}`), "${1}" + redactedValue, nil},                                         // Google API key
+	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36}`), "${1}" + redactedValue, nil},                                           // npm
+	{regexp.MustCompile(`\b(hf_)[A-Za-z0-9]{30,}`), "${1}" + redactedValue, nil},                                           // Hugging Face
+	{regexp.MustCompile(`\b(bcn_(?:api|device|mcp)_)[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil},                      // Beacon's own keys
+	{regexp.MustCompile(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil}, // JWT
+}
+
+func (rule secretRule) apply(value string) string {
+	if rule.keep == nil {
+		return rule.pattern.ReplaceAllString(value, rule.replacement)
+	}
+	var out []byte
+	last := 0
+	for _, match := range rule.pattern.FindAllStringSubmatchIndex(value, -1) {
+		if match[4] >= 0 && rule.keep(value[match[4]:match[5]]) {
+			continue
+		}
+		out = append(out, value[last:match[0]]...)
+		out = rule.pattern.ExpandString(out, rule.replacement, value, match)
+		last = match[1]
+	}
+	if out == nil {
+		return value
+	}
+	return string(append(out, value[last:]...))
 }
 
 // assignedSecretPattern captures the value of a labeled assignment so a bare copy of it elsewhere in
@@ -92,7 +129,7 @@ func RedactString(value string) string {
 		}
 	}
 	for _, rule := range secretRules {
-		value = rule.pattern.ReplaceAllString(value, rule.replacement)
+		value = rule.apply(value)
 	}
 	// Each copy is searched for and removed; none of it survives into the result.
 	for _, copied := range assigned {

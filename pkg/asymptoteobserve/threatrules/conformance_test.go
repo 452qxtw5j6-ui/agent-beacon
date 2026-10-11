@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 // repoRoot locates the repository root by walking up from this test file until it finds
@@ -63,6 +65,37 @@ func TestPackConformance(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+// TestPackMatchesWhatTheLogHolds runs every fixture again after the sanitizer every log writer
+// applies, and requires the same verdict. `beacon scan` and the dashboard only ever see the
+// sanitized line, so a rule that matches a raw value redaction removes (a token, a key) is dead on
+// real logs even though its plain fixtures pass.
+func TestPackMatchesWhatTheLogHolds(t *testing.T) {
+	rules, err := LoadDir(rulesDir(t))
+	if err != nil {
+		t.Fatalf("load rule pack: %v", err)
+	}
+	for _, rule := range rules {
+		compiled, err := Compile(rule)
+		if err != nil {
+			t.Fatalf("rule %q: compile: %v", rule.ID, err)
+		}
+		for _, fixture := range rule.Tests {
+			events := fixture.EventList()
+			for i := range events {
+				events[i] = asymptoteobserve.SanitizeEvent(events[i], 64*1024)
+			}
+			got, err := compiled.Evaluate(events)
+			if err != nil {
+				t.Errorf("%s/%s: evaluate sanitized events: %v", rule.ID, fixture.Name, err)
+				continue
+			}
+			if got != fixture.Verdict {
+				t.Errorf("%s/%s: verdict %q on the sanitized events the log holds, want %q", rule.ID, fixture.Name, got, fixture.Verdict)
+			}
+		}
 	}
 }
 

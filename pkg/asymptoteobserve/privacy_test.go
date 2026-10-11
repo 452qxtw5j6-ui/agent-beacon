@@ -173,6 +173,18 @@ func TestRedactStringKeepsLabelsAndOrdinaryText(t *testing.T) {
 	if got := RedactString("git clone https://u:pw123456@example.com/r"); got != "git clone https://u:[REDACTED]@example.com/r" {
 		t.Fatalf("URL credential = %q, want the scheme, user and host kept", got)
 	}
+	// Detection rules match what kind of credential a line held, so the public type prefix and the
+	// Authorization scheme stay.
+	for input, want := range map[string]string{
+		"deploy with ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789": "deploy with ghp_[REDACTED]",
+		"upload with AKIAIOSFODNN7EXAMPLE":                     "upload with AKIA[REDACTED]",
+		"Authorization: Bearer abc.def.ghi":                    "Authorization: Bearer [REDACTED]",
+		`{"authorization": "Basic dXNlcjpwYXNz"}`:              `{"authorization": "Basic [REDACTED]"}`,
+	} {
+		if got := RedactString(input); got != want {
+			t.Fatalf("RedactString(%q) = %q, want %q", input, got, want)
+		}
+	}
 }
 
 // Events are sanitized again on every read path, so a second pass must not change the first one's
