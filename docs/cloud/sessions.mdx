@@ -1,0 +1,59 @@
+---
+title: "Sessions"
+description: "Find, filter and read your agent sessions in Beacon Cloud"
+---
+
+Every session your connected devices forward lands in **Agent Activity** at
+[beacon.sh/dashboard/sessions](https://beacon.sh/dashboard/sessions). It is the first page you see
+after signing in.
+
+## Find a session
+
+- **Search** matches session text, repositories, devices and models.
+- **Date range** shows the last 24 hours, 7 days or 30 days.
+- **Filters** narrow by device, agent harness, model, severity, activity category and repository.
+- **Quick filters** jump to sessions that need review, are high risk, ran commands, wrote files or
+  called MCP tools.
+
+By default the list shows **Captured sessions**: sessions with real activity. Switch to **All
+sessions**, **Recurring sessions** or **Empty sessions** to see the rest.
+
+Press <kbd>F</kbd> anywhere in the dashboard to jump to a page.
+
+## Read a session
+
+Open a session to see who ran it, on which device and harness, with which model, in which
+repository and branch, and what it cost in tokens.
+
+Below that is the activity timeline: every prompt, response, tool call, command, file edit, MCP
+call and approval in order. Use the type pills to focus on one kind of event, search within the
+session, and open the **JSON** drawer on any event to see exactly what Beacon recorded.
+
+What you can read depends on the device's [privacy mode](/deployment/managed#what-leaves-your-machine).
+A Metadata-only device shows what happened, but not the prompt, output or diff.
+
+## View a session through a lens
+
+The tabs above the timeline are lenses. **Full session** is the timeline itself. Select **+** to add
+a lens such as **Files Changed**, **Token Usage** or **Security Review**, or one you installed from
+the marketplace. The open lens is kept in the page URL as `?lens=<key>`, so a link opens straight
+to it.
+
+See [Adding lenses](/cloud/lenses/adding-lenses).
+
+## Search from your agent
+
+Everything on this page is also available to the agent you are working in through
+[Beacon Cloud MCP](/deployment/managed-mcp). Ask it to find a session, and it can search, grep and
+read your history without you leaving the terminal.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Adding lenses" icon="layer-group" href="/cloud/lenses/adding-lenses">
+    Add focused views to every session.
+  </Card>
+  <Card title="Beacon Cloud MCP" icon="plug" href="/deployment/managed-mcp">
+    Search your sessions from Claude Code, Cursor, Codex and more.
+  </Card>
+</Columns>

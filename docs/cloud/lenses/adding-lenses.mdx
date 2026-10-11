@@ -1,0 +1,68 @@
+---
+title: "Adding lenses"
+description: "Browse the lens marketplace, try a lens, and keep it open on every session"
+---
+
+A lens is a focused view of one session: the files it changed, what it cost, what a reviewer should
+look at. Beacon Cloud ships built-in lenses, and anyone can publish more to the marketplace. Add a
+lens once and it is available on every session you open.
+
+## Built-in lenses
+
+Every session already has these. Select **+** on a session's tab bar to open one.
+
+| Lens | What it shows |
+| --- | --- |
+| **Activity** | Actions, commands, failures and findings |
+| **Files Changed** | Created, edited and deleted files |
+| **Token Usage** | Usage and cost signals by model |
+| **Security Review** | Sensitive and consequential activity |
+| **Approvals & Policy** | Operator and policy decisions |
+| **Skills** | Skills loaded during the session |
+| **MCP Calls** | Calls grouped by server and tool |
+
+## Browse the marketplace
+
+The marketplace at [beacon.sh/lenses](https://beacon.sh/lenses) lists every public lens. Each card
+shows the lens's author, how many people installed it and its current version. You can browse
+without signing in.
+
+## Try a lens before adding it
+
+Select a card to open the lens's page at `/lenses/<key>`. It shows the description, the author and
+the current version, and a **Live preview** that runs the lens against a sample session, so you can
+see what it does before it touches your own data.
+
+## Add a lens
+
+Select **Add lens** on the lens's page. You need to be signed in.
+
+<Warning>
+  A lens written by someone else can read every session you open it on, including prompts, code
+  and tool output. Beacon blocks lenses from sending anything out, but only add lenses from
+  authors you trust.
+</Warning>
+
+Added lenses belong to your account, not to a session. To remove one, select **Remove lens** on the
+same page, or **Remove** on the [Lenses](https://beacon.sh/dashboard/lenses) page in the dashboard.
+
+## Lenses on the session page
+
+On a session, select **+** to open the lens menu. Built-in lenses come first, then the lenses you
+added under **Installed**. Each lens you open becomes a tab next to **Full session**; select **×**
+to close it. Beacon remembers your open tabs in this browser.
+
+The selected lens is kept in the URL as `?lens=<key>`, so you can share a link that opens straight
+to it. The person you share it with sees the lens only if they have added it too; otherwise Beacon
+asks them to add it from the marketplace.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Creating lenses" icon="wand-magic-sparkles" href="/cloud/lenses/creating-lenses">
+    Build a lens with your coding agent or upload one.
+  </Card>
+  <Card title="Managing lenses" icon="sliders" href="/cloud/lenses/managing-lenses">
+    Release new versions and choose who can find a lens.
+  </Card>
+</Columns>

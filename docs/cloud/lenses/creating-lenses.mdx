@@ -1,0 +1,85 @@
+---
+title: "Creating lenses"
+description: "Build a lens with your coding agent, or upload one in the web app"
+---
+
+A lens is one self-contained HTML file. You can have your coding agent build and publish it, or
+upload a file yourself.
+
+## Build a lens with your agent
+
+The marketplace at [beacon.sh/lenses](https://beacon.sh/lenses) and the create page both have a
+**Copy prompt** button. It copies:
+
+```text
+Read & follow https://beacon.sh/lenses.md to start building a lens. Use the Beacon MCP to publish and manage it.
+```
+
+Paste it into your agent and add a sentence describing what the lens should show.
+[`beacon.sh/lenses.md`](https://beacon.sh/lenses.md) is the full guide: the file rules, the data
+your lens receives, and the publishing steps.
+
+To publish, the agent needs [Beacon Cloud MCP](/deployment/managed-mcp) with write access. See
+[Lenses with MCP](/cloud/lenses/lenses-mcp).
+
+## Upload a lens in the web app
+
+Select **Create a lens** on the marketplace, or go to
+[beacon.sh/lenses/create](https://beacon.sh/lenses/create). You need to be signed in.
+
+| Field | |
+| --- | --- |
+| **Title** | Display name, up to 100 characters. |
+| **Key** | Permanent, globally unique ID used in URLs. Filled in from the title; 3–64 lowercase letters, numbers or hyphens. |
+| **Description** | Optional, up to 500 characters. Shown on the marketplace card and the lens page. |
+| **HTML file** | A single `.html` file, up to 16 MiB. |
+| **Who can discover this lens?** | **Just me**, or **Everyone — list in the marketplace**. |
+
+Select **Create lens**. The file becomes version `1.0.0`, it is released, and it is added to your
+own sessions straight away.
+
+Some keys are reserved for built-in lenses, such as `activity`, `files-changed` and `token-usage`.
+
+## File requirements
+
+- One HTML file with a `<head>` element, up to 16 MiB, with all CSS and JavaScript inline.
+- No external resources: no `<link>`, `<iframe>`, `<object>`, `<embed>` or `<base>`, no remote
+  scripts, fonts or images, no CSS `@import`. Use inline SVG, canvas or `data:` URIs.
+- No network: `fetch`, `XMLHttpRequest`, WebSockets, `EventSource`, WebRTC and form submission
+  are blocked.
+- No navigation. A lens that tries to leave its frame is closed.
+- No Content Security Policy of your own. Beacon injects the sandbox policy.
+
+Beacon checks these rules when you upload and rejects a file that breaks them.
+
+## Getting the session data
+
+Your lens gets the session from one call:
+
+```js
+const { trace, messages, truncated } = await window.traces.getTrace()
+```
+
+`window.beacon` is the same object. The call resolves once, with the session's metadata in `trace`
+and its activity as `messages`, each with typed `parts`: `text`, `thinking`, `tool_call`,
+`tool_result`, `error` and `system_event`. The full type is in
+[`beacon.sh/lenses.md`](https://beacon.sh/lenses.md).
+
+Treat every value as untrusted: insert it with `textContent`, never `innerHTML`.
+
+<Note>
+  Beacon Cloud lenses use this Traces-compatible format. Lenses for the
+  [local dashboard](/concepts/lenses) receive Beacon's `LensDataV1` instead, so a local lens file
+  needs changes before it works in Beacon Cloud.
+</Note>
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Lenses with MCP" icon="plug" href="/cloud/lenses/lenses-mcp">
+    Let your agent publish and release lenses.
+  </Card>
+  <Card title="Managing lenses" icon="sliders" href="/cloud/lenses/managing-lenses">
+    Release new versions and change who can find a lens.
+  </Card>
+</Columns>

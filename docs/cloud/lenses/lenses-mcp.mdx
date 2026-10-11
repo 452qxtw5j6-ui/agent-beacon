@@ -1,0 +1,93 @@
+---
+title: "Lenses with MCP"
+description: "Let your coding agent create, upload, release and publish lenses"
+---
+
+[Beacon Cloud MCP](/deployment/managed-mcp) lets your coding agent create a lens, upload versions,
+release one, and choose who can find it. Deleting a lens is only possible in the
+[dashboard](/cloud/lenses/managing-lenses#delete-a-lens).
+
+## Before you start
+
+- **Connect Beacon Cloud MCP** with `beacon mcp connect`, or add `https://mcp.beacon.sh` to your
+  client by hand. See [Beacon Cloud MCP](/deployment/managed-mcp#connect).
+- **Allow write access.** When your client signs in, the Beacon approval page offers a
+  checkbox to also let it create and publish lenses. Tick it, then select **Allow read and write
+  access**. Read-only connections cannot see the lens tools that change anything.
+- **Give the agent a shell.** The HTML file is uploaded with an HTTP request such as `curl`, never
+  pasted into a tool call.
+
+<Note>
+  Access tokens created with `beacon mcp token create` are always read-only. To publish with a
+  token instead of browser sign-in, create one with **Read + publish lenses** access on the
+  [MCP Access](https://beacon.sh/dashboard/mcp) page.
+</Note>
+
+## Lens tools
+
+| Tool | What it does | Access |
+| --- | --- | --- |
+| `beacon_lenses_list` | Lists your lenses, the lenses you added, or the marketplace | Read |
+| `beacon_lenses_create` | Creates a lens: key, title, description, icon and visibility | Write |
+| `beacon_lenses_prepare_upload` | Reserves a new version and returns a single-use upload URL | Write |
+| `beacon_lenses_complete_upload` | Finishes an upload. The version stays a draft | Write |
+| `beacon_lenses_release_version` | Makes a version current | Write |
+| `beacon_lenses_update` | Changes title, description, icon or visibility | Write |
+
+## Publish a new lens
+
+Ask your agent to build and publish a lens, for example:
+
+```text
+Read & follow https://beacon.sh/lenses.md to start building a lens. Use the Beacon MCP to publish
+and manage it. The lens should show every failed command and what the agent did next.
+```
+
+The agent then:
+
+1. Writes the HTML file, following [the file rules](/cloud/lenses/creating-lenses#file-requirements).
+2. Creates the lens with `beacon_lenses_create`. It is private unless you ask otherwise.
+3. Calls `beacon_lenses_prepare_upload` with a version such as `1.0.0` and gets an upload URL.
+4. Uploads the file to that URL:
+   ```bash
+   curl -X POST -H "Content-Type: text/html" --data-binary @lens.html "<uploadUrl>"
+   ```
+   The response carries an `artifactId`.
+5. Calls `beacon_lenses_complete_upload` with that `artifactId`.
+6. Releases the version with `beacon_lenses_release_version` once you approve, and gives you the
+   lens page link, `https://beacon.sh/lenses/<key>`.
+
+Upload URLs expire after 15 minutes and work once. If an upload fails, the agent can prepare the
+same version again.
+
+## Update an existing lens
+
+Ask the agent to change the lens. It uploads the new file as a new version, such as `1.0.1`,
+completes it, and releases it when you say so. Versions are immutable, so a version number cannot
+be reused.
+
+Uploading alone changes nothing for anyone using the lens. Only a release does.
+
+## Roll back
+
+Ask the agent to release an earlier version:
+
+```text
+Roll my failed-commands lens back to 1.0.0.
+```
+
+## Change details or visibility
+
+Ask the agent to rename the lens, change its description or icon, or make it public or private.
+It calls `beacon_lenses_update`. The key cannot change.
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Beacon Cloud MCP" icon="plug" href="/deployment/managed-mcp">
+    Connect your agent and see every tool.
+  </Card>
+  <Card title="Managing lenses" icon="sliders" href="/cloud/lenses/managing-lenses">
+    Versions, releases and visibility.
+  </Card>
+</Columns>

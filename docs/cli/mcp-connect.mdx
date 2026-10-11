@@ -25,8 +25,10 @@ with different names, so neither entry ever overwrites the other:
 | `beacon` | This machine's `runtime.jsonl` and approved local memory | Locally, over stdio or loopback HTTP | [`beacon mcp doctor`](/cli/mcp-doctor) prints the config |
 | `beacon-managed` | Session history this endpoint forwarded to Beacon Cloud | Beacon Cloud, over HTTPS | `beacon mcp connect` |
 
-Beacon Cloud MCP is read-only. Its tools are `beacon_search_sessions`, `beacon_grep`,
-`beacon_read_session`, `beacon_get_event`, `beacon_lookup` and `beacon_usage`.
+Beacon Cloud MCP reads your forwarded history with `beacon_search_sessions`, `beacon_grep`,
+`beacon_read_session`, `beacon_get_event`, `beacon_lookup` and `beacon_usage`. A connection
+signed in with write access can also publish lenses; see [Beacon Cloud MCP](/deployment/managed-mcp#tools).
+Tokens from `beacon mcp token create` are always read-only.
 
 <Note>
   `beacon mcp connect` never runs on an unattended install. The interactive onboarding wizard runs
@@ -132,10 +134,10 @@ a comment in the config, because some harnesses rewrite their config files and d
 **OAuth is the default and the recommended mode.** Connect writes only the URL. The first time the
 harness connects, Beacon Cloud answers `401` with a pointer to its OAuth metadata. The harness
 then registers itself, opens a browser, and you approve access on beacon.sh. No secret is written
-by Beacon, and access is revoked from the dashboard.
+by Beacon, and you can disconnect the app on the [MCP Access](https://beacon.sh/dashboard/mcp) page.
 
 **A personal token** is for harnesses or setups where browser sign-in does not work. Create one
-with `beacon mcp token create` (or at beacon.sh → Dashboard → MCP Access), export it, and connect
+with `beacon mcp token create` (or at [Dashboard → Identity → MCP Access](https://beacon.sh/dashboard/mcp)), export it, and connect
 with `--token-env`:
 
 ```bash
@@ -171,7 +173,7 @@ JSON on stdout instead. Beacon never writes the token to a file.
 | `--json` | Print the token and its details as JSON |
 
 The token reads your Beacon Cloud data, counts toward the limit of 25 active tokens, and is
-revoked at beacon.sh → Dashboard → MCP Access. It needs the `mcp:token:create` permission, which
+revoked at [Dashboard → Identity → MCP Access](https://beacon.sh/dashboard/mcp). It needs the `mcp:token:create` permission, which
 `beacon login` requests and the sign-in page lists; a session from an older `beacon login` is
 refused with a prompt to sign in again.
 
@@ -207,7 +209,7 @@ Connect writes these entries (OAuth mode shown, then what `--token-env NAME` add
 
 These harnesses have no MCP OAuth support Beacon has confirmed, so connect writes nothing for them.
 It prints the command or snippet instead, with a `<token>` placeholder for a token from
-beacon.sh → Dashboard → MCP Access:
+[Dashboard → Identity → MCP Access](https://beacon.sh/dashboard/mcp):
 
 - GitHub Copilot CLI: `copilot mcp add --transport http beacon-managed <url> --header "Authorization: Bearer <token>"`
 - Cline: a `streamableHttp` entry in `cline_mcp_settings.json`

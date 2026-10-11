@@ -15,10 +15,12 @@ flowchart LR
   end
 
   subgraph managedPath [Beacon Cloud]
-    managedSources["Endpoint, CI, cloud, and SDK telemetry"] -->|"managed ingest"| managedIngest["Beacon ingest"]
-    managedIngest --> managedPlatform["Hosted search, detections, governance, investigations"]
+    managedVector["Beacon-managed Vector forwarder"]
+    managedVector -->|"HTTPS, device key"| managedIngest["Beacon ingest"]
+    managedIngest --> managedPlatform["Hosted sessions, search, lenses, MCP"]
   end
 
+  runtimeLog -->|"beacon endpoint connect"| managedVector
   customerControls["Customer IAM, buckets, secrets, retention"] --> vectorAgent
 ```
 
@@ -32,7 +34,7 @@ platform.
 
 ## Open source and managed
 
-In **Beacon**, Agent Beacon is local-first. It configures supported agent harnesses, receives OTLP or hook telemetry, normalizes events, writes local runtime and inventory JSONL, and can generate forwarding content packs. Destination credentials, bucket policies, IAM roles, lifecycle rules, retention, encryption, and remote ingestion settings stay outside Beacon endpoint configuration.
+In **open-source Beacon**, the endpoint is local-first. It configures supported agent harnesses, receives OTLP or hook telemetry, normalizes events, writes local runtime and inventory JSONL, and can generate forwarding content packs. Destination credentials, bucket policies, IAM roles, lifecycle rules, retention, encryption, and remote ingestion settings stay outside Beacon endpoint configuration.
 
 That is where Vector fits. For open-source deployments, Vector is an optional customer-managed forwarder. You install and operate Vector through MDM, endpoint management, launchd, systemd, Kubernetes, or your normal host-agent tooling. Beacon can generate a destination-specific `vector.toml`, but Vector owns:
 
@@ -44,7 +46,9 @@ That is where Vector fits. For open-source deployments, Vector is an optional cu
 - Retrying transient failures.
 - Holding destination URLs, tokens, IAM roles, cloud credentials, and destination-specific settings.
 
-In **Beacon Cloud**, the main path is different. Beacon Cloud deployments use Beacon-hosted ingest, retention, search, detections, governance, identity mapping, and investigation workflows. Vector is not the required managed-ingest architecture. You might still use a customer-managed Vector pipeline for an additional archive or downstream copy, but the core managed product provides the central pipeline and operational surface.
+**Beacon Cloud** uses Vector too, but Beacon installs and runs it for you. [`beacon endpoint connect`](/cli/endpoint-connect) renders a Vector configuration for the selected privacy mode, validates it, stores the device key only in Vector's secret file, and runs Vector as a Beacon-managed service (`com.beacon.endpoint.asymptote-forwarder` on macOS, `beacon-asymptote-forwarder.service` on Linux). That forwarder tails the same `runtime.jsonl` and `inventory_state.jsonl` and ships them over HTTPS to Beacon ingest; in Metadata-only mode its transforms strip content on the device before anything is buffered or uploaded. You do not write or operate that configuration yourself. See [Beacon Cloud forwarding](/log-forwarding/asymptote) for what it sends.
+
+A customer-managed Vector pipeline can run alongside it, for example to keep an archive in your own S3 bucket. The two read the same local log independently.
 
 ## Why the handoff is local
 
