@@ -485,3 +485,45 @@ func TestShareFollowIgnoresAnOldEndOfAResumedSession(t *testing.T) {
 		t.Fatalf("polls = %d, want 3 (the old end must not stop it)\n%s", polls, stderr)
 	}
 }
+
+// A store session that disappears after the first upload leaves only --follow's own session.shared
+// records in the runtime log: nothing to share any more is a read failure, reported once, and
+// --follow gives up rather than poll forever.
+func TestShareFollowGivesUpWhenTheSessionDisappears(t *testing.T) {
+	env := newShareEnv(t)
+	src := &growingSource{
+		session: handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+		events:  shareFixtureEvents(env.projectDir),
+	}
+	stubHandoffSources(t, src)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	polls := 0
+	prevWait := shareFollowWait
+	shareFollowWait = func(ctx context.Context, d time.Duration) error {
+		polls++
+		if polls == 1 {
+			src.mu.Lock()
+			src.fail = handoff.ErrNotFound // the store lost the session
+			src.mu.Unlock()
+		}
+		if polls > 20 {
+			return errors.New("the loop did not give up")
+		}
+		return nil
+	}
+	t.Cleanup(func() { shareFollowWait = prevWait })
+	_, stderr, err := runShareCommand(t, "--follow", "--cwd", env.projectDir, "--log-path", env.logPath)
+	if err == nil || !strings.Contains(err.Error(), "could not be read") || !strings.Contains(err.Error(), "nothing to share") {
+		t.Fatalf("follow err = %v\n%s", err, stderr)
+	}
+	if polls != shareFollowMaxReadFailures {
+		t.Fatalf("waits = %d, want %d", polls, shareFollowMaxReadFailures)
+	}
+	if n := strings.Count(stderr, "warning: could not read the session"); n != 1 {
+		t.Fatalf("warnings = %d, want one:\n%s", n, stderr)
+	}
+	if records := shareEventsIn(t, env.logPath); len(records) == 0 {
+		t.Fatal("the first upload was not recorded")
+	}
+}

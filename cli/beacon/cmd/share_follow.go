@@ -103,7 +103,10 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 		}
 		fingerprint, end, err := shareFollowState(subject)
 		ended = end
-		if readErr == nil && err != nil && !errors.Is(err, errShareNothingYet) {
+		// Before the first upload a session with nothing to share yet is waited for; after it, a
+		// session that has nothing to share any more (its store lost it, and the log holds only
+		// this command's own session.shared records) is a read failure, not a reason to wait forever.
+		if readErr == nil && err != nil && (uploads > 0 || !errors.Is(err, errShareNothingYet)) {
 			readErr = err
 		}
 		if uploads > 0 {
