@@ -462,6 +462,12 @@ func resolveShareSubject(harness, id string) (shareSubject, error) {
 		if findErr == nil {
 			return shareSubject{session: session}, nil
 		}
+		// A prefix that names several sessions is the person's to narrow: falling back to the log
+		// would share whichever of them the log happens to hold.
+		var ambiguous *handoff.AmbiguousError
+		if errors.As(findErr, &ambiguous) {
+			return shareSubject{}, findErr
+		}
 		// Not in any store, or a store could not be read: the runtime log may have the session.
 		var notFound *handoff.NotFoundError
 		isNotFound := errors.As(findErr, &notFound)
