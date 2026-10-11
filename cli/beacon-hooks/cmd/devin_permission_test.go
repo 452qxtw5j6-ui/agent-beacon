@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -67,7 +66,7 @@ func TestDevinPermissionRequestDoesNotApproveMalformedInput(t *testing.T) {
 			t.Setenv("BEACON_ENDPOINT_MODE", "1")
 			t.Setenv("BEACON_ENDPOINT_LOG", logPath)
 
-			out := runPermissionRequestWithRawStdin(t, []byte(`{"tool_name": "exec", "tool_input": `))
+			out := runHookWithRawInput(t, runPermissionRequest, []byte(`{"tool_name": "exec", "tool_input": `))
 			if len(bytes.TrimSpace(out)) != 0 {
 				var decoded map[string]interface{}
 				if err := json.Unmarshal(out, &decoded); err != nil {
@@ -88,45 +87,4 @@ func TestDevinPermissionRequestDoesNotApproveMalformedInput(t *testing.T) {
 			}
 		})
 	}
-}
-
-// runPermissionRequestWithRawStdin feeds bytes that are not a JSON object, which runHookWithInput
-// cannot express because it encodes its input. The payloads here are small, so writing before the
-// hook runs fits in any pipe buffer.
-func runPermissionRequestWithRawStdin(t *testing.T, stdin []byte) []byte {
-	t.Helper()
-	stdinR, stdinW, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create stdin pipe: %v", err)
-	}
-	stdoutR, stdoutW, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("create stdout pipe: %v", err)
-	}
-	origStdin, origStdout := os.Stdin, os.Stdout
-	os.Stdin, os.Stdout = stdinR, stdoutW
-	defer func() {
-		os.Stdin, os.Stdout = origStdin, origStdout
-		_ = stdinR.Close()
-		_ = stdoutR.Close()
-	}()
-
-	if _, err := stdinW.Write(stdin); err != nil {
-		t.Fatalf("write stdin: %v", err)
-	}
-	if err := stdinW.Close(); err != nil {
-		t.Fatalf("close stdin writer: %v", err)
-	}
-	done := make(chan []byte, 1)
-	go func() {
-		data, _ := io.ReadAll(stdoutR)
-		done <- data
-	}()
-
-	runPermissionRequest(nil, nil)
-
-	if err := stdoutW.Close(); err != nil {
-		t.Fatalf("close stdout writer: %v", err)
-	}
-	return <-done
 }

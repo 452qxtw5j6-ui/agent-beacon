@@ -208,7 +208,7 @@ const kiroMCPToolPrefix = "@"
 // block is exit code 2 with the reason on stderr. There is no response object to return.
 //
 // Beacon's shared commands all finish by writing a JSON object to stdout -- `{}` for most of them,
-// `{"permission":"allow"}` for pre-tool -- which every other runtime reads as "no opinion". On
+// `{"permission":"allow"}` for Cursor's pre-tool -- which every other runtime reads as "no opinion". On
 // Kiro those same bytes are not read at all on the tool events, and are pasted into the model's
 // context on the two events that are. A hook whose job is to observe would be putting `{}` in
 // front of the model at the start of every session and before every prompt: a small amount of

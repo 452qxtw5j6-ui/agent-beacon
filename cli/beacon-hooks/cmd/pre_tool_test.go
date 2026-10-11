@@ -668,8 +668,8 @@ func TestRunPreToolEmitsAntigravityCommandTelemetry(t *testing.T) {
 		},
 		"stepIdx": 19,
 	})
-	if out["decision"] != "allow" {
-		t.Fatalf("antigravity pre-tool response = %#v, want decision=allow", out)
+	if out != nil {
+		t.Fatalf("antigravity pre-tool response = %#v, want no output", out)
 	}
 
 	event := lastEndpointEvent(t, logPath)
@@ -709,13 +709,11 @@ func TestRunPreToolSynthesizesAntigravityPromptFromTranscript(t *testing.T) {
 		"toolCall":        map[string]interface{}{"name": "list_dir", "args": map[string]interface{}{"DirectoryPath": `"/repo"`}},
 		"artifactDirPath": "/tmp/artifacts",
 	}
-	out := runHookWithInput(t, runPreTool, input)
-	if out["decision"] != "allow" {
-		t.Fatalf("antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("antigravity pre-tool response = %#v, want no output", out)
 	}
-	out = runHookWithInput(t, runPreTool, input)
-	if out["decision"] != "allow" {
-		t.Fatalf("second antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("second antigravity pre-tool response = %#v, want no output", out)
 	}
 
 	events := endpointEvents(t, logPath)
@@ -747,14 +745,14 @@ func TestRunPreToolRetriesAntigravityPromptUntilTranscriptExists(t *testing.T) {
 		"toolCall":       map[string]interface{}{"name": "list_dir", "args": map[string]interface{}{"DirectoryPath": `"/repo"`}},
 	}
 
-	if out := runHookWithInput(t, runPreTool, input); out["decision"] != "allow" {
-		t.Fatalf("first antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("first antigravity pre-tool response = %#v, want no output", out)
 	}
 	if err := os.WriteFile(transcriptPath, []byte(`{"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nshow me the full prompt\n</USER_REQUEST>"}`+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if out := runHookWithInput(t, runPreTool, input); out["decision"] != "allow" {
-		t.Fatalf("second antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("second antigravity pre-tool response = %#v, want no output", out)
 	}
 
 	events := endpointEvents(t, logPath)
