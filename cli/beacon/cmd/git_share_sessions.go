@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -38,6 +39,17 @@ const (
 	gitShareMaxCommits = 100
 	// gitShareNotesReserve is the part of the pre-push budget kept for pushing the notes ref.
 	gitShareNotesReserve = 3 * time.Second
+	// gitShareNoteWriteBudget is the part kept, after the uploads, for writing the URLs they
+	// returned into the local notes. It is local work, so a second is plenty.
+	gitShareNoteWriteBudget = time.Second
+)
+
+var (
+	// gitShareUploadBudget bounds finding and uploading the sessions to share during a push: the
+	// pre-push budget less what writing their URLs into the notes and pushing the notes ref need.
+	gitShareUploadBudget = gitShareBudget - gitShareNotesReserve - gitShareNoteWriteBudget
+	// gitShareUpload is shareUpload; tests replace it.
+	gitShareUpload = shareUpload
 )
 
 // gitAllowShareHosts admits the configured Beacon service's host besides beacon.sh.
@@ -115,9 +127,13 @@ type gitPushShareReport struct {
 // session already shared from this machine only has its URL written. Without a credential it does
 // nothing and says nothing. ctx bounds it; every error is returned for one line on stderr, never
 // to fail the push.
-func gitShareSessionsOnPush(ctx context.Context, repo gitlink.Repo, remote, stdin, visibility string) (gitPushShareReport, error) {
+func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, stdin, visibility string) (gitPushShareReport, error) {
 	var report gitPushShareReport
 	gitAllowShareHosts()
+	// The uploads get their own deadline, so running out of it still leaves time to write the URLs
+	// of the uploads that did finish; those run on a short context of their own.
+	ctx, cancelUploads := context.WithTimeout(parent, gitShareUploadBudget)
+	defer cancelUploads()
 	commits, err := gitlink.PushedCommits(ctx, repo, remote, stdin, gitShareMaxCommits)
 	if err != nil {
 		return report, err
@@ -173,7 +189,7 @@ func gitShareSessionsOnPush(ctx context.Context, repo gitlink.Repo, remote, stdi
 				if err != nil || subject.session.ID != link.SessionID {
 					continue // a teammate's session, or one this machine no longer has
 				}
-				result, _, err := shareUpload(ctx, client, subject, shareUploadOptions{Visibility: visibility, Record: true})
+				result, _, err := gitShareUpload(ctx, client, subject, shareUploadOptions{Visibility: visibility, Record: true})
 				if err != nil && result.SharedURL == "" {
 					if shareErr == nil {
 						shareErr = fmt.Errorf("%s: %w", link.Key(), err)
@@ -187,8 +203,14 @@ func gitShareSessionsOnPush(ctx context.Context, repo gitlink.Repo, remote, stdi
 			}
 		}
 	}
+	if ctx.Err() != nil && shareErr == nil && len(report.Shared) < len(toShare) {
+		shareErr = errors.New("ran out of time before every linked session was shared; the next push shares the rest")
+	}
+	cancelUploads()
+	noteCtx, cancelNotes := context.WithTimeout(parent, gitShareNoteWriteBudget)
+	defer cancelNotes()
 	for sha := range notes {
-		changed, err := gitlink.UpdateNote(ctx, repo.Git, sha, func(note string) string { return gitlink.SetLinkURLs(note, urls) })
+		changed, err := gitlink.UpdateNote(noteCtx, repo.Git, sha, func(note string) string { return gitlink.SetLinkURLs(note, urls) })
 		if err != nil {
 			if shareErr == nil {
 				shareErr = err

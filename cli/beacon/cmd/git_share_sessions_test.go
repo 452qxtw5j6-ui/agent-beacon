@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/gitlink"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/handoff"
 )
 
 func writeSharedEvent(t *testing.T, logPath, harness, session, url string) {
@@ -249,5 +251,57 @@ func TestGitPrePushKeepsAnExistingTracesTitle(t *testing.T) {
 	}
 	if srv.trace.Title != "Login fix" || srv.trace.Visibility != "private" {
 		t.Fatalf("trace title %q visibility %q, want the ones set earlier", srv.trace.Title, srv.trace.Visibility)
+	}
+}
+
+// When the uploads run out of their deadline, the URLs of the uploads that finished are still
+// written into the notes: the note updates run on their own short context.
+func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
+	root, _ := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	stubHandoffSources(t, stubHandoffSource{
+		harness: handoff.HarnessClaude,
+		sessions: []handoff.Session{
+			{Harness: handoff.HarnessClaude, ID: "sess-fast", Directory: env.projectDir, UpdatedAt: time.Now()},
+			{Harness: handoff.HarnessClaude, ID: "sess-slow", Directory: env.projectDir, UpdatedAt: time.Now()},
+		},
+		events: shareFixtureEvents(env.projectDir),
+	})
+	prevUpload, prevBudget := gitShareUpload, gitShareUploadBudget
+	gitShareUploadBudget = 300 * time.Millisecond
+	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
+		if subject.session.ID == "sess-fast" {
+			return shareResult{SharedURL: "https://beacon.sh/s/fast01"}, subject, nil
+		}
+		<-ctx.Done() // the second upload uses up the deadline
+		return shareResult{}, subject, ctx.Err()
+	}
+	t.Cleanup(func() { gitShareUpload, gitShareUploadBudget = prevUpload, prevBudget })
+
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", "beacon:claude_code/sess-fast\nbeacon:claude_code/sess-slow", sha)
+	repo, err := gitlink.OpenRepo(context.Background(), gitlink.Git{Dir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitShareBudget)
+	defer cancel()
+	report, err := gitShareSessionsOnPush(ctx, repo, "origin", "refs/heads/main "+sha+" refs/heads/main "+old+"\n", "")
+	if err == nil {
+		t.Fatal("running out of time was not reported")
+	}
+	if report.Noted != 1 {
+		t.Fatalf("report %+v, want the note updated", report)
+	}
+	want := "beacon:claude_code/sess-fast https://beacon.sh/s/fast01\nbeacon:claude_code/sess-slow"
+	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
+		t.Fatalf("note %q, want %q", note, want)
 	}
 }
