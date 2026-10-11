@@ -668,12 +668,13 @@ func Uninstall(opts UninstallOptions) error {
 	if !opts.KeepConfig {
 		restoreBackups(manifest.Backups)
 	}
-	// KeepConfig (repair) keeps config.json so the reinstall carries over what connect,
+	// Repair (KeepManagedIngest) keeps config.json so the reinstall carries over what connect,
 	// disconnect and the operator own in it (managed_ingest, inventory, auto_update); without it
-	// a repaired endpoint that kept forwarding read as unconnected on disk.
+	// a repaired endpoint that kept forwarding read as unconnected on disk. `uninstall
+	// --keep-config` keeps harness settings only, so it still removes Beacon's own config.
 	endpointConfigPath := endpointconfig.ConfigPath(cfg.UserMode)
 	for _, path := range manifest.Files {
-		if opts.KeepConfig && path == endpointConfigPath {
+		if opts.KeepManagedIngest && path == endpointConfigPath {
 			continue
 		}
 		fail("remove "+path, os.Remove(path))
@@ -683,7 +684,7 @@ func Uninstall(opts UninstallOptions) error {
 			fail("remove "+path, os.Remove(path))
 		}
 		fail("remove "+cfg.Collector.ConfigPath, os.Remove(cfg.Collector.ConfigPath))
-		if !opts.KeepConfig {
+		if !opts.KeepManagedIngest {
 			fail("remove endpoint config", os.Remove(endpointConfigPath))
 		}
 	}

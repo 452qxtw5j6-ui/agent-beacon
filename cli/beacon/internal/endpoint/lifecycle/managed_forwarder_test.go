@@ -149,3 +149,24 @@ func TestRepairTeardownKeepsTheManagedIngestRecord(t *testing.T) {
 		}
 	}
 }
+
+// `uninstall --keep-config` keeps harness settings, not Beacon's own config.json: only repair keeps it.
+func TestUninstallKeepConfigStillRemovesBeaconConfig(t *testing.T) {
+	for _, withManifest := range []bool{false, true} {
+		testenv.SetHome(t, t.TempDir())
+		cfg := endpointconfig.Default(true, filepath.Join(t.TempDir(), "runtime.jsonl"))
+		configPath, err := endpointconfig.Save(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if withManifest {
+			if _, err := writeManifest(true, Manifest{Files: []string{configPath}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_ = Uninstall(UninstallOptions{UserMode: true, KeepConfig: true})
+		if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+			t.Fatalf("manifest=%v: uninstall --keep-config left %s behind: %v", withManifest, configPath, err)
+		}
+	}
+}
