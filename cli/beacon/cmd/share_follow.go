@@ -27,6 +27,9 @@ import (
 const (
 	shareFollowDefaultInterval = 10 * time.Second
 	shareFollowMinInterval     = time.Second
+	// shareFollowFinalRetries bounds how many more times --follow tries to upload a session's last
+	// messages after the session ended, one interval apart, before it gives up with an error.
+	shareFollowFinalRetries = 3
 )
 
 var (
@@ -67,10 +70,13 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 		fmt.Fprintf(errOut, "Following %s session %s, uploading new messages every %s. Ctrl+C stops.\n", subject.session.Harness, subject.session.ID, interval)
 	}
 	var (
-		lastPrint string
-		last      shareResult
-		uploads   int
-		ended     bool
+		lastPrint     string
+		last          shareResult
+		uploads       int
+		ended         bool
+		lastErr       error
+		finalFailures int
+		finalErr      error
 	)
 	for {
 		if subject.fromLog {
@@ -89,6 +95,13 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 				opts.Visibility = visibility
 			}
 			result, aligned, upErr := shareUpload(ctx, client, subject, opts)
+			var recordErr *shareRecordError
+			if errors.As(upErr, &recordErr) {
+				// The trace is up; only the local session.shared event is missing. Say so and keep
+				// following, as a later upload's record failure does.
+				fmt.Fprintf(errOut, "warning: the session was shared, but the runtime log was not updated: %v\n", recordErr.err)
+				upErr = nil
+			}
 			switch {
 			case upErr == nil:
 				subject, last, lastPrint = aligned, result, fingerprint
@@ -103,13 +116,27 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 			default:
 				// beacon.sh or the network failed after the first upload: say so and retry on the
 				// next poll, since the next upload resends whatever this one lacked.
+				lastErr = upErr
 				fmt.Fprintf(errOut, "warning: upload failed, retrying in %s: %v\n", interval, upErr)
 			}
 		} else if err != nil && uploads == 0 && !errors.Is(err, errShareNothingYet) {
 			return err
 		}
-		if ended || ctx.Err() != nil {
+		if ctx.Err() != nil {
 			break
+		}
+		if ended {
+			if err != nil || fingerprint == lastPrint {
+				break
+			}
+			// The session ended with messages beacon.sh does not have yet. There is no next poll
+			// to catch up on, so retry a few times and then fail rather than report a trace that
+			// is missing its end.
+			finalFailures++
+			if finalFailures > shareFollowFinalRetries {
+				finalErr = fmt.Errorf("the session ended, but its last messages were not uploaded after %d attempts (%s holds %d messages): %w", finalFailures, last.SharedURL, last.MessageCount, lastErr)
+				break
+			}
 		}
 		if shareFollowWait(ctx, interval) != nil {
 			break
@@ -125,6 +152,9 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 		if err := recordShareEvent(subject.session, last, true); err != nil {
 			fmt.Fprintf(errOut, "warning: the runtime log was not updated: %v\n", err)
 		}
+	}
+	if finalErr != nil {
+		return finalErr
 	}
 	return printShareFollow(out, errOut, last, false, true, ended)
 }

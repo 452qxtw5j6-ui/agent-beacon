@@ -237,6 +237,8 @@ type fakeShareServer struct {
 	messages []asymptoteobserve.ShareMessageV1
 	requests []string
 	auth     map[string]bool
+	// failBatches makes every message upload fail, as an outage would.
+	failBatches bool
 }
 
 func newFakeShareServer(t *testing.T) *fakeShareServer {
@@ -264,6 +266,10 @@ func newFakeShareServer(t *testing.T) *fakeShareServer {
 			f.trace = &trace
 			fmt.Fprintf(w, `{"id":"k3xabc","external_id":%q,"url":"https://beacon.sh/s/k3xabc","visibility":%q,"message_count":%d,"created":%v}`, id, trace.Visibility, len(f.messages), created)
 		case r.Method == http.MethodPost && strings.HasSuffix(id, "/messages/batch"):
+			if f.failBatches {
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			zr, err := gzip.NewReader(r.Body)
 			if err != nil {
 				http.Error(w, "want gzip", 400)

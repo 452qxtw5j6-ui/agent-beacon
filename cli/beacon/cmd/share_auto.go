@@ -115,6 +115,8 @@ type shareAutoStatus struct {
 	CloudConnected   bool     `json:"cloud_connected"`
 	CloudPrivacyMode string   `json:"cloud_privacy_mode,omitempty"`
 	Warnings         []string `json:"warnings,omitempty"`
+	// ProjectsTurnedOff are the project entries a user-wide disable turned off with it.
+	ProjectsTurnedOff []string `json:"projects_turned_off,omitempty"`
 }
 
 func runShareAutoSet(cmd *cobra.Command, enable bool) error {
@@ -148,6 +150,7 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		return fmt.Errorf("read %s: %w (fix or remove it, then retry)", path, err)
 	}
 	project := ""
+	var turnedOff []string
 	if strings.TrimSpace(shareAutoOpts.project) != "" {
 		project, err = filepath.Abs(shareAutoOpts.project)
 		if err != nil {
@@ -157,7 +160,7 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		entry := shareauto.Project{Path: project, Enabled: enable, Visibility: visibility}
 		replaced := false
 		for i, p := range settings.Projects {
-			if filepath.Clean(p.Path) == project {
+			if shareauto.SamePath(p.Path, project) {
 				settings.Projects[i] = entry
 				replaced = true
 			}
@@ -169,6 +172,16 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		settings.Auto.Enabled = enable
 		if enable {
 			settings.Auto.Visibility = visibility
+		} else {
+			// Off for every new session means every project too: a project entry is checked
+			// before the user-wide switch, so one left enabled would keep publishing. The entries
+			// stay, turned off, so `enable --project` can bring one back.
+			for i := range settings.Projects {
+				if settings.Projects[i].Enabled {
+					settings.Projects[i].Enabled = false
+					turnedOff = append(turnedOff, settings.Projects[i].Path)
+				}
+			}
 		}
 	}
 	if err := shareauto.Save(path, settings); err != nil {
@@ -184,6 +197,7 @@ func shareAutoSet(cmd *cobra.Command, enable bool) error {
 		dir, _ = filepath.Abs(".")
 	}
 	status := buildShareAutoStatus(path, settings, dir)
+	status.ProjectsTurnedOff = turnedOff
 	return printShareAutoResult(cmd, status, enable, project)
 }
 
@@ -244,6 +258,9 @@ func printShareAutoResult(cmd *cobra.Command, status shareAutoStatus, enable boo
 		fmt.Fprintln(out, "Sessions that are already running are shared on their next event; earlier sessions are not. Use `beacon share` for those.")
 	} else {
 		fmt.Fprintf(out, "Auto-share is off for %s. Traces already published stay published; delete them on beacon.sh.\n", scope)
+		for _, p := range status.ProjectsTurnedOff {
+			fmt.Fprintf(out, "Turned off for the project %s too.\n", p)
+		}
 	}
 	if project != "" {
 		fmt.Fprintf(out, "Recorded in %s and %s.\n", status.SettingsPath, shareauto.MarkerPath(project))

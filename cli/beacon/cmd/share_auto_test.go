@@ -136,3 +136,36 @@ func TestShareAutoProjectScopeAndStatus(t *testing.T) {
 		t.Fatal("marker still enabled")
 	}
 }
+
+// A user-wide disable turns off projects enabled with --project too: their entries are checked
+// before the user-wide switch, so leaving one on would keep publishing after "off for every new
+// session".
+func TestShareAutoGlobalDisableTurnsOffProjects(t *testing.T) {
+	path := shareAutoTestEnv(t, true, managedprivacy.Standard)
+	project := t.TempDir()
+	if _, _, err := runShareAuto(t, "enable", "--project", project); err != nil {
+		t.Fatalf("enable --project: %v", err)
+	}
+	if !shareauto.ForHook(path, project).Enabled {
+		t.Fatal("the project is not enabled")
+	}
+	stdout, _, err := runShareAuto(t, "disable")
+	if err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	if !strings.Contains(stdout, "Auto-share is off for every new session") || !strings.Contains(stdout, "Turned off for the project "+project) {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	settings, _ := shareauto.Load(path)
+	if entry, ok := settings.Project(project); !ok || entry.Enabled {
+		t.Fatalf("project entry = %+v %v, want kept and off", entry, ok)
+	}
+	// What the hook adapter decides: no session.share_requested is written in the project.
+	if d := shareauto.ForHook(path, filepath.Join(project, "sub")); d.Enabled {
+		t.Fatalf("hook decision after a global disable = %+v", d)
+	}
+	stdout, _, err = runShareAuto(t, "status", "--project", project)
+	if err != nil || !strings.Contains(stdout, "Auto-share in "+project+": off") {
+		t.Fatalf("status = %q (%v)", stdout, err)
+	}
+}

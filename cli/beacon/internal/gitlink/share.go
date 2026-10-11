@@ -314,9 +314,9 @@ func SetShareSessions(ctx context.Context, repo Repo, enabled bool, visibility s
 
 // PushedCommits lists the commits a pre-push hook's stdin says are being pushed: for each
 // `<local-ref> <local-sha> <remote-ref> <remote-sha>` line, the commits reachable from the local
-// sha and not from the remote sha (or, for a new remote branch, from any of the remote's
-// tracking branches when remote is a configured remote). Deletions push nothing. At most limit
-// commits, newest first.
+// sha and not from the remote sha (or, for a new remote branch or a remote sha this clone does not
+// have, from any of the remote's tracking branches when remote is a configured remote). Deletions
+// push nothing. At most limit commits, newest first.
 func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 100
@@ -331,9 +331,11 @@ func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, 
 		}
 		args := []string{"rev-list", "--max-count=" + strconv.Itoa(limit), fields[1], "--not"}
 		switch {
-		case !isZeroSHA(fields[3]):
+		case !isZeroSHA(fields[3]) && hasCommit(ctx, repo, fields[3]):
 			args = append(args, fields[3])
 		case named:
+			// A new remote branch, or a force push over commits this clone never fetched: the
+			// remote's tip is not here to exclude, so exclude everything already on the remote.
 			args = append(args, "--remotes="+remote)
 		}
 		list, err := repo.Git.Run(ctx, nil, args...)
@@ -351,6 +353,12 @@ func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, 
 		}
 	}
 	return out, nil
+}
+
+// hasCommit reports whether sha names a commit present in this repository.
+func hasCommit(ctx context.Context, repo Repo, sha string) bool {
+	_, err := repo.Git.Run(ctx, nil, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
 }
 
 func isSHA(s string) bool {
