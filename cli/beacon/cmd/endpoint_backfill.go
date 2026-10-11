@@ -24,6 +24,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/opencodesession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/pisession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/primesession"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 )
 
 // The install-time session backfill reads recent history from every agent's own session store,
@@ -69,7 +70,9 @@ type endpointBackfillRunner struct {
 }
 
 // endpointBackfillRunners lists every session-store collector, a seam for tests. Each one runs with
-// the same defaults its own sync command uses for the endpoint's mode.
+// the same defaults its own sync command uses for the endpoint's mode, and reads its store only
+// through internal/sessionfs, so a system sweep is confined to the console user's home; a new
+// collector joins the list in sessionfs's collectors_test.go too.
 var endpointBackfillRunners = func() []endpointBackfillRunner {
 	return []endpointBackfillRunner{
 		{Name: "Claude Code", Sync: "beacon endpoint claude sync", Run: func(r endpointBackfillRun) (int, error) {
@@ -152,6 +155,10 @@ type endpointBackfillResult struct {
 	Runtimes []endpointBackfillRuntimeResult
 	// Skipped says why nothing was read, such as a system endpoint with no console user to read for.
 	Skipped string
+	// Refused counts the store paths a system backfill would not read as root, and RefusedExamples
+	// names a few of them with the reason.
+	Refused         int
+	RefusedExamples []string
 }
 
 // endpointBackfillEnabled reports whether this install or connect should backfill. Every real
@@ -192,9 +199,22 @@ func runEndpointBackfill(logPath string, userMode bool) endpointBackfillResult {
 	case !ok || strings.TrimSpace(info.HomeDir) == "":
 		return endpointBackfillResult{Skipped: "no active console user to read agent sessions for"}
 	}
+	// Root reads a home the console user controls, so every read is confined to that home and to
+	// regular files that user owns: a planted symlink, hard link, FIFO or device is skipped rather
+	// than read with root's privileges. See internal/sessionfs.
+	uid, err := sessionfs.OwnerUID(info.HomeDir)
+	if err != nil {
+		return endpointBackfillResult{Skipped: fmt.Sprintf("could not read the owner of the console user's home: %v", err)}
+	}
+	confined, err := sessionfs.Confine(info.HomeDir, uid)
+	if err != nil {
+		return endpointBackfillResult{Skipped: err.Error()}
+	}
+	defer confined.Release()
 	result, _ := withUserHome(info.HomeDir, func() (endpointBackfillResult, error) {
 		return sweepEndpointBackfill(logPath, false), nil
 	})
+	result.Refused, result.RefusedExamples = confined.Refused()
 	return result
 }
 
@@ -204,6 +224,9 @@ func sweepEndpointBackfill(logPath string, userMode bool) endpointBackfillResult
 	for _, runner := range endpointBackfillRunners() {
 		share := total.Sub(endpointBackfillShareBytes)
 		events, err := runner.Run(endpointBackfillRun{LogPath: logPath, UserMode: userMode, Since: result.Since, Budget: share})
+		// A confined (system) sweep reads SQLite stores through private snapshots; drop each
+		// runtime's before the next one runs. A no-op otherwise.
+		sessionfs.DropSnapshots()
 		runtime := endpointBackfillRuntimeResult{Name: runner.Name, Sync: runner.Sync, Events: events}
 		if errors.Is(err, writer.ErrBudgetSpent) || share.Refused() {
 			runtime.Limited = true
@@ -244,6 +267,7 @@ func reportEndpointBackfill(out io.Writer, result endpointBackfillResult) {
 	}
 	if result.Events == 0 && !result.Limited && len(result.Runtimes) == 0 {
 		fmt.Fprintf(out, "Session backfill: no new agent session activity from the last %d days.\n", days)
+		reportEndpointBackfillRefusals(out, result)
 		return
 	}
 	var parts []string
@@ -265,6 +289,7 @@ func reportEndpointBackfill(out io.Writer, result endpointBackfillResult) {
 			fmt.Fprintf(out, "  %s: stopped at the backfill size limit; `%s` reads the rest.\n", r.Name, r.Sync)
 		}
 	}
+	reportEndpointBackfillRefusals(out, result)
 }
 
 // endpointConnectBackfill is the backfill a connect ships, or nil when it ships none. Every connect
@@ -287,4 +312,15 @@ func endpointConnectBackfill(out io.Writer, userMode bool, logPath string, synce
 		}
 	}
 	return backfill
+}
+
+// reportEndpointBackfillRefusals says what a system backfill left out of the console user's home.
+func reportEndpointBackfillRefusals(out io.Writer, result endpointBackfillResult) {
+	if result.Refused == 0 {
+		return
+	}
+	fmt.Fprintf(out, "  Skipped %d session store path(s) a system backfill does not read as root (links leading out of the console user's home, files that user does not own, or special files):\n", result.Refused)
+	for _, example := range result.RefusedExamples {
+		fmt.Fprintf(out, "    %s\n", example)
+	}
 }

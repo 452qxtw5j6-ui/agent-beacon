@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io"
 	"io/fs"
 	"os"
@@ -47,7 +48,7 @@ func NewStore(dshHome string) (*Store, error) {
 }
 
 func (s *Store) Exists() bool {
-	info, err := os.Stat(s.SessionsDir)
+	info, err := sessionfs.Stat(s.SessionsDir)
 	return err == nil && info.IsDir()
 }
 
@@ -60,7 +61,7 @@ func (s *Store) List() ([]SessionRef, error) {
 	byDir := map[string]candidate{}
 	dirs := 0
 	files := 0
-	err := filepath.WalkDir(s.SessionsDir, func(path string, d fs.DirEntry, walkErr error) error {
+	err := sessionfs.WalkDir(s.SessionsDir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
@@ -96,7 +97,7 @@ func (s *Store) List() ([]SessionRef, error) {
 	}
 	refs := make([]SessionRef, 0, len(byDir))
 	for _, item := range byDir {
-		info, err := os.Stat(item.path)
+		info, err := sessionfs.Stat(item.path)
 		if err != nil || info.IsDir() {
 			continue
 		}
@@ -129,7 +130,7 @@ func (s *Store) List() ([]SessionRef, error) {
 func (s *Store) Read(ref SessionRef) ([]Record, Stats, error) {
 	var reader io.Reader
 	var stats Stats
-	data, err := os.ReadFile(ref.Path)
+	data, err := sessionfs.ReadFile(ref.Path)
 	if err != nil {
 		return nil, stats, err
 	}
@@ -261,8 +262,22 @@ func readLine(br *bufio.Reader) (line []byte, partial, oversized bool, err error
 
 var zstdMagic = []byte{0x28, 0xb5, 0x2f, 0xfd}
 
+// MaxDecodedBytes caps what one compressed session file may decompress to, across all its frames.
+// A zstd frame can expand by orders of magnitude, so without a cap a few kilobytes on disk could
+// claim gigabytes of memory; a session past it is refused rather than read in part.
+const MaxDecodedBytes = 256 << 20
+
+// maxDecodedBytes is MaxDecodedBytes, a variable only so tests can make it small.
+var maxDecodedBytes uint64 = MaxDecodedBytes
+
+// errDecodedTooLarge reports a session file that decompresses past maxDecodedBytes.
+var errDecodedTooLarge = errors.New("DeepSeek session decompresses past the size limit")
+
 func decodeZstdFrames(data []byte) ([]byte, bool, error) {
-	decoder, err := zstd.NewReader(nil)
+	limit := maxDecodedBytes
+	// WithDecoderMaxMemory bounds each frame, so a frame stops decoding at the limit instead of
+	// after allocating all of its declared or actual size; the running total below bounds the file.
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(limit))
 	if err != nil {
 		return nil, false, err
 	}
@@ -284,11 +299,19 @@ func decodeZstdFrames(data []byte) ([]byte, bool, error) {
 		}
 		decoded, err := decoder.DecodeAll(data[start:end], nil)
 		if err != nil {
+			// Checked before the partial-tail case, so an oversized last frame is refused rather
+			// than mistaken for one DSH is still writing.
+			if errors.Is(err, zstd.ErrDecoderSizeExceeded) || errors.Is(err, zstd.ErrWindowSizeExceeded) || errors.Is(err, zstd.ErrFrameSizeExceeded) {
+				return nil, false, fmt.Errorf("%w (%d bytes)", errDecodedTooLarge, limit)
+			}
 			if follow < 0 {
 				partial = true
 				break
 			}
 			return nil, partial, fmt.Errorf("decode DeepSeek zstd frame: %w", err)
+		}
+		if uint64(out.Len())+uint64(len(decoded)) > limit {
+			return nil, false, fmt.Errorf("%w (%d bytes)", errDecodedTooLarge, limit)
 		}
 		out.Write(decoded)
 		offset = end

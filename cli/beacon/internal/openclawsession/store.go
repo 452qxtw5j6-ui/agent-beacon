@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -48,7 +49,7 @@ func DefaultOpenClawDir() (string, error) {
 }
 
 func (s *Store) Exists() bool {
-	info, err := os.Stat(filepath.Join(s.OpenClawDir, "agents"))
+	info, err := sessionfs.Stat(filepath.Join(s.OpenClawDir, "agents"))
 	return err == nil && info.IsDir()
 }
 
@@ -100,7 +101,7 @@ func (s *Store) Read(ref TraceRef) ([]Record, error) {
 
 func (s *Store) sessionRoots() ([]string, error) {
 	agentsDir := filepath.Join(s.OpenClawDir, "agents")
-	entries, err := os.ReadDir(agentsDir)
+	entries, err := sessionfs.ReadDir(agentsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -113,7 +114,7 @@ func (s *Store) sessionRoots() ([]string, error) {
 			continue
 		}
 		root := filepath.Join(agentsDir, entry.Name(), "sessions")
-		if info, err := os.Stat(root); err == nil && info.IsDir() {
+		if info, err := sessionfs.Stat(root); err == nil && info.IsDir() {
 			roots = append(roots, root)
 		}
 	}
@@ -122,7 +123,7 @@ func (s *Store) sessionRoots() ([]string, error) {
 }
 
 func (s *Store) readSessionsIndex(root string) []TraceRef {
-	data, err := os.ReadFile(filepath.Join(root, "sessions.json"))
+	data, err := sessionfs.ReadFile(filepath.Join(root, "sessions.json"))
 	if err != nil {
 		return nil
 	}
@@ -136,7 +137,7 @@ func (s *Store) readSessionsIndex(root string) []TraceRef {
 		if entry.SessionID == "" || sourcePath == "" {
 			continue
 		}
-		if _, err := os.Stat(sourcePath); err != nil {
+		if _, err := sessionfs.Stat(sourcePath); err != nil {
 			continue
 		}
 		updated := parseTimestamp(entry.UpdatedAt, 0)
@@ -151,7 +152,7 @@ func (s *Store) readSessionsIndex(root string) []TraceRef {
 }
 
 func (s *Store) readTraceMetadata(path string, updatedHint int64, dirHint string) (TraceRef, bool) {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	if err != nil || info.IsDir() {
 		return TraceRef{}, false
 	}
@@ -203,7 +204,7 @@ func (s *Store) readTraceMetadata(path string, updatedHint int64, dirHint string
 }
 
 func readEntries(path string) ([]RawEntry, error) {
-	file, err := os.Open(path)
+	file, err := sessionfs.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +232,7 @@ func readEntries(path string) ([]RawEntry, error) {
 }
 
 func collectSessionFilesFlat(root string, limit int) []string {
-	entries, err := os.ReadDir(root)
+	entries, err := sessionfs.ReadDir(root)
 	if err != nil {
 		return nil
 	}
