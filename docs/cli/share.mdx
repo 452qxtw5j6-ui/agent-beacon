@@ -1,0 +1,146 @@
+---
+title: "beacon share"
+description: "Share a local agent session as a trace on beacon.sh"
+---
+
+## Command overview
+
+`beacon share` publishes one local agent session as a shared trace on beacon.sh and prints its link. The trace shows the session's prompts, the agent's answers and reasoning, and every tool call with its result, in order.
+
+```bash title="Command syntax"
+beacon share [--session <id> | --source-path <path> | --cwd <dir>] [flags]
+beacon share --list [--cwd <dir>] [--harness <runtime>]
+beacon share refresh [<external-id> | <session-id>] [flags]
+```
+
+Without a session flag, `beacon share` shares the most recent session that ran in the current directory. It names the session it picked before uploading anything.
+
+```bash title="Share the session you just finished here"
+beacon share
+```
+
+```bash title="See what would be uploaded, without uploading it"
+beacon share --print
+```
+
+Sharing is always something you ask for. Hooks, plugins and background jobs never share a session, and nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint.
+
+## Choosing the session
+
+| Flag | Picks |
+|------|-------|
+| `--session <id>` | The session with this id, or the one session whose id starts with this prefix (at least 6 characters) |
+| `--source-path <path>` | The session stored in this file of its runtime's session store |
+| `--cwd <dir>` | The most recent session that ran in this directory or below it. This is the default, with the current directory |
+| `--harness <runtime>` | Only sessions of this runtime (`claude`, `codex`, `cursor`, ...). `auto`, the default, considers every runtime |
+
+`--session`, `--source-path` and `--cwd` cannot be combined. `--list` shows the candidates instead of sharing, newest first, and takes `--cwd`, `--harness` and `--limit` (default 20, `0` for all).
+
+```bash title="List and pick"
+beacon share --list --cwd ~/src/app
+beacon share --session 5f0c1d2e
+```
+
+Sessions are read the way [`beacon handoff`](/cli/handoff) reads them: from the runtime's own session store when Beacon reads that runtime's store, which keeps the most of each step, and otherwise from Beacon's runtime log. `--store-dir <runtime>=<path>` reads a store from another location, and `--log-path` reads another runtime log.
+
+## What is uploaded
+
+A shared trace is made of messages. Each Beacon event of the session becomes at most one message:
+
+| Event | Message |
+|-------|---------|
+| Prompt | A user message with the prompt text |
+| Assistant text, reasoning | An assistant message with a text or thinking part |
+| Tool invocation | An assistant message with a `tool_call` part: the tool, its kind (`terminal_command`, `read`, `edit`, `write`, `grep`, `glob`, `web_search`, `web_fetch`, `task`, `todo`, `mcp`, ...), its arguments, command, file path and diff |
+| Tool completion | An assistant message with a `tool_result` part: the output, `success` or `error`, the exit code and duration where the runtime reported them |
+| Approval, policy decision, session lifecycle, commit link | A system message with a `system_event` part |
+| Failure that is not a tool's | A system message with an `error` part |
+
+When a runtime reports one tool call twice, before and after it runs, the two become a call and a result that share one call id. A call reported by more than one capture path is written once. Beacon's own bookkeeping (heartbeats, inventory, metric datapoints) is not uploaded.
+
+Before anything leaves the machine:
+
+- Every event goes through the same secret redaction and size limits the runtime log applies.
+- Paths under the session's directory are written relative to it, and your home directory becomes `~`, in file paths, commands, output and diffs.
+- The repository remote (from the session's events, or else the `origin` remote in the session's directory, read locally) is sent without credentials, and the project name is the repository's or the directory's name, never a path. The name of your home directory is not used as a project name.
+- Token usage is the session's total as [`beacon token-usage`](/cli/token-usage) counts it. Cost is sent only when the runtime reported one, never a list-price estimate.
+
+beacon.sh redacts every string again on its side. Redaction catches common credential shapes, not everything sensitive, so read `--print` before sharing a session that touched secrets.
+
+`--print` (or `--dry-run`) prints exactly that payload as JSON, the trace metadata and every message, and sends nothing:
+
+```json
+{
+  "external_id": "claude_code:5f0c1d2e-...",
+  "trace": { "schema_version": "beacon.share.v1", "agent_id": "claude_code", "title": "Fix the login test", "...": "..." },
+  "messages": [ { "id": "...", "order": 1, "role": "user", "text": "...", "parts": [ ... ] } ]
+}
+```
+
+## Visibility
+
+| `--visibility` | Who can view the trace |
+|----------------|------------------------|
+| `direct` | Anyone with the link. It is not listed anywhere. The default for a new trace |
+| `private` | Only you |
+| `public` | Anyone. The trace is listed in Discover |
+
+A public share asks for confirmation. Without a terminal to ask on, it is refused unless you pass `--yes`.
+
+Sharing a session again updates the same trace: each session has one stable external id (`<runtime>:<session-id>`), and every message has a stable id, so nothing is duplicated. A re-share keeps the trace's visibility unless you pass `--visibility`. Change a trace's visibility by sharing it again with `--visibility`, or from the beacon.sh dashboard, where you can also delete it.
+
+## Refresh
+
+`beacon share refresh` uploads only the messages a shared session has gained since it was last uploaded. beacon.sh reports the last message it has, and the messages after it are sent; when that message is not in the session as Beacon reads it now, every message is re-sent, which changes nothing that was already there. The trace's visibility is not changed.
+
+```bash
+beacon share refresh claude_code:5f0c1d2e-aaaa-4bbb-8ccc-000000000001
+beacon share refresh 5f0c1d2e
+beacon share refresh            # the most recent session in this directory
+```
+
+## Credentials
+
+`beacon share` uses, in this order:
+
+1. A Beacon API key passed with `--key` (`bcn_api_...`).
+2. Your [`beacon login`](/cli/account-auth) sign-in, when it carries the `traces:write` permission.
+3. A Beacon API key in `BEACON_API_KEY`.
+
+A sign-in from an older `beacon login` lacks `traces:write`; run `beacon login` again. An API key is sent to beacon.sh, or to `--auth-url` / `BEACON_AUTH_URL` when set. Either credential goes only in the request's `Authorization` header, redirects are refused, and neither is printed.
+
+## Local record
+
+After an upload, `beacon share` writes one `session.shared` event to the runtime log, in the session's own timeline. It carries the link, the visibility and when the session was shared (and refreshed), so [`beacon endpoint traces list --state shared`](/cli/endpoint-traces) and the local dashboard show the session as shared. The event is marked `event.fidelity=inferred` and has no collection method, because no runtime reported it. It is not itself uploaded with the trace.
+
+## Output
+
+The link goes to stdout and a summary to stderr. `--json` prints one document:
+
+```json
+{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","agent_id":"claude_code","message_count":42,"uploaded":42}}
+```
+
+`uploaded` is how many messages this run sent. On failure, `--json` prints `{"ok":false,"error":"..."}` and the command exits non-zero.
+
+## Flags
+
+| Flag | Description |
+|------|-------------|
+| `--session <id>` | Session id or unique prefix |
+| `--source-path <path>` | The session's file in its runtime's store |
+| `--cwd <dir>` | Most recent session in this directory (default: current directory) |
+| `--harness <runtime>` | Only this runtime's sessions, or `auto` (default) |
+| `--visibility <level>` | `public`, `direct` (default for a new trace) or `private` |
+| `--title <text>` | Title for the trace (default: the session's title or first prompt) |
+| `--key <key>` | Beacon API key to share with |
+| `--auth-url <url>` | Service an API key is sent to |
+| `--list` | List candidate sessions and share nothing |
+| `--limit <n>` | With `--list`, the most sessions to show |
+| `--print`, `--dry-run` | Print the payload and send nothing |
+| `--yes` | Share publicly without asking |
+| `--json` | Print the result as JSON |
+| `--store-dir <runtime>=<path>` | Read a runtime's sessions from this directory (repeatable) |
+| `--log-path <path>` | Runtime log to read from and record the share in |
+
+`refresh` takes `--harness`, `--cwd`, `--title`, `--key`, `--auth-url`, `--print`, `--json`, `--store-dir` and `--log-path`.

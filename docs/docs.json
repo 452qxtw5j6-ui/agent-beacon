@@ -372,6 +372,7 @@
                 ]
               },
               "cli/handoff",
+              "cli/share",
               "cli/lenses",
               "cli/git",
               "cli/token-usage",
