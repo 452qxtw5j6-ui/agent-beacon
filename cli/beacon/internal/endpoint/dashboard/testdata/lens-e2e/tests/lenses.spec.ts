@@ -79,6 +79,15 @@ test('a lens cannot reach the network, the dashboard, storage or code evaluation
     'fetchSameOrigin', 'fetchRemote', 'xhr', 'websocket', 'image', 'nestedFrame',
     'parentDocument', 'topLocation', 'localStorage', 'cookie', 'eval', 'newFunction', 'popup', 'worker',
     'rtcDirect', 'rtcComputed', 'rtcWebkit', 'rtcDataChannel', 'rtcDelete', 'rtcRedefine',
+    // Reaching a fresh realm through a child frame, then every way to put a frame, a resource hint
+    // or speculation rules into the document. The prelude's guard is best-effort hardening; these
+    // pin the paths it covers.
+    'rtcChildNoSrc', 'rtcChildAboutBlank', 'rtcChildSrcdoc', 'rtcChildDocumentWrite', 'rtcChildIndexed',
+    'rtcChildFrames', 'rtcChildOwnScript',
+    'frameCreateNS', 'frameInnerHTML', 'frameOuterHTML', 'frameInsertAdjacentHTML', 'frameSetHTMLUnsafe',
+    'frameDocumentWrite', 'frameParsedAdopt', 'frameFragment', 'frameShadow', 'frameTemplateClone', 'frameStatic',
+    'hintCreate', 'hintInnerHTML', 'hintStatic',
+    'rulesTypeProperty', 'rulesSetAttribute', 'rulesMutateManifest', 'rulesInnerHTML', 'rulesStatic',
   ]) {
     expect(r[probe], probe).toBe('blocked');
   }

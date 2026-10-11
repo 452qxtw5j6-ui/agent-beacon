@@ -14,13 +14,18 @@
 (function () {
   "use strict";
 
-  // WebRTC is the one network API the frame's CSP does not govern: connect-src does not apply to
-  // ICE, and sandbox="allow-scripts" leaves RTCPeerConnection working, so a lens could hand trace
-  // data to a STUN/TURN server it names. Remove every RTC* interface (and the webkit alias) before
-  // any lens code runs, as non-configurable, non-writable undefined properties so a lens can neither
-  // delete nor redefine them. This is hardening inside the lens's own realm, not a browser-enforced
-  // boundary: it holds because the lens cannot reach a fresh realm (the CSP refuses frames and
-  // workers, the sandbox refuses popups, and a sandboxed about:blank child is cross-origin to it).
+  // Everything from here to the host protocol is best-effort hardening, not a boundary. The CSP and
+  // the sandbox are what the browser enforces; they keep a lens away from Beacon and the dashboard
+  // and refuse the ordinary network APIs. They do not govern WebRTC or every resource hint, and no
+  // CSP or Permissions Policy directive does, so a lens is code trusted with the trace it is shown.
+  // These guards close the common paths to those features; a determined lens can find others.
+
+  // WebRTC: connect-src does not apply to ICE, so a lens could hand trace data to a STUN/TURN server
+  // it names. Remove every RTC* interface (and the webkit alias) from this realm as non-configurable,
+  // non-writable undefined properties, so lens code can neither delete nor redefine them. A frame
+  // the lens creates is a fresh realm where they still exist: the parent cannot reach into it (a
+  // sandboxed child has its own opaque origin), but a srcdoc child runs its own scripts. The
+  // document guard below refuses such frames.
   Object.getOwnPropertyNames(window).forEach(function (name) {
     if (!/^(webkit)?RTC/.test(name)) return;
     try {
@@ -29,6 +34,214 @@
       // A property that is already non-configurable cannot be replaced; leave it.
     }
   });
+
+  // Document guard. A lens may not put into its document a nested browsing context (iframe, frame,
+  // object, embed, portal, fencedframe: a fresh realm with WebRTC intact), a <link> (a lens loads
+  // nothing by URL, and rel=preconnect/prefetch/prerender/dns-prefetch/preload can start a request
+  // the CSP does not see), or a <script type=speculationrules>. Creating, inserting or parsing one
+  // in through the DOM APIs throws; document.write is refused outright; a mutation observer removes
+  // any that the parser puts in from the lens file's own markup. Not covered: what the browser's
+  // preload scanner does with the file's own markup before any script runs, closed declarative
+  // shadow roots, and attribute changes made through Attr nodes. `beacon lenses lint` warns on these
+  // elements and on declarative shadow roots in source. Everything the guard calls is captured
+  // here, before lens code can patch it.
+  (function guardDocument() {
+    var apply = Reflect.apply;
+    var Refusal = DOMException;
+    var HTML_NS = "http://www.w3.org/1999/xhtml";
+    var REFUSED = Object.create(null);
+    ["iframe", "frame", "frameset", "object", "embed", "portal", "fencedframe", "link"].forEach(function (name) {
+      REFUSED[name] = true;
+    });
+    var SELECTOR = "iframe,frame,frameset,object,embed,portal,fencedframe,link,script,template";
+
+    function getter(proto, name) {
+      var get = Object.getOwnPropertyDescriptor(proto, name).get;
+      return function (target) { return apply(get, target, []); };
+    }
+    function method(proto, name) {
+      var fn = proto[name];
+      return function (target, args) { return apply(fn, target, args); };
+    }
+    var nodeType = getter(Node.prototype, "nodeType");
+    var localName = getter(Element.prototype, "localName");
+    var namespaceURI = getter(Element.prototype, "namespaceURI");
+    var templateContent = getter(HTMLTemplateElement.prototype, "content");
+    var shadowRoot = getter(Element.prototype, "shadowRoot");
+    var listLength = getter(NodeList.prototype, "length");
+    var addedNodes = getter(MutationRecord.prototype, "addedNodes");
+    var getAttribute = method(Element.prototype, "getAttribute");
+    var removeElement = method(Element.prototype, "remove");
+    var trim = method(String.prototype, "trim");
+    var lower = method(String.prototype, "toLowerCase");
+    var parseHTML = method(DOMParser.prototype, "parseFromString");
+    var parser = new DOMParser();
+    var queryAll = Object.create(null);
+    queryAll[1] = method(Element.prototype, "querySelectorAll");
+    queryAll[9] = method(Document.prototype, "querySelectorAll");
+    queryAll[11] = method(DocumentFragment.prototype, "querySelectorAll");
+
+    function refuse(what) {
+      throw new Refusal("a Beacon lens cannot " + what, "NotSupportedError");
+    }
+    // Strings are converted once, here, so a value whose toString changes between calls cannot show
+    // the check one string and the browser another. nullToEmpty matches innerHTML and outerHTML.
+    function text(value) {
+      return typeof value === "string" ? value : "" + value;
+    }
+    function nullToEmpty(value) {
+      return value === null ? "" : text(value);
+    }
+    function isSpeculationRules(type) {
+      return type !== null && lower(trim(text(type), []), []) === "speculationrules";
+    }
+    function isRefused(el) {
+      if (namespaceURI(el) !== HTML_NS) return false;
+      var name = localName(el);
+      return REFUSED[name] === true || (name === "script" && isSpeculationRules(getAttribute(el, ["type"])));
+    }
+    // Calls found(el) for every refused element in node and its subtree, template contents and open
+    // shadow roots included.
+    function eachRefused(node, found) {
+      var type;
+      try {
+        type = nodeType(node);
+      } catch (e) {
+        return; // not a node
+      }
+      if (type === 1) {
+        if (isRefused(node)) return found(node);
+        if (namespaceURI(node) === HTML_NS && localName(node) === "template") eachRefused(templateContent(node), found);
+        var root = shadowRoot(node);
+        if (root) eachRefused(root, found);
+      }
+      if (!queryAll[type]) return;
+      var list = queryAll[type](node, [SELECTOR]);
+      for (var i = 0, n = listLength(list); i < n; i++) eachRefused(list[i], found);
+    }
+    function checkNode(node) {
+      eachRefused(node, function (el) { refuse("add a <" + localName(el) + "> element"); });
+    }
+    function checkMarkup(markup) {
+      checkNode(parseHTML(parser, [markup, "text/html"]));
+    }
+
+    function wrapMethod(proto, name, check) {
+      var original = proto && proto[name];
+      if (typeof original !== "function") return;
+      proto[name] = function () {
+        check(this, arguments);
+        return apply(original, this, arguments);
+      };
+    }
+    function wrapSetter(proto, name, check, convert) {
+      var desc = proto && Object.getOwnPropertyDescriptor(proto, name);
+      if (!desc || !desc.set) return;
+      var set = desc.set;
+      Object.defineProperty(proto, name, {
+        get: desc.get,
+        set: function (value) {
+          var converted = (convert || text)(value);
+          check(this, converted);
+          apply(set, this, [converted]);
+        },
+        enumerable: desc.enumerable,
+        configurable: true
+      });
+    }
+    function checkNodeArgs(target, args) {
+      for (var i = 0; i < args.length; i++) checkNode(args[i]);
+    }
+
+    // Creation and insertion. A refused element is refused when it is created, whatever its case or
+    // prefix, and again whenever it would enter a tree.
+    ["createElement", "createElementNS"].forEach(function (name) {
+      var create = Document.prototype[name];
+      Document.prototype[name] = function () {
+        var el = apply(create, this, arguments);
+        checkNode(el);
+        return el;
+      };
+    });
+    ["appendChild", "insertBefore", "replaceChild"].forEach(function (name) {
+      wrapMethod(Node.prototype, name, checkNodeArgs);
+    });
+    [Element, Document, DocumentFragment, CharacterData, DocumentType].forEach(function (type) {
+      ["append", "prepend", "replaceChildren", "before", "after", "replaceWith", "moveBefore", "insertAdjacentElement"].forEach(function (name) {
+        if (Object.prototype.hasOwnProperty.call(type.prototype, name)) wrapMethod(type.prototype, name, checkNodeArgs);
+      });
+    });
+    wrapMethod(Range.prototype, "insertNode", checkNodeArgs);
+    wrapMethod(Range.prototype, "surroundContents", checkNodeArgs);
+
+    // HTML parsing into the live document. Markup is parsed once into an inert document and refused
+    // if it holds a refused element; the converted string is what then reaches the real parser.
+    [Element, ShadowRoot].forEach(function (type) {
+      wrapSetter(type.prototype, "innerHTML", function (target, markup) { checkMarkup(markup); }, nullToEmpty);
+      ["setHTMLUnsafe", "setHTML"].forEach(function (name) {
+        wrapMethod(type.prototype, name, function (target, args) {
+          args[0] = text(args[0]);
+          checkMarkup(args[0]);
+        });
+      });
+    });
+    wrapSetter(Element.prototype, "outerHTML", function (target, markup) { checkMarkup(markup); }, nullToEmpty);
+    wrapMethod(Element.prototype, "insertAdjacentHTML", function (target, args) {
+      args[1] = text(args[1]);
+      checkMarkup(args[1]);
+    });
+    wrapMethod(Document.prototype, "execCommand", function (doc, args) {
+      if (args.length < 3 || lower(text(args[0]), []) !== "inserthtml") return;
+      args[2] = text(args[2]);
+      checkMarkup(args[2]);
+    });
+    // document.write can split one element across calls, so no single call can be checked.
+    ["write", "writeln"].forEach(function (name) {
+      wrapMethod(Document.prototype, name, function () { refuse("use document." + name); });
+    });
+
+    // A frame that is somehow detached and kept cannot be given a document, and a script cannot
+    // become speculation rules after it was created.
+    [[HTMLIFrameElement, "srcdoc"], [HTMLIFrameElement, "src"], [HTMLFrameElement, "src"], [HTMLObjectElement, "data"], [HTMLEmbedElement, "src"]]
+      .forEach(function (entry) {
+        wrapSetter(entry[0].prototype, entry[1], function () { refuse("load a nested frame"); });
+      });
+    wrapSetter(HTMLScriptElement.prototype, "type", function (el, type) {
+      if (isSpeculationRules(type)) refuse("add speculation rules");
+    });
+    function checkScriptType(el, name, value) {
+      if (lower(text(name), []) === "type" && namespaceURI(el) === HTML_NS && localName(el) === "script" && isSpeculationRules(value)) {
+        refuse("add speculation rules");
+      }
+    }
+    wrapMethod(Element.prototype, "setAttribute", function (el, args) {
+      args[1] = text(args[1]);
+      checkScriptType(el, args[0], args[1]);
+    });
+    wrapMethod(Element.prototype, "setAttributeNS", function (el, args) {
+      args[2] = text(args[2]);
+      if (args[0] === null || args[0] === undefined || args[0] === "") checkScriptType(el, args[1], args[2]);
+    });
+
+    // The lens file's own markup reaches the document through the parser, which calls none of the
+    // above. Remove what it inserts at the next microtask checkpoint: before the next script runs
+    // and before a frame's document loads.
+    var Observer = MutationObserver;
+    var observe = method(Observer.prototype, "observe");
+    var options = Object.create(null);
+    options.childList = true;
+    options.subtree = true;
+    var observer = new Observer(function (records) {
+      for (var i = 0; i < records.length; i++) {
+        var nodes = addedNodes(records[i]);
+        for (var j = 0, n = listLength(nodes); j < n; j++) {
+          eachRefused(nodes[j], function (el) { removeElement(el, []); });
+          if (nodeType(nodes[j]) === 1 && shadowRoot(nodes[j])) observe(observer, [shadowRoot(nodes[j]), options]);
+        }
+      }
+    });
+    observe(observer, [document, options]);
+  })();
 
   var TIMEOUT_MS = 10000;
   var port = null;
