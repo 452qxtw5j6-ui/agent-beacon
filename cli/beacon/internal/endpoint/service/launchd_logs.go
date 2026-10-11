@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 )
 
@@ -44,6 +45,10 @@ func launchdLogPaths(userMode bool, label string) (stdout, stderr string, err er
 	dir, err := LaunchdLogDir(userMode)
 	if err != nil {
 		return "", "", err
+	}
+	if !userMode {
+		// launchd paths are POSIX; path.Join keeps them so when this renders on another OS.
+		return path.Join(dir, label+".out"), path.Join(dir, label+".err"), nil
 	}
 	return filepath.Join(dir, label+".out"), filepath.Join(dir, label+".err"), nil
 }
