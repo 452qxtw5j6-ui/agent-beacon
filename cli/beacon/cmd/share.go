@@ -504,16 +504,27 @@ func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject,
 	if findErr == nil {
 		return shareSubject{session: session}, nil
 	}
-	var notFound *handoff.NotFoundError
-	if !errors.As(findErr, &notFound) {
+	// A prefix that names several sessions is the person's to narrow: falling back to the log
+	// would share whichever of them the log happens to hold.
+	var ambiguous *handoff.AmbiguousError
+	if errors.As(findErr, &ambiguous) {
 		return shareSubject{}, findErr
 	}
+	// Not in any store, or a store could not be read: the runtime log may have the session.
+	var notFound *handoff.NotFoundError
+	isNotFound := errors.As(findErr, &notFound)
 	logPath := shareLogPath()
 	session, events, found, err := handoff.LogSession(logPath, id, harness)
 	if err != nil {
+		if !isNotFound {
+			return shareSubject{}, findErr
+		}
 		return shareSubject{}, fmt.Errorf("read runtime log %s: %w", logPath, err)
 	}
 	if !found || (harness != "" && session.Harness != harness) {
+		if !isNotFound {
+			return shareSubject{}, findErr
+		}
 		return shareSubject{}, fmt.Errorf("%w; not in the runtime log %s either (`beacon share --list` shows what is available)", notFound, logPath)
 	}
 	return shareSubject{session: session, fromLog: true, logEvents: events}, nil
@@ -524,7 +535,8 @@ func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject,
 //  1. BEACON_SESSION_ID (with BEACON_HARNESS), which the Claude Code hook exports to the agent's
 //     shell. Skipped under --cwd, which names another directory, and when --harness names another
 //     runtime (a Codex started from a Claude Code shell inherits Claude's variables). An id that is
-//     set but cannot be found is an error rather than a reason to share some other session.
+//     set but cannot be found, or set with a missing or unknown BEACON_HARNESS, is an error rather
+//     than a reason to share some other session.
 //  2. The session a Beacon hook last saw in the directory, from the active-session record.
 //  3. The most recent session in the directory.
 func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject, error) {
@@ -534,11 +546,18 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 	}
 	if strings.TrimSpace(shareOpts.cwd) == "" {
 		if id := strings.TrimSpace(shareGetenv(shareSessionEnv)); id != "" {
-			envHarness, herr := handoff.ParseHarness(shareGetenv(shareHarnessEnv))
-			if herr == nil && (harness == "" || envHarness == "" || envHarness == harness) {
-				if envHarness == "" {
-					envHarness = harness
-				}
+			// The two variables name one session together. A runtime name that is missing or
+			// unknown is an error, never a reason to share some other session; only --harness naming
+			// a different runtime passes over them on purpose.
+			rawHarness := strings.TrimSpace(shareGetenv(shareHarnessEnv))
+			if rawHarness == "" {
+				return shareSubject{}, fmt.Errorf("%s=%s is set but %s is not; set both, or name the session with --session", shareSessionEnv, id, shareHarnessEnv)
+			}
+			envHarness, herr := handoff.ParseHarness(rawHarness)
+			if herr != nil {
+				return shareSubject{}, fmt.Errorf("%s=%q: %w", shareHarnessEnv, rawHarness, herr)
+			}
+			if harness == "" || envHarness == harness {
 				subject, err := resolveShareID(sources, envHarness, id)
 				if err != nil {
 					return shareSubject{}, fmt.Errorf("%s=%s names this session, but it cannot be read yet: %w", shareSessionEnv, id, err)
@@ -548,30 +567,47 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 			}
 		}
 	}
-	if entryHarness, entryID, ok := shareActiveSession(dir, harness); ok {
+	candidates, err := shareCandidateList(sources, harness, dir, 1)
+	if err != nil {
+		return shareSubject{}, err
+	}
+	if entry, ok := shareActiveSession(dir, harness); ok && shareActiveIsNewest(entry, candidates) {
 		// A record whose session cannot be read (a runtime Beacon reads only from the log, whose
 		// events have rotated away) falls through to the directory's most recent session.
-		if subject, err := resolveShareID(sources, entryHarness, entryID); err == nil {
+		if subject, err := resolveShareID(sources, entry.Harness, entry.SessionID); err == nil {
 			subject.selectedBy = "active"
 			return subject, nil
 		}
 	}
-	candidates, err := shareCandidates(sources, harness, dir, 1)
-	if err != nil {
-		return shareSubject{}, err
-	}
 	if len(candidates) == 0 {
 		return shareSubject{}, shareNoSessionError(sources, harness, dir)
 	}
-	// A session of a runtime whose store Beacon reads is read from that store; one the store has
-	// lost since falls back to the log when its events are read (shareEvents).
-	session := candidates[0]
-	if handoff.ReadsStore(session.Harness) {
-		return shareSubject{session: session, selectedBy: "recent"}, nil
+	// A session listed by its runtime's store is read from that store; one the store has lost or
+	// cannot read since falls back to the log when its events are read (shareEvents). A session
+	// only the log listed is read from the log: its store may be unreadable.
+	candidate := candidates[0]
+	if !candidate.fromLog && handoff.ReadsStore(candidate.session.Harness) {
+		return shareSubject{session: candidate.session, selectedBy: "recent"}, nil
 	}
-	subject, err := resolveShareLog(session)
+	subject, err := resolveShareLog(candidate.session)
 	subject.selectedBy = "recent"
 	return subject, err
+}
+
+// shareActiveIsNewest reports whether the active-session entry may stand for this directory's
+// session: only hooks write the record, so a runtime Beacon sees only through OTLP or a store (an
+// OTLP-only or poll runtime) never updates it, and an older entry would otherwise win over that
+// runtime's newer session. The entry is used when it is the newest candidate itself, or was seen at
+// least as recently as the newest candidate was updated.
+func shareActiveIsNewest(entry activesession.Entry, candidates []shareCandidate) bool {
+	if len(candidates) == 0 {
+		return true
+	}
+	newest := candidates[0].session
+	if newest.Harness == entry.Harness && newest.ID == entry.SessionID {
+		return true
+	}
+	return !entry.LastSeen.Before(newest.UpdatedAt)
 }
 
 func resolveShareLog(session handoff.Session) (shareSubject, error) {
@@ -620,10 +656,10 @@ func evalSymlinks(path string) string {
 
 // shareActiveSession is the session a Beacon hook last saw in dir, limited to harness when it is
 // set, from the active-session record. Entries older than shareActiveMaxAge are ignored.
-func shareActiveSession(dir, harness string) (entryHarness, sessionID string, ok bool) {
+func shareActiveSession(dir, harness string) (activesession.Entry, bool) {
 	entries, err := activesession.Read(shareActiveSessionsPath())
 	if err != nil {
-		return "", "", false
+		return activesession.Entry{}, false
 	}
 	dir = activesession.CleanDir(dir)
 	now := shareNow()
@@ -635,9 +671,10 @@ func shareActiveSession(dir, harness string) (entryHarness, sessionID string, ok
 		if err != nil || (harness != "" && name != harness) {
 			continue
 		}
-		return name, e.SessionID, true
+		e.Harness = name
+		return e, true
 	}
-	return "", "", false
+	return activesession.Entry{}, false
 }
 
 // shareNoSessionError explains that nothing ran in dir and names the most recent sessions anywhere,
@@ -673,23 +710,43 @@ func shareNoSessionError(sources []handoff.Source, harness, dir string) error {
 // sessions only Beacon's runtime log has. A store that cannot be read is skipped; the log still
 // answers for it.
 func shareCandidates(sources []handoff.Source, harness, dir string, limit int) ([]handoff.Session, error) {
+	candidates, err := shareCandidateList(sources, harness, dir, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handoff.Session, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, c.session)
+	}
+	return out, nil
+}
+
+// shareCandidate is a listed session and whether only the runtime log listed it.
+type shareCandidate struct {
+	session handoff.Session
+	fromLog bool
+}
+
+// shareCandidateList is shareCandidates with each session's origin, so a session only the log has
+// (its store lost it, or cannot be read) is read from the log rather than sent back to the store.
+func shareCandidateList(sources []handoff.Source, harness, dir string, limit int) ([]shareCandidate, error) {
 	stored, _ := handoff.List(sources, handoff.Filter{Harness: harness, Directory: dir})
 	logged, logErr := handoff.LogSessions(shareLogPath(), handoff.Filter{Harness: harness, Directory: dir})
 	if logErr != nil && !errors.Is(logErr, os.ErrNotExist) && len(stored) == 0 {
 		return nil, fmt.Errorf("read runtime log: %w", logErr)
 	}
 	seen := map[string]bool{}
-	var out []handoff.Session
+	var out []shareCandidate
 	for _, s := range stored {
 		seen[s.Harness+"\x00"+s.ID] = true
-		out = append(out, s)
+		out = append(out, shareCandidate{session: s})
 	}
 	for _, s := range logged {
 		if !seen[s.Harness+"\x00"+s.ID] {
-			out = append(out, s)
+			out = append(out, shareCandidate{session: s, fromLog: true})
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].session.UpdatedAt.After(out[j].session.UpdatedAt) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -734,12 +791,14 @@ func shareEvents(subject shareSubject) (shareSubject, []schema.Event, error) {
 	if err == nil {
 		return subject, events, nil
 	}
-	if !errors.Is(err, handoff.ErrNotFound) {
-		return subject, nil, fmt.Errorf("read %s session %s: %w", subject.session.Harness, subject.session.ID, err)
-	}
+	// The store lost the session, or cannot be read (locked, corrupt, no permission): the runtime
+	// log may still have it.
 	logSubject, logErr := resolveShareLog(subject.session)
 	if logErr != nil {
-		return subject, nil, logErr
+		if errors.Is(err, handoff.ErrNotFound) {
+			return subject, nil, logErr
+		}
+		return subject, nil, fmt.Errorf("read %s session %s: %w (and the runtime log: %v)", subject.session.Harness, subject.session.ID, err, logErr)
 	}
 	return logSubject, logSubject.logEvents, nil
 }
