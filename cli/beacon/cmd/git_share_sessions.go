@@ -263,7 +263,9 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 	if len(got.notes) == 0 {
 		return report, shareErr
 	}
-	noteCtx, cancelNotes := context.WithTimeout(context.Background(), gitShareNoteWriteBudget)
+	// Whatever the hook has left, short of what pushing the notes ref keeps, with the note-write
+	// budget as a floor.
+	noteCtx, cancelNotes := gitShareAfterContext(parent, gitShareNotesReserve, gitShareNoteWriteBudget)
 	defer cancelNotes()
 	for sha := range got.notes {
 		changed, err := gitlink.UpdateNote(noteCtx, repo.Git, sha, func(note string) string { return gitlink.SetLinkURLs(note, got.urls) })
@@ -388,6 +390,20 @@ func gitShareFindAndUpload(ctx context.Context, c *gitShareCollector, repo gitli
 			})
 		}
 	}
+}
+
+// gitShareAfterContext is a fresh context for work after the share phase: it gets what is left of
+// parent's deadline less keep (time a later step needs), or floor when that is less, so an upload
+// that overran cannot starve it and a share phase that returned at once leaves it the full budget.
+// It does not inherit parent's cancellation, only the time.
+func gitShareAfterContext(parent context.Context, keep, floor time.Duration) (context.Context, context.CancelFunc) {
+	budget := floor
+	if deadline, ok := parent.Deadline(); ok {
+		if remaining := time.Until(deadline) - keep; remaining > budget {
+			budget = remaining
+		}
+	}
+	return context.WithTimeout(context.Background(), budget)
 }
 
 // readHookStdin reads what git passes a pre-push hook on stdin, bounded.
