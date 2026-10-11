@@ -91,6 +91,7 @@ type MCPResourceInfo = asymptoteobserve.MCPResourceInfo
 type MCPSessionInfo = asymptoteobserve.MCPSessionInfo
 type ApprovalInfo = asymptoteobserve.ApprovalInfo
 type HandoffInfo = asymptoteobserve.HandoffInfo
+type ShareInfo = asymptoteobserve.ShareInfo
 type VCSInfo = asymptoteobserve.VCSInfo
 type VCSRefInfo = asymptoteobserve.VCSRefInfo
 type VCSRefHeadInfo = asymptoteobserve.VCSRefHeadInfo

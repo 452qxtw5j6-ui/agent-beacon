@@ -35,6 +35,8 @@ const (
 	MaxAge = 14 * 24 * time.Hour
 	// RefreshInterval is how stale an unchanged entry's timestamp may get before it is rewritten.
 	RefreshInterval = time.Minute
+	// MaxRequested bounds the share-request dedupe list; the oldest marks go first.
+	MaxRequested = 1024
 
 	schemaVersion = "beacon.active_sessions.v1"
 )
@@ -47,9 +49,17 @@ type Entry struct {
 	LastSeen         time.Time `json:"last_seen"`
 }
 
+// Requested marks a session the hook adapter already wrote a session.share_requested event for.
+type Requested struct {
+	Harness   string    `json:"harness"`
+	SessionID string    `json:"session_id"`
+	At        time.Time `json:"at"`
+}
+
 type document struct {
-	SchemaVersion string  `json:"schema_version"`
-	Sessions      []Entry `json:"sessions"`
+	SchemaVersion  string      `json:"schema_version"`
+	Sessions       []Entry     `json:"sessions"`
+	ShareRequested []Requested `json:"share_requested,omitempty"`
 }
 
 // DefaultPath is BEACON_ACTIVE_SESSIONS_FILE, or ~/.beacon/endpoint/active-sessions.json.
@@ -131,6 +141,53 @@ func Record(path, harness, session, dir string, now time.Time) error {
 		}
 		doc.Sessions = append(doc.Sessions, Entry{Harness: harness, SessionID: session, WorkingDirectory: dir, LastSeen: now.UTC()})
 		return true
+	})
+}
+
+// MarkShareRequested records that a share request was written for the session and reports whether
+// this call was the first to do so. The check and the mark happen under one lock, so two hooks of
+// one session racing each other write one request between them. Marks are kept four times as long
+// as active entries (MaxAge) and at most MaxRequested of them.
+func MarkShareRequested(path, harness, session string, now time.Time) (bool, error) {
+	harness, session = strings.TrimSpace(harness), strings.TrimSpace(session)
+	if path == "" || harness == "" || session == "" {
+		return false, nil
+	}
+	first := false
+	err := update(path, now, func(doc *document) bool {
+		for _, r := range doc.ShareRequested {
+			if r.Harness == harness && r.SessionID == session {
+				return false
+			}
+		}
+		doc.ShareRequested = append(doc.ShareRequested, Requested{Harness: harness, SessionID: session, At: now.UTC()})
+		first = true
+		return true
+	})
+	if err != nil {
+		return false, err
+	}
+	return first, nil
+}
+
+// UnmarkShareRequested takes back the mark MarkShareRequested made at markedAt, when the request it
+// stood for could not be written, so the next hook of the session tries again. It runs under the
+// same lock, and removes the mark only while it is still the one made at markedAt: a mark another
+// hook has made since is left alone.
+func UnmarkShareRequested(path, harness, session string, markedAt time.Time) error {
+	harness, session = strings.TrimSpace(harness), strings.TrimSpace(session)
+	if path == "" || harness == "" || session == "" {
+		return nil
+	}
+	markedAt = markedAt.UTC()
+	return update(path, markedAt, func(doc *document) bool {
+		for i, r := range doc.ShareRequested {
+			if r.Harness == harness && r.SessionID == session && r.At.Equal(markedAt) {
+				doc.ShareRequested = append(doc.ShareRequested[:i], doc.ShareRequested[i+1:]...)
+				return true
+			}
+		}
+		return false
 	})
 }
 
@@ -230,6 +287,20 @@ func prune(doc *document, now time.Time) bool {
 	if len(doc.Sessions) > MaxEntries {
 		sort.SliceStable(doc.Sessions, func(i, j int) bool { return doc.Sessions[i].LastSeen.After(doc.Sessions[j].LastSeen) })
 		doc.Sessions = doc.Sessions[:MaxEntries]
+		changed = true
+	}
+	keptReq := doc.ShareRequested[:0]
+	for _, r := range doc.ShareRequested {
+		if now.Sub(r.At) <= 4*MaxAge {
+			keptReq = append(keptReq, r)
+		} else {
+			changed = true
+		}
+	}
+	doc.ShareRequested = keptReq
+	if len(doc.ShareRequested) > MaxRequested {
+		sort.SliceStable(doc.ShareRequested, func(i, j int) bool { return doc.ShareRequested[i].At.After(doc.ShareRequested[j].At) })
+		doc.ShareRequested = doc.ShareRequested[:MaxRequested]
 		changed = true
 	}
 	return changed

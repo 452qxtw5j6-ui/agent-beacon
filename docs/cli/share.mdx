@@ -11,6 +11,9 @@ description: "Share a local agent session as a trace on beacon.sh"
 beacon share [--current | --session <id> | --source-path <path> | --cwd <dir>] [flags]
 beacon share --list [--cwd <dir>] [--harness <runtime>]
 beacon share refresh [<external-id> | <session-id>] [flags]
+beacon share auto enable [--visibility direct|private|public] [--project <dir>] [--yes]
+beacon share auto disable [--project <dir>]
+beacon share auto status [--project <dir>]
 ```
 
 Without a session flag, `beacon share` shares the session it runs inside (see [Sharing this session](#sharing-this-session)), and otherwise the most recent session that ran in the current directory. It names the session it picked before uploading anything.
@@ -27,7 +30,7 @@ beacon share --current --harness claude_code --json
 beacon share --print
 ```
 
-Sharing is always something you ask for. Hooks, plugins and background jobs never share a session, and nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint.
+Sharing is always something you ask for. Hooks, plugins and background jobs never upload a session, and nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint. [Auto-share](#auto-share), which you turn on, asks Beacon Cloud to publish sessions from the events forwarding already sends.
 
 ## Choosing the session
 
@@ -114,6 +117,27 @@ beacon share refresh claude_code:5f0c1d2e-aaaa-4bbb-8ccc-000000000001
 beacon share refresh 5f0c1d2e
 beacon share refresh            # this session, found like --current
 ```
+
+## Auto-share
+
+`beacon share auto enable` publishes new sessions without running `beacon share` each time. It works through [Beacon Cloud forwarding](/cli/endpoint-connect), never from the hooks over the network:
+
+1. On the first event Beacon's hooks see for a session (its `SessionStart` where the runtime has one), they write one `session.share_requested` event to the local runtime log, with the session id, runtime and the chosen visibility in `share.visibility`. One per session: the hooks remember which sessions they requested in `~/.beacon/endpoint/active-sessions.json`.
+2. Forwarding ships that line with the rest of the runtime log.
+3. beacon.sh creates the shared trace from the session's forwarded events with the same `beacon.trace.v1` projection `beacon share` uses (redaction and path rewriting included), and keeps it current as more arrive. Its external id is the one `beacon share` uses (`<runtime>:<session-id>`), so a session shared both ways is one trace.
+
+```bash
+beacon share auto enable                      # every new session, direct (link only)
+beacon share auto enable --project .          # only sessions in this repository
+beacon share auto status
+beacon share auto disable
+```
+
+`enable` warns when the endpoint is not connected to Beacon Cloud, because then nothing is published (the event is written and stays local), and when forwarding is in metadata-only mode, because the trace then has no prompts, answers, reasoning or tool output. `--visibility public` lists every new session in Discover; it asks first, and without a terminal it is refused unless you pass `--yes`. Sessions already running are requested on their next event; earlier sessions are not, so share those with `beacon share`. Turning auto-share off stops new requests; traces already published stay until you delete them on beacon.sh. `disable` without `--project` turns it off everywhere: it overrides every project you enabled with `--project`, which it names, without changing their settings, so a later `enable` brings back exactly what was on before. `disable --project <dir>` turns off only that project. `enable --project <dir>` while it is off everywhere clears that switch (other sessions stay off) and says so.
+
+The setting is in `~/.beacon/endpoint/share.json` (0600). `--project <dir>` applies the choice to one project: it is recorded there for you by path, and `<dir>/.beacon/share.json` records it in the repository so it can be committed. A project file can turn auto-share off on its own, and an off file wins over your own setting for the same directory, so a repository that opts out stays out for everyone; it turns auto-share on only for someone who ran `beacon share auto enable --project` in that project, and the visibility always comes from that person's own setting. A cloned repository can never publish your sessions. The nearest directory with a choice (yours or the repository's) decides, so a setting you made for a subdirectory applies there even under a parent repository's opt-out; elsewhere, the setting for every session does. The off switch for every session overrides all of it. `status` shows which applies in the current directory (or `--project`) and why, the setting for every session (on, off or not set), each project you set and whether the off switch overrides it, and the forwarding state; `--json` prints it as a document.
+
+The `session.share_requested` event is marked `event.fidelity=inferred` because Beacon originated it rather than a runtime reporting it, and it is not itself part of any shared trace.
 
 ## Credentials
 

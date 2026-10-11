@@ -25,6 +25,14 @@ import (
 // relative to the session's directory or the home directory before it is projected, and Beacon's
 // own bookkeeping and status telemetry are left out (ShareProjects).
 
+// ShareInfo is the sharing request an event carries. Today only session.share_requested sets it:
+// the hook adapter writes that event once per session when auto-share is on, and Beacon Cloud,
+// receiving it through forwarding, publishes the session as a shared trace with this visibility
+// ("" means the server default, direct).
+type ShareInfo struct {
+	Visibility string `json:"visibility,omitempty"`
+}
+
 // Visibility levels of a shared trace. Direct is the default: anyone with the link.
 const (
 	ShareVisibilityPublic  = "public"
