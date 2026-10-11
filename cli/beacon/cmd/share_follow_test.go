@@ -439,3 +439,45 @@ func appendLogEvent(t *testing.T, path string, e schema.Event) {
 		t.Fatal(err)
 	}
 }
+
+// A resumed session keeps its old session.ended; --follow keeps going while newer activity follows
+// it, and stops when a new end arrives after that activity.
+func TestShareFollowIgnoresAnOldEndOfAResumedSession(t *testing.T) {
+	env := newShareEnv(t)
+	events := append(shareFixtureEvents(env.projectDir),
+		followEvent(env.projectDir, "2026-10-01T10:00:30.000000000Z", "session.ended"))
+	resumed := followEvent(env.projectDir, "2026-10-01T10:05:00.000000000Z", "prompt.submitted")
+	resumed.Event.Category = "prompt"
+	resumed.Prompt = &schema.PromptInfo{Text: "picking this back up"}
+	events = append(events, resumed)
+	src := &growingSource{
+		session: handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+		events:  events,
+	}
+	stubHandoffSources(t, src)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	// The runtime log has the old end too.
+	appendLogEvent(t, env.logPath, followEvent(env.projectDir, "2026-10-01T10:00:30.000000000Z", "session.ended"))
+	polls := 0
+	prevWait := shareFollowWait
+	shareFollowWait = func(ctx context.Context, d time.Duration) error {
+		polls++
+		switch polls {
+		case 3:
+			// The resumed session ends; its hooks write the end to the runtime log.
+			appendLogEvent(t, env.logPath, followEvent(env.projectDir, "2026-10-01T10:09:00.000000000Z", "session.ended"))
+		case 10:
+			return errors.New("the loop did not stop at the new end")
+		}
+		return nil
+	}
+	t.Cleanup(func() { shareFollowWait = prevWait })
+	_, stderr, err := runShareCommand(t, "--follow", "--cwd", env.projectDir, "--log-path", env.logPath)
+	if err != nil {
+		t.Fatalf("follow: %v\n%s", err, stderr)
+	}
+	if polls != 3 || !strings.Contains(stderr, "The session ended;") {
+		t.Fatalf("polls = %d, want 3 (the old end must not stop it)\n%s", polls, stderr)
+	}
+}
