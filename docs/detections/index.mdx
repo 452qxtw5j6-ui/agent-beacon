@@ -66,7 +66,7 @@ Because rules run over the shared Beacon event model, the same rule vocabulary c
 
 ## Detection coverage
 
-Beacon ships with a small built-in baseline so `beacon scan` works before any rule store is installed. The broader rule pack is distributed as a release asset and includes categories like these:
+Beacon ships with a small built-in baseline so `beacon scan` works before any rule store is installed, and it stays active once you install rules. The broader rule pack is distributed as a release asset and includes categories like these:
 
 | Category | Example behaviors |
 | --- | --- |
@@ -86,7 +86,7 @@ Rules only evaluate events that exist in the runtime log. For example, an MCP de
 
 1. A supported agent harness emits runtime telemetry.
 2. Beacon normalizes that telemetry into endpoint events and writes `runtime.jsonl`.
-3. `beacon scan` loads the active rule set from an explicit rules directory, the local rule store, or the built-in baseline.
+3. `beacon scan` loads the active rule set from an explicit rules directory, or from the local rule store plus the built-in baseline.
 4. Each rule is decoded, validated, and compiled before it runs.
 5. The scan evaluates rules against the ordered event stream.
 6. Matching rules produce findings with rule metadata, severity, reason, session context, and evidence events.
@@ -151,9 +151,9 @@ tests:
 
 Beacon can run detections from three sources, resolved in this order:
 
-1. An explicit directory passed to `beacon scan --rules`.
+1. An explicit directory passed to `beacon scan --rules`, which runs alone.
 2. The local endpoint rule store managed by `beacon rules`.
-3. The built-in baseline when no local store is installed or the store is empty.
+3. The built-in baseline, alongside the store. A store rule with a baseline rule's id replaces that baseline rule; every other baseline rule stays active.
 
 Use an explicit rule directory when you are developing or testing a rule pack without installing it:
 
@@ -193,7 +193,7 @@ Use the [Detection YAML Schema](/detections/yaml-schema) page for the rule docum
 - `beacon scan --fail-on <level>` exits non-zero when any finding at or above the threshold exists.
 - `beacon scan --session <id>` narrows evaluation to events whose session ID contains the supplied value.
 - `beacon scan --log-path <path>` scans a copied or archived `runtime.jsonl` file.
-- `beacon rules pull` is the only rules workflow that reaches the network, and only for the explicit URL you provide.
+- `beacon rules pull` is the only rules workflow that reaches the network, and only for the explicit `https://` URL you provide. It refuses redirects that leave `https://`, caps the download size, and with `--sha256` installs nothing unless the download matches the expected digest.
 - The local dashboard mirrors `beacon scan` rule resolution and finding behavior, but stays loopback-only and read-only.
 
 ## Beacon Cloud detections

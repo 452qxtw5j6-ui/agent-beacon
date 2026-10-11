@@ -35,8 +35,9 @@ type DetectionsResponse struct {
 	Skipped []string `json:"skipped,omitempty"`
 }
 
-// BuildDetections lists the active rule set (store when present, else the
-// embedded baseline — the same set `beacon scan` would run) as detection views.
+// BuildDetections lists the active rule set (the store plus every embedded baseline
+// rule it does not replace by id — the same set `beacon scan` would run) as detection
+// views.
 func BuildDetections(userMode bool, rulesDir string) (DetectionsResponse, error) {
 	loaded, skipped, err := detect.LoadActiveSkipping(userMode, strings.TrimSpace(rulesDir))
 	if err != nil {

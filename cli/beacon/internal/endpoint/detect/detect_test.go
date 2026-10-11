@@ -85,8 +85,12 @@ func TestInstallRemoveRoundTripViaUserMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load active: %v", err)
 	}
-	if len(loaded) != 1 || loaded[0].Source != SourceStore || loaded[0].Rule.ID != "custom-rule" {
-		t.Fatalf("expected store rule, got %+v", loaded)
+	base, err := Baseline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != len(base)+1 || loaded[0].Source != SourceStore || loaded[0].Rule.ID != "custom-rule" {
+		t.Fatalf("expected the store rule plus the baseline, got %+v", loaded)
 	}
 
 	if _, err := Remove(true, "custom-rule"); err != nil {
