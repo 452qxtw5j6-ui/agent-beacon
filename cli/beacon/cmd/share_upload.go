@@ -15,6 +15,16 @@ type shareUploadOptions struct {
 	Record bool
 }
 
+// shareRecordError is shareUpload's error when the upload succeeded and only writing the
+// session.shared event failed; the result it returns with it is the upload's.
+type shareRecordError struct{ err error }
+
+func (e *shareRecordError) Error() string {
+	return "shared, but the runtime log was not updated: " + e.err.Error()
+}
+
+func (e *shareRecordError) Unwrap() error { return e.err }
+
 // shareUpload creates or updates subject's shared trace, sending only what beacon.sh lacks. It is
 // the path every non-interactive upload takes (the pre-push hook, --follow), so it applies the same
 // rules as `beacon share refresh`: an existing trace is checked against this copy of the session
@@ -65,7 +75,7 @@ func shareUpload(ctx context.Context, client *account.ShareClient, subject share
 	}
 	if opts.Record {
 		if err := recordShareEvent(subject.session, result, found); err != nil {
-			return result, subject, fmt.Errorf("shared, but the runtime log was not updated: %w", err)
+			return result, subject, &shareRecordError{err: err}
 		}
 	}
 	return result, subject, nil

@@ -120,7 +120,7 @@ beacon share refresh            # this session, found like --current
 
 ## Follow a running session
 
-`--follow` keeps the trace current while the session runs. It shares the session, then checks it again every `--interval` (default `10s`, at least `1s`) and uploads what changed, until the session records its end (`session.ended`) or you press Ctrl+C. A check is a local read; a request is made only when the session's messages changed, and it sends only what beacon.sh lacks, the same way `refresh` does. A failed upload after the first is reported and retried on the next check.
+`--follow` keeps the trace current while the session runs. It shares the session, then checks it again every `--interval` (default `10s`, at least `1s`) and uploads what changed, until the session records its end (`session.ended`) or you press Ctrl+C. A check is a local read; a request is made only when the session's messages changed, and it sends only what beacon.sh lacks, the same way `refresh` does. A failed upload after the first is reported and retried on the next check. When the session has ended and its last messages cannot be uploaded, `--follow` retries three more times, one interval apart, and then exits non-zero naming what the trace holds. If the runtime log cannot be written after an upload, `--follow` warns and keeps going.
 
 ```bash
 beacon share --follow                          # this session, until it ends
