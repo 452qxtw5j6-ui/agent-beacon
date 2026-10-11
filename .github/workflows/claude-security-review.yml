@@ -1,0 +1,39 @@
+name: Claude Security Review
+
+# Claude scans each PR's diff for security vulnerabilities and comments on the affected lines.
+# Setup: add the ANTHROPIC_API_KEY secret (repo or org). The action takes an API key only.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+concurrency:
+  group: claude-security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write # PR comments
+
+jobs:
+  security:
+    # Skip drafts, fork PRs, and Dependabot (none of them get this repo's secrets; the action
+    # is not hardened against prompt injection, so it should only see trusted PRs).
+    if: >-
+      !github.event.pull_request.draft &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
+
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda # main
+        with:
+          comment-pr: true
+          claude-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Review every push; also keeps a cancelled run from blocking later ones.
+          run-every-commit: true
