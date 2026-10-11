@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -269,4 +270,11 @@ func (st supervisedState) running() bool {
 // supervisedLogPath is the file a supervised collector's stdout and stderr are appended to.
 func supervisedLogPath(userMode bool) string {
 	return filepath.Join(stateDir(userMode), "collector.out")
+}
+
+// DetachedProcAttrs returns the process attributes that let a background child outlive the
+// CLI invocation and the terminal that started it: its own session on Unix, no console and its
+// own process group on Windows.
+func DetachedProcAttrs() *syscall.SysProcAttr {
+	return detachAttrs()
 }

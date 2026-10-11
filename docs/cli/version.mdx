@@ -11,6 +11,26 @@ Display the version number, git commit, and build date of the Agent Beacon CLI, 
 beacon version
 ```
 
+Running `beacon` by itself in an interactive terminal also tells you when a newer
+release is out. When one is available, an orange notice shows the installed and latest
+versions, links to the [CLI changelog](/changelog/cli), and prints how to update for the
+detected installation: `brew upgrade beacon` for Homebrew,
+`sudo beacon endpoint update --apply` for the system package, and the release download
+for every other install (tarball, `install.sh`, `go install`, the Windows MSI, or a
+source build).
+
+The check works like the update notices in Codex and Claude Code: it never makes
+`beacon` wait on the network. The notice comes from a cached answer in
+`~/.beacon/endpoint/update-check.json`. When that answer is more than a day old,
+`beacon` starts a background lookup of the latest GitHub release, which updates the
+cache for the next run and writes nothing to the terminal. A failed lookup is also
+retried at most once a day. `beacon version check` looks up the release right away and
+refreshes the same cache.
+
+The notice and the background lookup are skipped in pipes, redirects, scripts, other
+commands, CI (`CI` set), and development builds. Set `BEACON_UPDATE_CHECK=0` to turn
+them off; `beacon version check` still works.
+
 <Accordion title="Example output">
 ```bash title="Example output"
 $ beacon version
