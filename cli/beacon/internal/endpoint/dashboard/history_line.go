@@ -26,6 +26,7 @@ var historyRawKeys = map[string]bool{
 	"remote_title":         true,
 	"shared_at":            true,
 	"shared_event_count":   true,
+	"shared_through":       true,
 	"shared_url":           true,
 	"shared_visibility":    true,
 	"sharedUrl":            true,

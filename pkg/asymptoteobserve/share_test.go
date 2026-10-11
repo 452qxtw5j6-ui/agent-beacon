@@ -1055,3 +1055,56 @@ func TestShareEventsAfterResendsTheLastEventAndOpenCalls(t *testing.T) {
 		}
 	}
 }
+
+// ShareProjects agrees with BuildShareBundle: every event it rejects is left out of the bundle, even
+// with content that would otherwise be shared, and the events it accepts are carried. Local views
+// rely on it to decide that a rejected event cannot make a shared trace out of date.
+func TestShareProjectsAgreesWithBuildShareBundle(t *testing.T) {
+	withText := func(e Event) Event {
+		e.Message = "something happened"
+		e.Prompt = &PromptInfo{Text: "a prompt-shaped field"}
+		e.GenAI = &GenAIInfo{Output: &GenAIOutputInfo{Messages: TextOutputMessages("assistant-shaped text")}}
+		return e
+	}
+	rejected := []Event{
+		shareEventAt("2026-10-01T10:00:00Z", "opencode", "plugin", "session.status", "session"),
+		shareEventAt("2026-10-01T10:00:01Z", "opencode", "plugin", "session.idle", "session"),
+		shareEventAt("2026-10-01T10:00:04Z", "claude_code", "otlp", "token.usage", "model"),
+		shareEventAt("2026-10-01T10:00:05Z", "claude_code", "otlp", "metric.point", "metric"),
+		shareEventAt("2026-10-01T10:00:06Z", "claude_code", "", "session.shared", "session"),
+		shareEventAt("2026-10-01T10:00:07Z", "claude_code", "", "session.share_requested", "session"),
+		shareEventAt("2026-10-01T10:00:08Z", "claude_code", "", "session.commit_linked", "session"),
+	}
+	for _, e := range rejected {
+		if ShareProjects(e) {
+			t.Fatalf("ShareProjects(%s) = true, want false", e.Event.Action)
+		}
+		if got := BuildShareBundle([]Event{withText(e)}, shareTestOpts).Events; len(got) != 0 {
+			t.Fatalf("%s: ShareProjects rejects it, but the bundle carries %d event(s)", e.Event.Action, len(got))
+		}
+	}
+	prompt := shareEventAt("2026-10-01T10:01:00Z", "claude_code", "hook", "prompt.submitted", "prompt")
+	prompt.Prompt = &PromptInfo{Text: "fix the bug"}
+	reply := shareEventAt("2026-10-01T10:01:05Z", "claude_code", "hook", "agent.message", "agent")
+	reply.GenAI = &GenAIInfo{Output: &GenAIOutputInfo{Messages: TextOutputMessages("done")}}
+	for _, e := range []Event{prompt, reply} {
+		if !ShareProjects(e) {
+			t.Fatalf("ShareProjects(%s) = false, want true", e.Event.Action)
+		}
+		if got := BuildShareBundle([]Event{e}, shareTestOpts).Events; len(got) != 1 {
+			t.Fatalf("%s: ShareProjects accepts it, but the bundle carries %d event(s)", e.Event.Action, len(got))
+		}
+	}
+}
+
+func TestShareRefreshCommand(t *testing.T) {
+	if got := ShareRefreshCommand("claude", "abc-123"); got != "beacon share refresh claude_code:abc-123" {
+		t.Fatalf("plain = %q", got)
+	}
+	if got := ShareRefreshCommand("claude_code", "has space"); got != "" {
+		t.Fatalf("unsafe id = %q", got)
+	}
+	if got := ShareRefreshCommand("", "x"); got != "" {
+		t.Fatalf("no harness = %q", got)
+	}
+}

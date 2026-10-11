@@ -15,6 +15,8 @@ beacon traces
 
 Use the arrow keys or `j`/`k` to move, `enter` to open a trace, `/` to search, and `1`–`4` to filter an open trace by event type. Page Up and Page Down scroll long event details. The browser reads only local Beacon state and does not contact the network.
 
+A trace shared with [`beacon share`](/cli/share) is marked `shared` in the list, or `shared (stale)` when the session has activity newer than its last share or refresh (Beacon's own records, such as a commit link, do not count). An open trace shows its link and, when it is stale, the `beacon share refresh …` command to run. The plain list adds a last column for shared traces with the state, the link and, when stale, that command. In `--json` output, `sharing.refresh_command` carries the command for any shared trace.
+
 When stdout or stdin is redirected, `beacon traces` falls back to a bounded tab-separated trace list instead of emitting terminal control sequences. The `beacon endpoint traces` commands below remain the stable JSON and scripting interface.
 
 ```bash title="Command syntax"
@@ -84,7 +86,7 @@ All commands accept:
 |------|-------------|
 | `--query <text>`, `-q <text>` | Filter traces by text |
 | `--page <n>` | Page number for trace listing. Defaults to `1` |
-| `--state <state>` | Filter by sharing state: `local_only`, or `shared` for sessions published with [`beacon share`](/cli/share) |
+| `--state <state>` | Filter by sharing state: `local_only`, `shared` for sessions published with [`beacon share`](/cli/share) (including stale ones), or `stale` for only the shared sessions with newer local activity |
 | `--visibility <visibility>` | Filter by sharing visibility: `private` for local-only traces, or the `public`, `direct` or `private` a shared trace was given |
 
 `search` also accepts:

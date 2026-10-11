@@ -3611,3 +3611,29 @@ pre {
   background: transparent;
 }
 
+
+/* Sharing state from `beacon share`; read-only: a link and a command to copy. */
+.session-share-indicator {
+  color: var(--ok, #2f7d4f);
+  font-size: 0.75rem;
+  margin-right: 0.4rem;
+}
+.session-share-indicator.session-share-stale {
+  color: var(--warn, #a15c00);
+}
+.session-meta-sharing a {
+  word-break: break-all;
+}
+.session-meta-sharing small,
+.session-share-hint {
+  display: block;
+  margin-top: 0.2rem;
+}
+.session-share-hint code {
+  font-size: 0.75rem;
+  word-break: break-all;
+}
+.copy-share-refresh {
+  font-size: 0.7rem;
+  margin-left: 0.3rem;
+}

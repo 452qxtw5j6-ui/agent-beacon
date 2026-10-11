@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 type SessionRecord struct {
@@ -32,6 +33,20 @@ type SessionRecord struct {
 	ToolCount       int    `json:"tool_count"`
 	IsRecurring     bool   `json:"is_recurring"`
 	RecurrenceCount int    `json:"recurrence_count"`
+	// Sharing is set once the session was shared with `beacon share` (its session.shared record).
+	Sharing *SessionSharing `json:"sharing,omitempty"`
+}
+
+// SessionSharing is a shared session's state as the local log knows it. State is "shared", or
+// "stale" when the session has activity newer than its last share or refresh; RefreshCommand is
+// the command that would upload it. The dashboard shows both and runs neither.
+type SessionSharing struct {
+	URL             string `json:"url"`
+	Visibility      string `json:"visibility,omitempty"`
+	State           string `json:"state"`
+	SharedAt        string `json:"shared_at,omitempty"`
+	LastRefreshedAt string `json:"last_refreshed_at,omitempty"`
+	RefreshCommand  string `json:"refresh_command,omitempty"`
 }
 
 type SessionResult struct {
@@ -62,7 +77,7 @@ type SessionDetail struct {
 
 func ReadSessions(path string, query EventQuery) (SessionResult, error) {
 	limit := normalizeLimit(query.Limit)
-	classifications, err := classifySessions(path, query)
+	classifications, sharing, err := classifySessions(path, query, true)
 	if err != nil {
 		return SessionResult{}, err
 	}
@@ -97,6 +112,9 @@ func ReadSessions(path string, query EventQuery) (SessionResult, error) {
 	}
 	sessions := make([]SessionRecord, 0, len(byID))
 	for id, acc := range byID {
+		acc.finish()
+		// Sharing is a property of the whole session, not of the events the filters kept.
+		acc.record.Sharing = sharing[id]
 		if classification := classifications[id]; classification.state == "recurring" {
 			acc.record.IsRecurring = true
 			acc.record.RecurrenceCount = classification.recurrenceCount
@@ -156,6 +174,7 @@ func ReadSessionDetail(path, id string) (SessionDetail, bool, error) {
 			WazuhLevel: record.WazuhLevel,
 		})
 	}
+	acc.finish()
 	return SessionDetail{Session: acc.record, Events: events}, true, nil
 }
 
@@ -163,10 +182,67 @@ type sessionAccumulator struct {
 	record SessionRecord
 	first  time.Time
 	last   time.Time
+	// lastActivity and lastShared drive SessionSharing.State: see traceAggregate.
+	lastActivity time.Time
+	lastShared   time.Time
+	share        shareActivity
+}
+
+// noteSharing reads a session.shared record, and otherwise notes when the session last did
+// something of its own.
+func (acc *sessionAccumulator) noteSharing(record EventRecord) {
+	event := record.Event
+	counts := acc.share.counts(event)
+	if event.Event.Action == "session.shared" {
+		url := rawString(event.Raw, "shared_url")
+		if url == "" {
+			return
+		}
+		if acc.record.Sharing == nil {
+			acc.record.Sharing = &SessionSharing{}
+		}
+		s := acc.record.Sharing
+		s.URL = url
+		if v := rawString(event.Raw, "visibility"); v != "" {
+			s.Visibility = v
+		}
+		if v := rawString(event.Raw, "shared_at"); v != "" && s.SharedAt == "" {
+			s.SharedAt = v
+		}
+		if v := rawString(event.Raw, "last_refreshed_at"); v != "" {
+			s.LastRefreshedAt = v
+		}
+		// What the upload covered: the session as read for it (shared_through), or, for a
+		// record from before that field, the record's own time.
+		covered := record.Parsed
+		if through, err := asymptoteobserve.ParseTimestamp(rawString(event.Raw, "shared_through")); err == nil && !through.IsZero() {
+			covered = through
+		}
+		if covered.After(acc.lastShared) {
+			acc.lastShared = covered
+		}
+		return
+	}
+	if counts && record.Parsed.After(acc.lastActivity) {
+		acc.lastActivity = record.Parsed
+	}
+}
+
+func (acc *sessionAccumulator) finish() {
+	s := acc.record.Sharing
+	if s == nil {
+		return
+	}
+	s.State = "shared"
+	if !acc.lastShared.IsZero() && acc.lastActivity.After(acc.lastShared) {
+		s.State = "stale"
+	}
+	s.RefreshCommand = asymptoteobserve.ShareRefreshCommand(acc.record.Harness, acc.record.ID)
 }
 
 func (acc *sessionAccumulator) add(record EventRecord) {
 	event := record.Event
+	acc.noteSharing(record)
 	acc.record.EventCount++
 	if isNeedsReview(record) {
 		acc.record.ReviewCount++

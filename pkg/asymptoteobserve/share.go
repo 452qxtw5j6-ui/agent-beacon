@@ -33,6 +33,22 @@ type ShareInfo struct {
 	Visibility string `json:"visibility,omitempty"`
 }
 
+// ShareRefreshCommand is the command that refreshes harness's shared session: by external id when
+// that names the session plainly, and otherwise by session id and runtime.
+func ShareRefreshCommand(harness, sessionID string) string {
+	harness, sessionID = strings.TrimSpace(harness), strings.TrimSpace(sessionID)
+	if harness == "" || sessionID == "" {
+		return ""
+	}
+	if id := ShareExternalID(harness, sessionID); !strings.Contains(id, ":sha256-") {
+		return "beacon share refresh " + id
+	}
+	if strings.ContainsAny(sessionID, " \t\n'\"$`\\;&|<>()") {
+		return ""
+	}
+	return "beacon share refresh --harness " + NormalizeHarnessName(harness) + " " + sessionID
+}
+
 // Visibility levels of a shared trace. Direct is the default: anyone with the link.
 const (
 	ShareVisibilityPublic  = "public"

@@ -66,6 +66,108 @@ type traceAggregate struct {
 	events  []TraceEventV1
 }
 
+// traceFold is a trace being folded: asymptoteobserve.TraceBuilder, which projects the summary
+// every reader shares, and the local view's sharing staleness, which only local views show. The
+// JSONL scan and the history fold both go through it, so they answer alike.
+type traceFold struct {
+	builder *asymptoteobserve.TraceBuilder
+	stale   traceStaleness
+}
+
+func newTraceFold(id string, first schema.Event) *traceFold {
+	return &traceFold{builder: asymptoteobserve.NewTraceBuilder(id, first)}
+}
+
+// add numbers and keeps te, and folds event into the summary and the staleness.
+func (f *traceFold) add(event schema.Event, te TraceEventV1) {
+	f.builder.Add(event, te)
+	f.stale.observe(event)
+}
+
+// fold folds event without keeping its projection, for the history, which stores events itself.
+func (f *traceFold) fold(event schema.Event, te TraceEventV1) {
+	f.builder.Fold(event, te)
+	f.stale.observe(event)
+}
+
+// summary is the finished summary with the sharing staleness applied. Neither changes the fold.
+func (f *traceFold) summary() TraceSummaryV1 {
+	summary := f.builder.Summary()
+	f.stale.apply(&summary)
+	return summary
+}
+
+// traceAggregateState is what the history stores of a fold between catch-ups: the builder's state
+// and the staleness, in one JSON object.
+type traceAggregateState struct {
+	asymptoteobserve.TraceBuilderState
+	traceStaleness
+}
+
+func (f *traceFold) state() traceAggregateState {
+	return traceAggregateState{TraceBuilderState: f.builder.State(), traceStaleness: f.stale}
+}
+
+// traceStaleness tells whether a shared trace is behind its session: lastActivity is the newest
+// timestamp of an event the session itself produced, and lastShareRecord the newest point a
+// session.shared record covered (its shared_through, else its timestamp); a shared trace whose
+// session has activity after that is stale. share tells the share's own events (a share made from
+// inside the session) from activity.
+type traceStaleness struct {
+	LastActivity    string        `json:"last_activity,omitempty"`
+	LastShareRecord string        `json:"last_share_record,omitempty"`
+	Share           shareActivity `json:"share,omitempty"`
+}
+
+func (s *traceStaleness) observe(event schema.Event) {
+	if event.Event.Action == "session.shared" {
+		// What the upload covered (shared_through, when the session was read for it), or the
+		// record's own time for a record from before that field.
+		s.LastShareRecord = laterTimestamp(s.LastShareRecord, firstNonEmpty(rawString(event.Raw, "shared_through"), event.Timestamp))
+	}
+	if s.Share.counts(event) {
+		s.LastActivity = laterTimestamp(s.LastActivity, event.Timestamp)
+	}
+}
+
+// apply marks a shared summary stale when the session has activity after what the share covered,
+// and gives it the refresh command a reader can copy.
+func (s traceStaleness) apply(summary *TraceSummaryV1) {
+	if summary.Sharing.URL == "" {
+		return
+	}
+	if s.LastShareRecord != "" && s.LastActivity != "" && laterTimestamp(s.LastShareRecord, s.LastActivity) != s.LastShareRecord {
+		summary.Sharing.State = "stale"
+	}
+	if summary.Session != nil {
+		summary.Sharing.RefreshCommand = asymptoteobserve.ShareRefreshCommand(summary.Harness.Name, summary.Session.ID)
+	}
+}
+
+// shareBookkeeping is an event Beacon writes into a session's timeline about the session, rather
+// than activity of the session: it never makes a shared trace stale.
+func shareBookkeeping(action string) bool {
+	return action == "session.shared" || action == "session.share_requested" || action == "session.commit_linked"
+}
+
+func laterTimestamp(a, b string) string {
+	if b == "" {
+		return a
+	}
+	if a == "" {
+		return b
+	}
+	ta, errA := schema.ParseTimestamp(a)
+	tb, errB := schema.ParseTimestamp(b)
+	if errA != nil {
+		return b
+	}
+	if errB != nil || !tb.After(ta) {
+		return a
+	}
+	return b
+}
+
 // The local history, once the user has opted in to it, answers the same
 // question the JSONL scan below answers, over a longer window: it keeps what
 // rotation deletes. Any error -- no history, a query it does not support, an
@@ -239,20 +341,20 @@ func readTraceAggregates(path string, query EventQuery) (map[string]*traceAggreg
 		return nil, err
 	}
 	SortRecordsAppendOrder(result.Events)
-	builders := map[string]*asymptoteobserve.TraceBuilder{}
+	folds := map[string]*traceFold{}
 	for _, record := range result.Events {
 		event := record.Event
 		id := traceProjectionID(event)
-		builder := builders[id]
-		if builder == nil {
-			builder = asymptoteobserve.NewTraceBuilder(id, event)
-			builders[id] = builder
+		fold := folds[id]
+		if fold == nil {
+			fold = newTraceFold(id, event)
+			folds[id] = fold
 		}
-		builder.Add(event, traceEventFromRecord(record, 0))
+		fold.add(event, traceEventFromRecord(record, 0))
 	}
-	traces := make(map[string]*traceAggregate, len(builders))
-	for id, builder := range builders {
-		traces[id] = &traceAggregate{summary: builder.Summary(), events: builder.Events()}
+	traces := make(map[string]*traceAggregate, len(folds))
+	for id, fold := range folds {
+		traces[id] = &traceAggregate{summary: fold.summary(), events: fold.builder.Events()}
 	}
 	return traces, nil
 }
@@ -273,10 +375,20 @@ func RetainedOutputText(genAI *schema.GenAIInfo, partType string) string {
 	return asymptoteobserve.RetainedOutputText(genAI, partType)
 }
 
+// sharingStateMatches is the --state filter. "stale" is a kind of "shared" (published, with newer
+// local activity), so asking for shared sessions includes stale ones and "stale" narrows to them.
+// The history query (sharingCondition) applies the same rule.
+func sharingStateMatches(state, want string) bool {
+	if strings.EqualFold(want, "shared") {
+		return strings.EqualFold(state, "shared") || strings.EqualFold(state, "stale")
+	}
+	return strings.EqualFold(state, want)
+}
+
 func filterTraceSummaries(traces map[string]*traceAggregate, query TraceQuery) []TraceSummaryV1 {
 	out := make([]TraceSummaryV1, 0, len(traces))
 	for _, agg := range traces {
-		if query.State != "" && !strings.EqualFold(agg.summary.Sharing.State, query.State) {
+		if query.State != "" && !sharingStateMatches(agg.summary.Sharing.State, query.State) {
 			continue
 		}
 		if query.Visibility != "" && !strings.EqualFold(agg.summary.Sharing.Visibility, query.Visibility) {

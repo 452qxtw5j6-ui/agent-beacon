@@ -1598,6 +1598,7 @@ function sessionRowHTML(session) {
         <span class="session-list-prompt">
           ${models.length ? `<strong class="session-list-prompt-model">${models.map(escapeHTML).join(" · ")}</strong>` : ""}
           ${session.is_recurring ? `<strong class="session-recurring-indicator">Recurring ×${escapeHTML(session.recurrence_count)}</strong>` : ""}
+          ${sessionSharingIndicator(session.sharing)}
           <span>${prompt}</span>
         </span>
       </td>
@@ -1608,6 +1609,47 @@ function sessionRowHTML(session) {
       <td class="col-message"><strong>${escapeHTML(session.last_action || "event")}</strong>${lastDetail ? `<br /><span class="muted">${escapeHTML(truncateMiddle(lastDetail, 140))}</span>` : ""}</td>
     </tr>
   `;
+}
+
+// Sharing state comes from the session.shared record `beacon share` writes. The dashboard is
+// read-only: it links to the shared trace and shows the refresh command to copy, and never shares.
+function sessionSharingIndicator(sharing) {
+  if (!sharing || !sharing.url) return "";
+  const stale = sharing.state === "stale";
+  return `<strong class="session-share-indicator${stale ? " session-share-stale" : ""}" title="${escapeHTML(stale ? "Shared; the session has newer activity than the shared trace" : "Shared on beacon.sh")}">${stale ? "Shared · stale" : "Shared"}</strong>`;
+}
+
+function safeShareURL(url) {
+  return typeof url === "string" && /^https:\/\/[^\s"'<>]+$/.test(url) ? url : "";
+}
+
+function sessionSharingRowHTML(sharing) {
+  if (!sharing || !sharing.url) return "";
+  const url = safeShareURL(sharing.url);
+  const stale = sharing.state === "stale";
+  const link = url
+    ? `<a href="${escapeHTML(url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(url)}</a>`
+    : escapeHTML(sharing.url);
+  const detail = [sharing.visibility, stale ? "stale: newer local activity" : "up to date"].filter(Boolean).join(" · ");
+  const hint = sharing.refresh_command
+    ? `<span class="session-share-hint"><code>${escapeHTML(sharing.refresh_command)}</code> <button type="button" class="copy-share-refresh" data-command="${escapeHTML(sharing.refresh_command)}">Copy</button></span>`
+    : "";
+  return `${link}<small>${escapeHTML(detail)}</small>${hint}`;
+}
+
+function bindShareRefreshCopy(scope = document) {
+  scope.querySelectorAll(".copy-share-refresh").forEach((button) => {
+    button.onclick = async (event) => {
+      event.stopPropagation();
+      try {
+        await navigator.clipboard.writeText(button.dataset.command || "");
+        button.textContent = "Copied";
+      } catch (_) {
+        button.textContent = "Copy failed";
+      }
+      window.setTimeout(() => { button.textContent = "Copy"; }, 1400);
+    };
+  });
 }
 
 function bindSessionRows(scope = document) {
@@ -1960,6 +2002,11 @@ function renderSessionOverview(detail) {
       : `<span class="session-badge session-badge-ok">No high risk events</span>`,
     `<span class="session-badge session-badge-info">${escapeHTML(session.event_count || records.length)} events captured</span>`,
   ];
+  if (session.sharing && session.sharing.url) {
+    badges.push(session.sharing.state === "stale"
+      ? `<span class="session-badge session-badge-risk">Shared · stale</span>`
+      : `<span class="session-badge session-badge-ok">Shared</span>`);
+  }
   $("#session-badges").innerHTML = badges.join("");
 
   renderSessionMetadata(session, events);
@@ -1994,12 +2041,16 @@ function renderSessionMetadata(session, events) {
     { label: "Repository", value: session.repository ? escapeHTML(repositoryOptionLabel(session.repository)) : `<span class="muted">-</span>`, className: "mono" },
     { label: "Branch", value: session.branch ? escapeHTML(session.branch) : `<span class="muted">-</span>`, className: "mono" },
   ];
+  if (session.sharing && session.sharing.url) {
+    rows.push({ label: "Shared", value: sessionSharingRowHTML(session.sharing), className: "session-meta-sharing" });
+  }
   $("#session-metadata").innerHTML = rows.map((row) => `
     <div class="session-meta-item ${row.className || ""}">
       <span>${escapeHTML(row.label)}</span>
       <strong>${row.value}</strong>
     </div>
   `).join("");
+  bindShareRefreshCopy($("#session-metadata"));
 }
 
 function renderSessionActivity(session, records) {
