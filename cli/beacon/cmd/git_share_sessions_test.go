@@ -431,3 +431,38 @@ func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 		t.Fatalf("remote note %q: the notes ref was not pushed", note)
 	}
 }
+
+// A share phase that returns at once leaves the notes push the rest of the hook's budget, not just
+// its reserve.
+func TestGitPrePushGivesThePushTheRemainingBudget(t *testing.T) {
+	t.Setenv(gitlink.HookStdinEnv, "1")
+	root, remote := gitCommandTeam(t)
+	env := newShareEnv(t)
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "no links")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	if out, err := runGit(t, "setup", "--cwd", root, "--share-sessions"); err != nil {
+		t.Fatalf("setup: %v\n%s", err, out)
+	}
+	var left time.Duration
+	prevPush := gitPushNotes
+	gitPushNotes = func(ctx context.Context, repo gitlink.Repo, remote string) (gitlink.PushResult, error) {
+		if deadline, ok := ctx.Deadline(); ok {
+			left = time.Until(deadline)
+		}
+		return prevPush(ctx, repo, remote)
+	}
+	t.Cleanup(func() { gitPushNotes = prevPush })
+	rootCmd.SetIn(strings.NewReader("refs/heads/main " + sha + " refs/heads/main " + old + "\n"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var stderr bytes.Buffer
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil {
+		t.Fatalf("pre-push: %v", err)
+	}
+	if left < gitShareBudget-2*time.Second {
+		t.Fatalf("the notes push got %s, want about the hook's %s", left, gitShareBudget)
+	}
+}
