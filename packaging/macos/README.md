@@ -47,7 +47,11 @@ in the active console user's browser and then adds a second resident service,
 running the bundled `/opt/beacon/bin/vector` with the config, disk buffer,
 enrollment record and `0600` device key below
 `/Library/Application Support/Beacon/Endpoint/asymptote/`. `beacon endpoint
-disconnect --system` and `beacon endpoint uninstall --system` remove it.
+disconnect --system` and `beacon endpoint uninstall --system` remove it. A package
+upgrade keeps it and runs `beacon endpoint asymptote reconcile --system`, which
+re-renders its `vector.toml` from the new version's pack with the recorded privacy
+mode, validates it with Vector, and restarts the forwarder only when it changed; the
+device key, the enrollment and Vector's checkpoints are left as they are.
 
 The package postinstall also repairs endpoint user configuration for the active
 console user when one is logged in. This user-context step points Claude Code and

@@ -53,6 +53,11 @@ var (
 	// helpers install, so tests can see whether an uninstall reaches them without touching
 	// /Library.
 	removeScriptForwarders = service.RemoveScriptForwarders
+	// reconcileManagedForwarder is the seam for the Beacon Cloud forwarder reconcile, so tests can
+	// see whether Install reaches it without a connected endpoint or a service manager.
+	reconcileManagedForwarder = func(userMode bool, logPath string) (asymptote.ReconcileResult, error) {
+		return asymptote.ReconcileForwarder(asymptote.ReconcileOptions{UserMode: userMode, LogPath: logPath})
+	}
 )
 
 // inventoryJobController is what lifecycle needs from service.InventoryManager.
@@ -217,6 +222,10 @@ type UninstallOptions struct {
 	// sets it: it uninstalls and reinstalls the endpoint, and nothing in Install puts those
 	// forwarders back.
 	KeepForwarders bool
+	// KeepManagedIngest leaves the Beacon Cloud forwarder, its config, its Vector checkpoints and
+	// its credentials in place. Repair sets it: Install re-renders that config in place instead,
+	// and nothing short of a re-connect, which rotates the device key, could bring it back.
+	KeepManagedIngest bool
 }
 
 type InstallResult struct {
@@ -237,6 +246,9 @@ type InstallResult struct {
 	// reports why in InventoryJobDetail and the install still succeeds.
 	InventoryJobPath   string `json:"inventory_job_path,omitempty"`
 	InventoryJobDetail string `json:"inventory_job_detail,omitempty"`
+	// ManagedForwarder reports the Beacon Cloud forwarder reconcile. It never fails the install:
+	// a config Vector rejects leaves the running forwarder on its old one and is reported here.
+	ManagedForwarder *asymptote.ReconcileResult `json:"managed_forwarder,omitempty"`
 }
 
 type Status struct {
@@ -581,7 +593,21 @@ func Install(opts InstallOptions) (InstallResult, error) {
 		tx.Rollback(manifest)
 		return InstallResult{}, err
 	}
+	// Bring a connected endpoint's Beacon Cloud forwarder config up to this version's pack, in
+	// place and without re-enrolling. After everything else, so it can never be the reason an
+	// install rolls back; and only when services are started, since it may restart the forwarder
+	// (the macOS package installs with --no-start and runs `beacon endpoint asymptote reconcile`
+	// itself once the collector is back).
+	var managedForwarder *asymptote.ReconcileResult
+	if opts.StartService {
+		reconciled, err := reconcileManagedForwarder(cfg.UserMode, cfg.LogPath)
+		if err != nil && reconciled.Warning == "" {
+			reconciled.Warning = err.Error()
+		}
+		managedForwarder = &reconciled
+	}
 	return InstallResult{
+		ManagedForwarder:    managedForwarder,
 		ConfigPath:          configPath,
 		CollectorConfigPath: cfg.Collector.ConfigPath,
 		PlistPath:           plistPath,
@@ -642,17 +668,27 @@ func Uninstall(opts UninstallOptions) error {
 		fail("remove package forwarders", removeScriptForwarders(opts.KeepConfig))
 	}
 	// The managed-ingest forwarder and its credentials go with the endpoint; server-side the
-	// device stays registered until it is revoked from the dashboard.
-	fail("disconnect managed ingest", asymptote.Disconnect(asymptote.DisconnectOptions{
-		UserMode:        cfg.UserMode,
-		LogPath:         cfg.LogPath,
-		KeepCredentials: opts.KeepConfig,
-	}))
+	// device stays registered until it is revoked from the dashboard. Repair keeps all of it.
+	if !opts.KeepManagedIngest {
+		fail("disconnect managed ingest", asymptote.Disconnect(asymptote.DisconnectOptions{
+			UserMode:        cfg.UserMode,
+			LogPath:         cfg.LogPath,
+			KeepCredentials: opts.KeepConfig,
+		}))
+	}
 	manifest, _ := ReadManifest(cfg.UserMode)
 	if !opts.KeepConfig {
 		restoreBackups(manifest.Backups)
 	}
+	// Repair (KeepManagedIngest) keeps config.json so the reinstall carries over what connect,
+	// disconnect and the operator own in it (managed_ingest, inventory, auto_update); without it
+	// a repaired endpoint that kept forwarding read as unconnected on disk. `uninstall
+	// --keep-config` keeps harness settings only, so it still removes Beacon's own config.
+	endpointConfigPath := endpointconfig.ConfigPath(cfg.UserMode)
 	for _, path := range manifest.Files {
+		if opts.KeepManagedIngest && path == endpointConfigPath {
+			continue
+		}
 		fail("remove "+path, os.Remove(path))
 	}
 	if len(manifest.Files) == 0 {
@@ -660,7 +696,9 @@ func Uninstall(opts UninstallOptions) error {
 			fail("remove "+path, os.Remove(path))
 		}
 		fail("remove "+cfg.Collector.ConfigPath, os.Remove(cfg.Collector.ConfigPath))
-		fail("remove endpoint config", os.Remove(endpointconfig.ConfigPath(cfg.UserMode)))
+		if !opts.KeepManagedIngest {
+			fail("remove endpoint config", os.Remove(endpointConfigPath))
+		}
 	}
 	if !opts.KeepLogs {
 		for _, path := range runtimeLogFiles(cfg.LogPath) {
@@ -708,12 +746,13 @@ func runtimeLogFiles(logPath string) []string {
 // and everything it does not recreate stays.
 func repairUninstallOptions(opts InstallOptions) UninstallOptions {
 	return UninstallOptions{
-		UserMode:       opts.UserMode,
-		LogPath:        opts.LogPath,
-		KeepLogs:       true,
-		KeepConfig:     true,
-		KeepUpdater:    true,
-		KeepForwarders: true,
+		UserMode:          opts.UserMode,
+		LogPath:           opts.LogPath,
+		KeepLogs:          true,
+		KeepConfig:        true,
+		KeepUpdater:       true,
+		KeepForwarders:    true,
+		KeepManagedIngest: true,
 	}
 }
 

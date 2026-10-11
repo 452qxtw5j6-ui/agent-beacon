@@ -77,13 +77,38 @@ The onboarding wizard records one of two modes. `connect` uses that choice unles
 | Mode | Forwarded data |
 |------|----------------|
 | `standard` | The complete locally sanitized event, including retained prompts, responses, reasoning, tool arguments/results, command output, and diffs. Existing local redaction and size limits still apply. |
-| `metadata-only` | Omits prompts, responses, reasoning, tool arguments/results, command output, raw event fields, diffs, inventory file contents, and MCP definitions. Stable ids, hashes, byte counts, actions, timestamps, harness/session/trace identity, the `prompt.id` that groups a turn, token usage, commands, file paths, and other structured metadata remain. |
+| `metadata-only` | Omits prompts, responses, reasoning, tool arguments/results, command output, raw event fields, diffs, inventory file contents, and MCP definitions. It also removes tool descriptions and definitions (`gen_ai.tool.description`, `gen_ai.tool.definitions`), retrieval queries and documents (`gen_ai.retrieval`), evaluation explanations, agent descriptions, request stop sequences, and the free-text reason on approvals and policy decisions (`approval.reason`, `policy.reason`), which can hold an operator's typed feedback; the decision itself remains. Stable ids, hashes, byte counts, actions, timestamps, harness/session/trace identity, the `prompt.id` that groups a turn, token usage, commands, file paths, and other structured metadata remain. |
 
 The transform runs locally in Vector before batching, buffering, or HTTPS upload.
-Changing modes requires rerunning `beacon endpoint connect`; the rendered config and
+Changing modes requires rerunning `beacon endpoint connect`; install, repair and package
+upgrades re-render the config but always keep the recorded mode. The rendered config and
 status output record the active choice. A mode change stops the forwarder and clears its
 disk buffer before the new config is installed, so events queued under the previous mode
 are not uploaded under the new one.
+
+## Keeping the forwarder config current
+
+`connect` is not the only time `vector.toml` is written. `beacon endpoint install`,
+`beacon endpoint repair`, and the macOS, `.deb` and `.rpm` package upgrades re-render it in place
+for an endpoint that is already connected, so a fix to the forwarder pack, such as a
+Metadata-only transform that removes more fields, reaches the endpoint without a re-connect,
+which would rotate the device key. The re-render:
+
+- keeps the recorded ingest URL and privacy mode (changing the mode is still a `connect`
+  decision), and refuses to guess when `enrollment.json` and `config.json` disagree about it;
+- never enrolls, makes no network request, and does not read or rewrite the secrets file;
+- leaves `vector-data/`, and with it Vector's checkpoints and buffer, as it is;
+- validates the new config with the forwarder's own Vector exactly as `connect` does, and only
+  then replaces the old file atomically. A config Vector rejects is reported as a warning, and the
+  running forwarder keeps the old one;
+- restarts the forwarder only when the content changed and the forwarder is running (a stopped one reads the new config when it next starts).
+
+It does nothing on an endpoint that is not connected, after a connect that did not finish, when
+the forwarder service is not installed, or where the service manager cannot run it (supervised
+mode); when Vector is missing it warns and keeps the old config. An install run with
+`--no-start` leaves the forwarder alone; the macOS package installs that way and then runs
+`beacon endpoint asymptote reconcile --system` itself. Run that command by hand (add `--json` for
+the result) to reconcile without reinstalling.
 
 ## Files and services
 

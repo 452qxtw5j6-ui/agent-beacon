@@ -22,7 +22,8 @@ Inventory is read from the beginning of `inventory_state.jsonl` so a
 newly connected endpoint sends its current inventory baseline, including inventory
 records written before connection. Metadata-only mode applies a local Vector
 transform first, removing retained prompts, responses, reasoning, tool
-arguments/results, command output, raw fields, diffs, inventory content, and MCP
+arguments/results, tool descriptions and definitions, retrieval queries and
+documents, approval and policy reasons, command output, raw fields, diffs, inventory content, and MCP
 definitions while preserving stable ids, hashes, counts, actions, paths, token
 usage, and other structured metadata. Beacon's [retention and
 redaction](/security/retention-redaction) controls still run before either mode.

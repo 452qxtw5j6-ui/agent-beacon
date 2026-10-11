@@ -129,6 +129,12 @@ if command -v launchctl >/dev/null 2>&1; then
   # Non-fatal: the endpoint is installed and collecting either way.
   "${BEACON_BIN:-/opt/beacon/bin/beacon}" endpoint inventory install-daemon --system || \
     echo "Warning: scheduled inventory job not configured (endpoint is installed and running)" >&2
+  # A connected endpoint's Beacon Cloud forwarder config is re-rendered from this version's pack,
+  # validated, and swapped in with a forwarder restart only when it changed. The install above ran
+  # with --no-start, so it left this to the package. Never enrolls or touches the device key, and
+  # a no-op on an endpoint that is not connected. Non-fatal: a rejected config keeps the old one.
+  "${BEACON_BIN:-/opt/beacon/bin/beacon}" endpoint asymptote reconcile --system || \
+    echo "Warning: Beacon Cloud forwarder config not reconciled (endpoint is installed and running)" >&2
 fi
 
 exit 0

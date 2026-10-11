@@ -21,8 +21,45 @@ del(event.gen_ai.system_instructions)
 del(event.gen_ai.tool.description)
 del(event.gen_ai.tool.call.arguments)
 del(event.gen_ai.tool.call.result)
+# Tool definitions are the full schemas and descriptions of every tool offered to the model, the
+# same material as an MCP server's definition, which inventory removes.
+del(event.gen_ai.tool.definitions)
+# Retrieval carries the query the model ran and the documents it got back.
+del(event.gen_ai.retrieval)
+# An evaluator's explanation and an agent's description are free text; the evaluation's name and
+# score and the agent's id, name and version stay.
+del(event.gen_ai.evaluation.explanation)
+del(event.gen_ai.agent.description)
+# Stop sequences are strings the caller chose, which can quote the conversation.
+del(event.gen_ai.request.stop_sequences)
+if is_object(event.gen_ai.tool.call) && is_empty(object!(event.gen_ai.tool.call)) {
+  del(event.gen_ai.tool.call)
+}
+if is_object(event.gen_ai.tool) && is_empty(object!(event.gen_ai.tool)) {
+  del(event.gen_ai.tool)
+}
+if is_object(event.gen_ai.evaluation) && is_empty(object!(event.gen_ai.evaluation)) {
+  del(event.gen_ai.evaluation)
+}
+if is_object(event.gen_ai.agent) && is_empty(object!(event.gen_ai.agent)) {
+  del(event.gen_ai.agent)
+}
+if is_object(event.gen_ai.request) && is_empty(object!(event.gen_ai.request)) {
+  del(event.gen_ai.request)
+}
 if is_object(event.gen_ai) && is_empty(object!(event.gen_ai)) {
   del(event.gen_ai)
+}
+# An approval's or a policy's reason is free text: an operator's typed feedback (Kimi Code, Pi), the
+# runtime's description of the request (Hermes Agent), or a policy provider's explanation, which can
+# quote the command. The decision, enforcement and policy identity stay.
+del(event.approval.reason)
+if is_object(event.approval) && is_empty(object!(event.approval)) {
+  del(event.approval)
+}
+del(event.policy.reason)
+if is_object(event.policy) && is_empty(object!(event.policy)) {
+  del(event.policy)
 }
 # system_context says what a session.context event recorded and names the skills a skill index
 # listed, the way inventory names skills on disk; its text was in gen_ai.system_instructions.

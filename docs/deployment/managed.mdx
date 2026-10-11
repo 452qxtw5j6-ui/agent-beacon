@@ -58,8 +58,9 @@ Beacon records locally first. Only a connected device forwards, and you choose h
 
 - **Standard** sends retained content, such as prompts, responses, tool arguments and results,
   after local redaction and size limits.
-- **Metadata-only** strips prompts, responses, reasoning, tool arguments and results, command
-  output, diffs and inventory content on the device, before anything is uploaded.
+- **Metadata-only** strips prompts, responses, reasoning, tool arguments and results, tool
+  definitions, retrieval documents, approval and policy reasons, command output, diffs and
+  inventory content on the device, before anything is uploaded.
 
 See [Beacon Cloud forwarding](/log-forwarding/asymptote#what-leaves-the-machine) for the full data
 flow.
