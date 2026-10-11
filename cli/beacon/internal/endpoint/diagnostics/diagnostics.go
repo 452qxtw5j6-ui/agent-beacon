@@ -6,6 +6,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/collector"
 	endpointconfig "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/config"
@@ -231,18 +232,23 @@ func checkLogWritableByThisUser(path string) Check {
 }
 
 // checkLogACL is the system-mode Windows form of the same question: can the people whose sessions
-// this endpoint captures write to its log?
+// this endpoint captures append to its log -- and can they do anything more?
 //
 // The mode-bit check above cannot answer it there. Windows reports 0666 for any ordinary file
 // regardless of its ACL, so `mode&0222 == 0` is never true and the check would report OK for
 // exactly the configuration it exists to catch -- a %ProgramData% log that only administrators can
 // write, with every hook write failing silently.
 //
+// The second half matters as much. An endpoint installed before the log ACL was narrowed gives
+// interactive users Modify on the directory, which lets any of them delete or rename the log and
+// plant links a SYSTEM write follows. That endpoint captures everything, so nothing else would
+// ever flag it; this does, and doctor --fix applies the same ACL a fresh install does.
+//
 // Read from the ACL rather than by attempting a write, because doctor usually runs elevated: a
 // test write would succeed for the very user whose access is not in question.
 func checkLogACL(path string) Check {
 	dir := filepath.Dir(path)
-	ok, err := writer.SystemLogWritableByUsers(dir)
+	state, err := writer.CheckSystemLogACL(path)
 	switch {
 	case err != nil:
 		// Unknown is reported as unknown. Claiming either answer here would be worse than saying
@@ -250,15 +256,22 @@ func checkLogACL(path string) Check {
 		return Check{Name: "runtime_log_permissions", Target: dir, Status: StatusWarn,
 			Severity: SeverityLow, Message: "could not read the log directory ACL: " + err.Error(),
 			Evidence: "acl_unreadable"}
-	case !ok:
+	case len(state.Problems) > 0:
 		return Check{Name: "runtime_log_permissions", Target: dir, Status: StatusFail,
 			Severity: SeverityHigh,
-			Message: "interactive users cannot write to the log directory, so agent hooks will " +
+			Message: "the log directory ACL lets ordinary users do more than append, so one could " +
+				"redirect a SYSTEM write: " + strings.Join(state.Problems, "; "),
+			Evidence: "acl_too_broad"}
+	case !state.HooksCanAppend:
+		return Check{Name: "runtime_log_permissions", Target: dir, Status: StatusFail,
+			Severity: SeverityHigh,
+			Message: "interactive users cannot append to the runtime log, so agent hooks will " +
 				"fail silently while the collector reports healthy",
 			Evidence: "acl_missing_interactive_write"}
 	default:
 		return Check{Name: "runtime_log_permissions", Target: dir, Status: StatusOK,
-			Severity: SeverityInfo, Message: "interactive users may write to the log directory",
+			Severity: SeverityInfo, Message: "interactive users may append to the runtime log, and " +
+				"only SYSTEM and Administrators may change the log directory",
 			Evidence: "acl_interactive_write"}
 	}
 }

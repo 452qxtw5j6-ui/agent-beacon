@@ -41,3 +41,42 @@ func TestEndpointEventCreatesSharedRuntimeFilesDespiteUmask(t *testing.T) {
 		}
 	}
 }
+
+// A hook runs as the person at the keyboard and may not rename or delete anything in a system log
+// directory -- root-owned 0755 here, and on Windows an ACL that withholds exactly those rights so a
+// user cannot redirect a SYSTEM write. When the log is over its size limit the hook must append
+// anyway and leave rotation to the collector, rather than drop the event.
+func TestAppendEndpointJSONLAppendsWhenRotationIsRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so the refusal cannot be reproduced")
+	}
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "runtime.jsonl")
+	if err := os.WriteFile(path, []byte("{\"existing\":true}\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".lock", nil, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	if err := appendEndpointJSONL(path, []byte("{\"next\":true}\n"), 8, defaultEndpointRotateArchives); err != nil {
+		t.Fatalf("append with rotation refused: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "{\"existing\":true}\n{\"next\":true}\n" {
+		t.Fatalf("log after a refused rotation = %q, want the new line appended", data)
+	}
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("an archive appeared although rotation was refused: %v", err)
+	}
+}

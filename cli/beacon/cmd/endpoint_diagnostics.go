@@ -1143,7 +1143,7 @@ func actionForCheck(check diagnostics.Check, runtimeLog lifecycle.RuntimeLogSour
 		switch check.Evidence {
 		case "runtime_log_missing", "missing_optional_file":
 			return "beacon endpoint doctor --fix"
-		case "acl_missing_interactive_write":
+		case "acl_missing_interactive_write", "acl_too_broad":
 			// Printed rather than only offered through --fix: this one needs an elevated shell, and
 			// an operator who cannot elevate right now still deserves to know the exact command.
 			if hint := writer.GrantCommandHint(check.Target); hint != "" {
@@ -1514,8 +1514,10 @@ func planDoctorFixes(result doctorResult, status lifecycle.Status) doctorFixPlan
 			// The one permission failure that is repairable in place, and the one that matters
 			// most: without this grant a system-mode Windows endpoint runs a healthy collector
 			// that records nothing an agent did, because hooks cannot write to its log.
-			case "acl_missing_interactive_write":
-				addFix(plannedAction{Action: "grant_log_access", Target: check.Target, Message: "grant interactive users write access to the log directory"})
+			case "acl_missing_interactive_write", "acl_too_broad":
+				// Target is the log itself: the repair creates the log and its lock, which needs
+				// their name, not just the directory the check reports.
+				addFix(plannedAction{Action: "grant_log_access", Target: status.LogPath, Message: "reset the log directory ACL so interactive users can append to the runtime log and nothing more"})
 			default:
 				// Anything else here is a permission problem doctor cannot repair. Reported as a
 				// skip rather than dropped: falling out of this switch is how a broken systemd unit

@@ -56,6 +56,14 @@ if (-not [string]::IsNullOrWhiteSpace($collector)) { $installArgs += @('--collec
 if (-not [string]::IsNullOrWhiteSpace($service)) { $installArgs += @('--service', $service) }
 if ($noStart -eq '1') { $installArgs += '--no-start' }
 
+# The access control on %ProgramData%\Beacon is applied by the install itself, not here, so a fleet
+# that runs `beacon endpoint install --system` directly gets the same result as the MSI. It resets the
+# directory even when it already exists -- %ProgramData% lets any user create a subdirectory, so one
+# found there may belong to someone else -- to Administrators ownership with inheritance disabled:
+# SYSTEM and Administrators full control, Users read and execute. The log directory adds only an
+# inherit-only grant letting INTERACTIVE append to the runtime log files; ordinary users cannot add,
+# delete or rename anything in it. Do not add an icacls grant here: a second, broader grant is how
+# the log directory once became writable enough to redirect the collector's writes.
 Write-Output "beacon: installing the system endpoint"
 & $beaconBin @installArgs
 if ($LASTEXITCODE -ne 0) {

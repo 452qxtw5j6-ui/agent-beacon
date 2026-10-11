@@ -120,15 +120,32 @@ See the [event schema](/telemetry-schema/event-schema) for the full field refere
 | Step | Result |
 |---|---|
 | Unpack | `beacon.exe`, `beacon-hooks.exe`, and `beacon-otelcol.exe` under `%ProgramFiles%\Beacon\bin` |
-| System install | Config and collector config under `%ProgramData%\Beacon\Endpoint` |
+| System install | Config and collector config under `%ProgramData%\Beacon\Endpoint`, with `%ProgramData%\Beacon` owned by Administrators and locked down |
 | Service | `BeaconCollector`, registered with the SCM, automatic start, restart on failure |
 | Runtime log | `%ProgramData%\Beacon\Endpoint\logs\runtime.jsonl` |
-| Log permissions | Write access granted to `INTERACTIVE`, so hooks running as you can append |
+| Log permissions | `INTERACTIVE` may append to the runtime log files, and nothing more |
 | Agent runtime | Claude Code and Codex CLI settings for the interactive user, pointed at `127.0.0.1:4317` |
 
 Two of those rows deserve explanation.
 
-**The log permission grant.** A system-mode collector runs as `LocalSystem` and creates the log, while hooks run as you and append to it. `%ProgramData%` subdirectories inherit an ACL where only administrators and SYSTEM may write, so without an explicit grant every hook write fails with access denied. Nothing reports it either, because `status` and `doctor` describe the collector rather than the hooks exporting to it. The install grants `INTERACTIVE` write access on the log directory, and `doctor` checks the grant is still there.
+**The directory and log permissions.** A system-mode collector runs as `LocalSystem` and writes the log, while hooks run as you and append to it. `%ProgramData%` subdirectories inherit an ACL where ordinary users cannot write existing files, so without a grant every hook write fails with access denied, and nothing reports it, because `status` and `doctor` describe the collector rather than the hooks exporting to it. The grant has to stop there: a user who can add, delete or rename entries in a directory a SYSTEM process writes to can swap the log for a link and send the collector's writes anywhere.
+
+So the install sets these ACLs, by well-known SID, with inheritance from `%ProgramData%` turned off:
+
+| Path | Owner | Access |
+|---|---|---|
+| `%ProgramData%\Beacon` and everything below it | Administrators | SYSTEM and Administrators: full control. Users: read and execute |
+| `%ProgramData%\Beacon\Endpoint\logs` | Administrators | The same, plus `INTERACTIVE`: read and write data on files directly in the directory (inherit-only). No right to create, delete or rename entries, and no right to change a file's permissions or owner |
+
+Because users cannot create files in the log directory, the install creates `runtime.jsonl` and `runtime.jsonl.lock` itself; files the collector creates later, such as the log it starts after a rotation, inherit the same append grant. Rotation is done by the collector and by `beacon` commands run as an administrator. A hook that finds the log over its size limit appends anyway and leaves the rename to them.
+
+`%ProgramData%\Beacon` is reset even when it already exists. `%ProgramData%` lets any user create a subdirectory, so one found there before the package was installed may belong to someone else: the install takes ownership, replaces its ACL, removes any junction, symbolic link or hard link inside it (Beacon creates none), and resets anything below it that grants an ordinary user write, delete or ownership rights. Anything already locked down further than this is left as it is.
+
+`doctor --system` checks both halves: that interactive users can append, and that nothing grants them more. An endpoint installed by an older version carries a broader grant (Modify for `INTERACTIVE` on the log directory) and is reported as `acl_too_broad`. Upgrading the package fixes it, as does running this from an elevated shell:
+
+```powershell title="Reset the log directory ACL"
+beacon endpoint doctor --system --fix
+```
 
 **The agent runtime row.** A system-mode endpoint is installed by an administrator or by a management agent running as `LocalSystem`, neither of which is necessarily the person at the keyboard, and the collector is useless if nothing exports to it. Beacon works out who is signed in at the console and configures their runtime. If it cannot identify anyone, it says so instead of failing, and you can configure yourself later:
 

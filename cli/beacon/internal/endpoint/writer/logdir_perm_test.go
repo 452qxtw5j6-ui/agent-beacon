@@ -25,7 +25,7 @@ func TestSystemLogDirIsTraversableUnderARestrictiveUmask(t *testing.T) {
 			t.Cleanup(func() { syscall.Umask(old) })
 
 			dir := filepath.Join(t.TempDir(), "beacon-agent")
-			if err := EnsureSystemLogWritable(dir); err != nil {
+			if err := EnsureSystemLogWritable(filepath.Join(dir, "runtime.jsonl")); err != nil {
 				t.Fatal(err)
 			}
 
@@ -55,7 +55,7 @@ func TestSystemLogDirIsCorrectedWhenItAlreadyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := EnsureSystemLogWritable(dir); err != nil {
+	if err := EnsureSystemLogWritable(filepath.Join(dir, "runtime.jsonl")); err != nil {
 		t.Fatal(err)
 	}
 

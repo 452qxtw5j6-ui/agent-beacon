@@ -66,3 +66,43 @@ func TestEnsureRuntimeFileCreatesSharedRuntimeLogDespiteUmask(t *testing.T) {
 		t.Fatalf("%s mode = %o, want %o", path, got, runtimeFileMode)
 	}
 }
+
+// An unprivileged writer of a system log cannot rotate it: the directory is root-owned 0755 here,
+// and on Windows its ACL withholds the rename and delete rights on purpose. The event must still
+// land -- appended past the size limit for the collector to rotate later -- rather than be lost to
+// a rotation the writer was never meant to perform.
+func TestAppendJSONLAppendsWhenRotationIsRefused(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions, so the refusal cannot be reproduced")
+	}
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "runtime.jsonl")
+	if err := os.WriteFile(path, []byte("{\"existing\":true}\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+".lock", nil, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	line := []byte("{\"next\":true}\n")
+	if err := appendJSONL(path, line, 8, DefaultRotateArchives, nil); err != nil {
+		t.Fatalf("append with rotation refused: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "{\"existing\":true}\n{\"next\":true}\n" {
+		t.Fatalf("log after a refused rotation = %q, want the new line appended", data)
+	}
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Fatalf("an archive appeared although rotation was refused: %v", err)
+	}
+}

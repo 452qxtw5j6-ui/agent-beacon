@@ -59,6 +59,17 @@ foreach ($needle in @('--keep-logs', '--keep-config', 'BEACON_PURGE')) {
     }
 }
 
+# The ACL on %ProgramData%\Beacon belongs to `beacon endpoint install --system`, which gives ordinary
+# users read and execute plus append to the runtime log, and nothing that lets them delete, rename or
+# plant links. A packaging script that grants Modify or Full Control on top would quietly undo that.
+foreach ($name in @('install-endpoint.ps1', 'uninstall-endpoint.ps1')) {
+    $text = Get-Content -Raw -LiteralPath (Join-Path $scriptDir $name)
+    $code = ($text -split "`n" | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+    if ($code -match '(?i)icacls[^\n]*/grant' -or $code -match '(?i)FileSystemAccessRule') {
+        Fail "$name grants file system access itself; the ACL is applied by 'beacon endpoint install --system' and must not be widened here"
+    }
+}
+
 # The WiX source has to keep running the scripts rather than growing its own copy of the flags.
 $wxs = Get-Content -Raw -LiteralPath (Join-Path $scriptDir 'beacon.wxs')
 foreach ($needle in @('install-endpoint.ps1', 'uninstall-endpoint.ps1')) {
