@@ -24,3 +24,13 @@ func processOwnsHome(home string) bool {
 	}
 	return stat.Uid == 0
 }
+
+// ownedByProcess reports whether this process owns the file, the only case in which a writer
+// changes an existing log's mode.
+func ownedByProcess(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return false
+	}
+	return int(stat.Uid) == os.Geteuid()
+}

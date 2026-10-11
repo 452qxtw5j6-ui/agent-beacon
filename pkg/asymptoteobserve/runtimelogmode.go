@@ -91,11 +91,60 @@ func RuntimeLogIsPrivate(path string) bool {
 	return processOwnsHome(home)
 }
 
+// PrivateACLRuntimeLogFileMode is the mode a newly created private log takes when the directory
+// it was created in hands it a POSIX ACL (a default ACL, `setfacl -d`). On Linux an ACL's mask is
+// the file's group bits, so creating the file 0600 would set the mask to nothing and cancel the
+// grant an administrator made on purpose -- the narrow read access a log shipper running as its
+// own account is documented to need. Read for the mask keeps that grant working and still gives
+// nobody else anything.
+const PrivateACLRuntimeLogFileMode os.FileMode = 0o640
+
+// SettleRuntimeLogFileMode sets the mode of a runtime log, its lock or an archive after it was
+// opened. logPath is the log the file belongs to, which decides private or shared (see
+// RuntimeLogModes); created says whether this open made the file.
+//
+// A file this open created gets the mode the log calls for, so a umask cannot narrow a shared log
+// or widen a private one; an error there is returned.
+//
+// An existing file is changed only by a process that owns it, and only toward what the log calls
+// for. Two cases this protects:
+//   - root running in a user's home (sudo keeping HOME) decides "shared" for that user's log, and
+//     must not chmod the user's private log back to world-writable;
+//   - a private log another account reads through a POSIX ACL keeps that grant: only the "other"
+//     bits are removed, never the group bits that carry the ACL mask, so the tightening that runs
+//     beside every append does not reset the mask and cut the reader off each time.
+//
+// Errors on an existing file are ignored: the append it runs beside must not fail over a mode.
+func SettleRuntimeLogFileMode(path, logPath string, created bool) error {
+	fileMode, _, private := RuntimeLogModes(logPath)
+	if created {
+		if private && hasPOSIXACL(path) {
+			fileMode = PrivateACLRuntimeLogFileMode
+		}
+		return os.Chmod(path, fileMode)
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || !ownedByProcess(info) {
+		return nil
+	}
+	current := info.Mode().Perm()
+	want := fileMode
+	if private {
+		want = current &^ 0o007
+		if !hasPOSIXACL(path) {
+			want &^= 0o070
+		}
+	}
+	if want != current {
+		_ = os.Chmod(path, want)
+	}
+	return nil
+}
+
 // TightenPrivateRuntimeLogArchives narrows the rotated archives of a private log (path.1 ..
-// path.archives) to PrivateRuntimeLogFileMode. Archives rotated before logs were private still
-// carry the old shared mode, and they hold the same content as the live file. Best effort: a
-// missing archive or a failed chmod is not an error, since the append it runs beside must not fail
-// over an older file.
+// path.archives) the way SettleRuntimeLogFileMode narrows the live file. Archives rotated before
+// logs were private still carry the old shared mode, and they hold the same content as the live
+// file. Best effort, like SettleRuntimeLogFileMode on an existing file.
 func TightenPrivateRuntimeLogArchives(path string, archives int) {
 	if !RuntimeLogIsPrivate(path) {
 		return
@@ -106,9 +155,7 @@ func TightenPrivateRuntimeLogArchives(path string, archives int) {
 		if err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		if info.Mode().Perm() != PrivateRuntimeLogFileMode {
-			_ = os.Chmod(archive, PrivateRuntimeLogFileMode)
-		}
+		_ = SettleRuntimeLogFileMode(archive, path, false)
 	}
 }
 

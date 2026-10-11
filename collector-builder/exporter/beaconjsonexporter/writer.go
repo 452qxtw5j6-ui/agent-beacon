@@ -245,8 +245,9 @@ func openRuntimeFile(path string, flag int) (*os.File, error) {
 	return openRuntimeFileAs(path, path, flag)
 }
 
-// openRuntimeFileAs opens path (the log or its lock) with the mode logPath calls for. The chmod
-// runs on an existing file too, which tightens a private log an older release left world-writable.
+// openRuntimeFileAs opens path (the log or its lock) with the mode logPath calls for, and settles
+// its mode with asymptoteobserve.SettleRuntimeLogFileMode: a new file gets that mode whatever the
+// umask, and an existing one is only ever narrowed toward it, by its owner.
 func openRuntimeFileAs(path, logPath string, flag int) (*os.File, error) {
 	fileMode, _, _ := asymptoteobserve.RuntimeLogModes(logPath)
 	existed := true
@@ -260,7 +261,7 @@ func openRuntimeFileAs(path, logPath string, flag int) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, fileMode); err != nil && !existed {
+	if err := asymptoteobserve.SettleRuntimeLogFileMode(path, logPath, !existed); err != nil {
 		_ = f.Close()
 		return nil, err
 	}

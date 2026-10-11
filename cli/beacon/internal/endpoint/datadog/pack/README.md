@@ -42,11 +42,23 @@ tail `/var/log/beacon-agent/runtime.jsonl` without per-user home directory ACLs.
 
 ## User-Mode macOS Permissions
 
-The Datadog Agent usually runs as `_dd-agent`. When tailing a user-mode Beacon
-log inside a home directory, `_dd-agent` must be able to traverse the parent
-directories and read the log file. If `datadog-agent status` reports
-`permission denied`, either use Beacon system mode or grant a narrow ACL for the
-configured path.
+The Datadog Agent usually runs as `_dd-agent`. A user-mode Beacon log is private
+to its user (0600, in directories Beacon creates 0700), so `_dd-agent` cannot
+read it by default. Prefer Beacon system mode. To tail a user-mode log anyway,
+grant `_dd-agent` traverse access to the parent directories and an inheriting
+read ACL on the log directory, so the files rotation creates are covered too:
+
+```bash
+# macOS
+chmod +a "user:_dd-agent allow list,search,read,file_inherit" ~/.beacon/endpoint/logs
+# Linux (dd-agent): the default ACL covers new files; Beacon keeps its mask readable
+setfacl -m u:dd-agent:rx ~/.beacon/endpoint/logs
+setfacl -d -m u:dd-agent:r ~/.beacon/endpoint/logs
+setfacl -m u:dd-agent:r ~/.beacon/endpoint/logs/runtime.jsonl
+```
+
+Beacon never widens an existing log and only removes its "other" bits, so a
+grant made this way survives every append and rotation.
 
 ## Validate
 
