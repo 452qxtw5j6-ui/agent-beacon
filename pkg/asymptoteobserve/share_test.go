@@ -497,3 +497,20 @@ func TestPathScrubberReplacesWholePathsOnly(t *testing.T) {
 		t.Errorf("windows text = %q", got)
 	}
 }
+
+func TestBuildShareMessagesKeepsRepeatedPhaselessCallsApart(t *testing.T) {
+	// Cursor's beforeReadFile records file.read with a path and nothing else. Reading the same file
+	// twice is two calls, not a call and its result.
+	var events []Event
+	for i, ts := range []string{"2026-10-01T10:00:00Z", "2026-10-01T10:00:01Z", "2026-10-01T10:00:02Z"} {
+		read := shareEventAt(ts, "cursor", CollectionMethodHook, "file.read", "file")
+		read.Event.ID = "r-" + string(rune('a'+i))
+		read.File = &FileInfo{Path: "/home/dev/src/app/main.go", Operation: "read"}
+		events = append(events, read)
+	}
+	messages := BuildShareMessagesWithOptions(events, shareTestOpts)
+	want := "assistant/tool_call,assistant/tool_call,assistant/tool_call"
+	if got := partsOf(t, messages); strings.Join(got, ",") != want {
+		t.Fatalf("parts = %v", got)
+	}
+}
