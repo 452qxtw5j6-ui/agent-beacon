@@ -8,15 +8,19 @@ description: "Share a local agent session as a trace on beacon.sh"
 `beacon share` publishes one local agent session as a shared trace on beacon.sh and prints its link. The trace shows the session's prompts, the agent's answers and reasoning, and every tool call with its result, in order.
 
 ```bash title="Command syntax"
-beacon share [--session <id> | --source-path <path> | --cwd <dir>] [flags]
+beacon share [--current | --session <id> | --source-path <path> | --cwd <dir>] [flags]
 beacon share --list [--cwd <dir>] [--harness <runtime>]
 beacon share refresh [<external-id> | <session-id>] [flags]
 ```
 
-Without a session flag, `beacon share` shares the most recent session that ran in the current directory. It names the session it picked before uploading anything.
+Without a session flag, `beacon share` shares the session it runs inside (see [Sharing this session](#sharing-this-session)), and otherwise the most recent session that ran in the current directory. It names the session it picked before uploading anything.
 
 ```bash title="Share the session you just finished here"
 beacon share
+```
+
+```bash title="From inside an agent: share this session"
+beacon share --current --harness claude_code --json
 ```
 
 ```bash title="See what would be uploaded, without uploading it"
@@ -29,12 +33,13 @@ Sharing is always something you ask for. Hooks, plugins and background jobs neve
 
 | Flag | Picks |
 |------|-------|
+| `--current` | The session this command runs inside. The default when no other selector is given |
 | `--session <id>` | The session with this id, or the one session whose id starts with this prefix (at least 6 characters) |
 | `--source-path <path>` | The session stored in this file of its runtime's session store |
 | `--cwd <dir>` | The most recent session that ran in this directory or below it. This is the default, with the current directory |
 | `--harness <runtime>` | Only sessions of this runtime (`claude`, `codex`, `cursor`, ...). `auto`, the default, considers every runtime |
 
-`--session`, `--source-path` and `--cwd` cannot be combined. `--list` shows the candidates instead of sharing, newest first, and takes `--cwd`, `--harness` and `--limit` (default 20, `0` for all).
+`--current`, `--session`, `--source-path` and `--cwd` cannot be combined. `--list` shows the candidates instead of sharing, newest first, and takes `--cwd`, `--harness` and `--limit` (default 20, `0` for all).
 
 ```bash title="List and pick"
 beacon share --list --cwd ~/src/app
@@ -42,6 +47,16 @@ beacon share --session 5f0c1d2e
 ```
 
 Sessions are read the way [`beacon handoff`](/cli/handoff) reads them: from the runtime's own session store when Beacon reads that runtime's store, which keeps the most of each step, and otherwise from Beacon's runtime log. `--store-dir <runtime>=<path>` reads a store from another location, and `--log-path` reads another runtime log.
+
+## Sharing this session
+
+An agent asked to "share this session" runs `beacon share` from its own shell, where it does not know its session id. `--current`, which is also what `beacon share` does with no selector, finds it in this order:
+
+1. **`BEACON_SESSION_ID`** (with `BEACON_HARNESS`). Beacon's Claude Code `SessionStart` hook appends `export BEACON_SESSION_ID=<id>` and `export BEACON_HARNESS=claude_code` to the file Claude Code names in `CLAUDE_ENV_FILE`, which Claude Code runs before each shell command of the session, so every command the agent runs carries its session id. Any other launcher may set the two variables too. The step is skipped under `--cwd`, and when `--harness` names another runtime, because a runtime started from a Claude Code shell (Codex, OpenCode, Cursor, ...) inherits Claude Code's variables. For the same reason, without `--harness` the variables are trusted only when nothing contradicts them: `beacon share` refuses, naming both sessions, when the session they name ran in another directory (not this one or a directory above it), or when another runtime has worked in this directory more recently than that session (in the active-session record or the sessions listed here). Pass `--harness <runtime>` for the runtime you are in, or `--session <id>`. `--harness` naming the variables' own runtime takes them as they are. An id that is set but cannot be read is an error, never a reason to share another session, and so is an id set without `BEACON_HARNESS` or with a `BEACON_HARNESS` that names no runtime Beacon knows: set both, or name the session with `--session`.
+2. **The active-session record.** Every Beacon hook notes, per runtime and working directory, the session it last saw, in `~/.beacon/endpoint/active-sessions.json` (0600 under a 0700 directory). The record holds session ids, runtime names, directories and times, never content, and nothing in it leaves the machine. It keeps at most 256 entries and drops any not seen for 14 days; `--current` uses an entry seen within the last day, and only when it was seen at least as recently as the directory's newest session was updated: only hooks write the record, so a runtime Beacon sees only through OTLP or its session store (GitHub Copilot CLI, fx) never updates it, and its newer session wins over an older entry.
+3. **The most recent session** that ran in the directory.
+
+`--harness` narrows every step to one runtime, which matters when two runtimes worked in the same directory. When nothing ran in the directory, the error names the most recent sessions elsewhere so one can be passed with `--session`. `--json` reports how the session was chosen in `selected_by`: `env`, `active`, `recent`, `session` or `source_path`.
 
 ## What is uploaded
 
@@ -97,7 +112,7 @@ Sharing a session again updates the same trace: each session has one stable exte
 ```bash
 beacon share refresh claude_code:5f0c1d2e-aaaa-4bbb-8ccc-000000000001
 beacon share refresh 5f0c1d2e
-beacon share refresh            # the most recent session in this directory
+beacon share refresh            # this session, found like --current
 ```
 
 ## Credentials
@@ -119,7 +134,7 @@ After an upload, `beacon share` writes one `session.shared` event to the runtime
 The link goes to stdout and a summary to stderr. `--json` prints one document:
 
 ```json
-{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","harness":"claude_code","event_count":42,"uploaded":42}}
+{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","harness":"claude_code","event_count":42,"uploaded":42,"selected_by":"env"}}
 ```
 
 `event_count` is how many events the trace holds on beacon.sh, and `uploaded` how many this run sent. On failure, `--json` prints `{"ok":false,"error":"..."}` and the command exits non-zero.
@@ -128,6 +143,7 @@ The link goes to stdout and a summary to stderr. `--json` prints one document:
 
 | Flag | Description |
 |------|-------------|
+| `--current` | The session this command runs inside (default with no other selector) |
 | `--session <id>` | Session id or unique prefix |
 | `--source-path <path>` | The session's file in its runtime's store |
 | `--cwd <dir>` | Most recent session in this directory (default: current directory) |

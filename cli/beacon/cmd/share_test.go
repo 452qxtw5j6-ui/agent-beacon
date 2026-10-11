@@ -349,7 +349,7 @@ func TestShareUploadsAndRecordsTheShareLocally(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil || !result.OK {
 		t.Fatalf("output = %s (err %v)", stdout, err)
 	}
-	want := shareResult{TraceID: "k3xabc", ExternalID: "claude_code:" + shareTestSession, SharedURL: "https://beacon.sh/s/k3xabc", Visibility: "direct", Harness: "claude_code", EventCount: 4, Uploaded: 4}
+	want := shareResult{TraceID: "k3xabc", ExternalID: "claude_code:" + shareTestSession, SharedURL: "https://beacon.sh/s/k3xabc", Visibility: "direct", Harness: "claude_code", EventCount: 4, Uploaded: 4, SelectedBy: "recent"}
 	if result.Data != want {
 		t.Fatalf("result = %+v, want %+v", result.Data, want)
 	}

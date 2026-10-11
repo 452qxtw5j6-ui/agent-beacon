@@ -15,6 +15,7 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/activesession"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/filelock"
 )
 
@@ -136,7 +137,28 @@ func (l *Logger) EndpointEventWithFidelity(action, category, severity, message, 
 		reportEndpointWriteFailure(os.Stderr, l.platform, path, err)
 		return err
 	}
+	recordActiveSession(event)
 	return nil
+}
+
+// recordActiveSession notes the event's session as the one its runtime is running in its working
+// directory, for `beacon share --current`. It is a local file write and never fails the hook: the
+// record is a convenience, the event above is what matters. Nothing here touches the network.
+func recordActiveSession(event map[string]interface{}) {
+	session, _ := event["session"].(map[string]interface{})
+	harness, _ := event["harness"].(map[string]interface{})
+	if session == nil || harness == nil {
+		return
+	}
+	id, _ := session["id"].(string)
+	dir, _ := session["working_directory"].(string)
+	name, _ := harness["name"].(string)
+	if id == "" || dir == "" || name == "" {
+		return
+	}
+	// Silent on failure: stderr is shown to the person on some runtimes, and a missing record
+	// only means `beacon share --current` falls back to the newest session in the directory.
+	_ = activesession.Record(activesession.DefaultPath(), name, id, dir, time.Now())
 }
 
 // reportedWriteFailures remembers which runtime log paths this process has already explained a
