@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io"
 	"io/fs"
 	"os"
@@ -65,12 +66,12 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func (s *Store) Exists() bool {
-	info, err := os.Stat(s.Dir)
+	info, err := sessionfs.Stat(s.Dir)
 	return err == nil && info.IsDir()
 }
 
 func (s *Store) List() ([]SessionRef, error) {
-	projects, err := os.ReadDir(s.Dir)
+	projects, err := sessionfs.ReadDir(s.Dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -83,7 +84,7 @@ func (s *Store) List() ([]SessionRef, error) {
 			continue
 		}
 		projectDir := filepath.Join(s.Dir, project.Name())
-		files, err := os.ReadDir(projectDir)
+		files, err := sessionfs.ReadDir(projectDir)
 		if err != nil {
 			continue
 		}
@@ -96,7 +97,7 @@ func (s *Store) List() ([]SessionRef, error) {
 				continue
 			}
 			path := filepath.Join(projectDir, file.Name())
-			info, err := os.Stat(path)
+			info, err := sessionfs.Stat(path)
 			if err != nil || info.IsDir() {
 				continue
 			}
@@ -133,7 +134,7 @@ func (s *Store) List() ([]SessionRef, error) {
 }
 
 func ReadHeader(path string) (*Record, error) {
-	file, err := os.Open(path)
+	file, err := sessionfs.Open(path)
 	if err != nil {
 		return nil, err
 	}
@@ -158,14 +159,14 @@ func ReadHeader(path string) (*Record, error) {
 }
 
 func ReadSettings(path string) (*Settings, int64, error) {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	if err != nil {
 		return nil, 0, err
 	}
 	if info.Size() > MaxSettingsBytes {
 		return nil, 0, fmt.Errorf("Factory settings %s is %d bytes, over the %d-byte limit", path, info.Size(), MaxSettingsBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -182,7 +183,7 @@ func ReadSettings(path string) (*Settings, int64, error) {
 }
 
 func (s *Store) Read(ref SessionRef) ([]Record, ReadStats, error) {
-	file, err := os.Open(ref.Path)
+	file, err := sessionfs.Open(ref.Path)
 	if err != nil {
 		return nil, ReadStats{}, err
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -110,7 +111,7 @@ func (s *Store) Exists() bool {
 }
 
 func dirExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	return err == nil && info.IsDir()
 }
 
@@ -128,7 +129,7 @@ func (s *Store) List() ([]SessionRef, error) {
 			return nil, err
 		}
 		for _, path := range items {
-			info, err := os.Stat(path)
+			info, err := sessionfs.Stat(path)
 			if err != nil || info.IsDir() {
 				continue
 			}
@@ -161,7 +162,7 @@ func listJSONL(root string) ([]string, error) {
 		return nil, nil
 	}
 	var out []string
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	err := sessionfs.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -180,7 +181,7 @@ func listJSONL(root string) ([]string, error) {
 }
 
 func readHeader(path string) map[string]interface{} {
-	file, err := os.Open(path)
+	file, err := sessionfs.Open(path)
 	if err != nil {
 		return nil
 	}
@@ -202,7 +203,7 @@ func readHeader(path string) map[string]interface{} {
 }
 
 func (s *Store) Read(ref SessionRef) ([]Entry, ReadStats, error) {
-	file, err := os.Open(ref.Path)
+	file, err := sessionfs.Open(ref.Path)
 	if err != nil {
 		return nil, ReadStats{}, err
 	}

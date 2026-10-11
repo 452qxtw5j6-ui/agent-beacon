@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io"
 	"io/fs"
 	"os"
@@ -106,7 +107,7 @@ func NewStore(dir string) (*Store, error) {
 // Exists reports whether the sessions directory is present. A missing directory means fx has not
 // run for this user, which every caller reports rather than treats as a failure.
 func (s *Store) Exists() bool {
-	info, err := os.Stat(s.Dir)
+	info, err := sessionfs.Stat(s.Dir)
 	return err == nil && info.IsDir()
 }
 
@@ -120,7 +121,7 @@ func (s *Store) Exists() bool {
 // directory before the log, another user's session may not be readable, and neither is a reason to
 // collect nothing from the sessions that are.
 func (s *Store) List() ([]SessionRef, error) {
-	entries, err := os.ReadDir(s.Dir)
+	entries, err := sessionfs.ReadDir(s.Dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -138,7 +139,7 @@ func (s *Store) List() ([]SessionRef, error) {
 		}
 		dir := filepath.Join(s.Dir, id)
 		logPath := filepath.Join(dir, EventsFileName)
-		info, err := os.Stat(logPath)
+		info, err := sessionfs.Stat(logPath)
 		if err != nil || info.IsDir() {
 			continue
 		}
@@ -192,14 +193,14 @@ func ValidateSessionID(id string) error {
 // rather than a partially-trusted value: its fields are what bound the log read, and reading the
 // log whole is a correct fallback while trusting a byte count from a format that moved is not.
 func ReadManifest(path string) (*Manifest, error) {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	if err != nil {
 		return nil, err
 	}
 	if info.Size() > MaxManifestBytes {
 		return nil, fmt.Errorf("fx manifest %s is %d bytes, over the %d-byte limit", path, info.Size(), MaxManifestBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +228,7 @@ func ReadManifest(path string) (*Manifest, error) {
 // Events are returned in log order. The caller filters by cursor; this function has no opinion
 // about what has already been collected.
 func (s *Store) Read(ref SessionRef) ([]Event, Stats, error) {
-	file, err := os.Open(ref.EventsLog)
+	file, err := sessionfs.Open(ref.EventsLog)
 	if err != nil {
 		return nil, Stats{}, err
 	}

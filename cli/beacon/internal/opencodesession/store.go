@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io/fs"
 	"net/url"
 	"os"
@@ -167,7 +168,7 @@ func (s *Store) listSQLite() ([]TraceRef, error) {
 			ref.RelatedTo = parent.String
 			ref.RelationshipType = "subagent"
 		}
-		if info, err := os.Stat(s.SQLitePath); err == nil {
+		if info, err := sessionfs.Stat(s.SQLitePath); err == nil {
 			ref.SizeBytes = info.Size()
 		}
 		refs = append(refs, ref)
@@ -260,7 +261,7 @@ func (s *Store) listLegacy() ([]TraceRef, error) {
 	if !dirExists(sessionRoot) {
 		return nil, nil
 	}
-	projects, err := os.ReadDir(sessionRoot)
+	projects, err := sessionfs.ReadDir(sessionRoot)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -275,7 +276,7 @@ func (s *Store) listLegacy() ([]TraceRef, error) {
 		projectID := project.Name()
 		projectDir := legacyProjectDirectory(filepath.Join(s.LegacyStorageDir, "project", projectID+".json"))
 		sessionDir := filepath.Join(sessionRoot, projectID)
-		files, err := os.ReadDir(sessionDir)
+		files, err := sessionfs.ReadDir(sessionDir)
 		if err != nil {
 			continue
 		}
@@ -299,7 +300,7 @@ func (s *Store) readLegacy(ref TraceRef) ([]Record, error) {
 		return nil, fmt.Errorf("read OpenCode legacy session %s", ref.SourcePath)
 	}
 	messageDir := filepath.Join(s.LegacyStorageDir, "message", session.ID)
-	files, err := os.ReadDir(messageDir)
+	files, err := sessionfs.ReadDir(messageDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -325,7 +326,7 @@ func (s *Store) readLegacy(ref TraceRef) ([]Record, error) {
 	parts := map[string][]opencodePart{}
 	for _, msg := range messages {
 		partDir := filepath.Join(s.LegacyStorageDir, "part", msg.ID)
-		partFiles, err := os.ReadDir(partDir)
+		partFiles, err := sessionfs.ReadDir(partDir)
 		if err != nil {
 			continue
 		}
@@ -548,7 +549,7 @@ func partFromMap(raw map[string]interface{}) opencodePart {
 }
 
 func readLegacySessionRef(path, projectDir string) (TraceRef, bool) {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	if err != nil || info.IsDir() || info.Size() > maxSessionBytes {
 		return TraceRef{}, false
 	}
@@ -580,7 +581,7 @@ func readLegacySessionRef(path, projectDir string) (TraceRef, bool) {
 }
 
 func readLegacySession(path string) opencodeMessage {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return opencodeMessage{}
 	}
@@ -594,7 +595,7 @@ func readLegacySession(path string) opencodeMessage {
 }
 
 func readLegacyMessage(path string) opencodeMessage {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return opencodeMessage{}
 	}
@@ -608,7 +609,7 @@ func readLegacyMessage(path string) opencodeMessage {
 }
 
 func readLegacyPart(path string) opencodePart {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return opencodePart{}
 	}
@@ -622,7 +623,7 @@ func readLegacyPart(path string) opencodePart {
 }
 
 func legacyProjectDirectory(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -634,6 +635,10 @@ func legacyProjectDirectory(path string) string {
 }
 
 func openSQLiteReadOnly(path string) (*sql.DB, error) {
+	path, err := sessionfs.SQLitePath(path)
+	if err != nil {
+		return nil, err
+	}
 	return sql.Open("sqlite", sqliteFileURI(path))
 }
 
@@ -713,12 +718,12 @@ func sqliteSelectColumn(cols map[string]bool, name string) string {
 }
 
 func fileExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	return err == nil && info.Mode().IsRegular()
 }
 
 func dirExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	return err == nil && info.IsDir()
 }
 

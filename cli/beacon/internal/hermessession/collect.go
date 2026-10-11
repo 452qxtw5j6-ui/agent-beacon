@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io"
 	"net/url"
 	"os"
@@ -192,7 +193,7 @@ func CollectOnce(opts CollectOptions) (summary Summary, err error) {
 	if dbPath == "" {
 		dbPath = DefaultDBPath()
 	}
-	if _, statErr := os.Stat(dbPath); statErr != nil {
+	if _, statErr := sessionfs.Stat(dbPath); statErr != nil {
 		if os.IsNotExist(statErr) {
 			return summary, nil
 		}
@@ -544,6 +545,10 @@ func (s *Store) LastMessageID(sessionID string) (int64, error) {
 }
 
 func openSQLiteReadOnly(path string) (*sql.DB, error) {
+	path, err := sessionfs.SQLitePath(path)
+	if err != nil {
+		return nil, err
+	}
 	uriPath := filepath.ToSlash(path)
 	if !strings.HasPrefix(uriPath, "/") {
 		uriPath = "/" + uriPath
