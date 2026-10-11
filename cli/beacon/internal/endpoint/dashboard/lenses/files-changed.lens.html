@@ -27,8 +27,8 @@
   #summary { margin: 0 0 10px; }
   .layout { display: grid; grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr); gap: 16px; align-items: start; }
   @media (max-width: 640px) { .layout { grid-template-columns: minmax(0, 1fr); } }
-  .tree { border-right: 1px solid var(--beacon-line, rgba(0,0,0,0.1)); padding-right: 8px; }
-  .row { display: flex; align-items: baseline; gap: 6px; width: 100%; padding: 2px 6px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; }
+  .tree { min-width: 0; border-right: 1px solid var(--beacon-line, rgba(0,0,0,0.1)); padding-right: 8px; }
+  .row { box-sizing: border-box; display: flex; align-items: baseline; gap: 6px; width: 100%; padding: 2px 6px; border: 0; border-radius: 4px; background: none; color: inherit; font: inherit; text-align: left; }
   .row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row .counts { white-space: nowrap; font-variant-numeric: tabular-nums; }
   button.row { cursor: pointer; }
@@ -37,7 +37,7 @@
   button.row:focus-visible { outline: 2px solid var(--beacon-accent, #036aa2); outline-offset: -2px; }
   .dir { color: var(--beacon-muted, #6b7280); }
   .tag { font-size: 12px; color: var(--beacon-muted, #6b7280); }
-  h2 { margin: 0 0 8px; font-size: 13px; font-weight: 400; word-break: break-all; }
+  h2 { margin: 0 0 8px; font-size: 13px; font-weight: 400; overflow-wrap: anywhere; }
   .edit { margin: 0 0 14px; }
   .edit-head { margin: 0 0 4px; }
   pre { margin: 0; padding: 6px 8px; overflow-x: auto; border: 1px solid var(--beacon-line, rgba(0,0,0,0.1)); border-radius: 4px; white-space: pre; }
@@ -72,6 +72,8 @@
   }
 
   function isWrite(event) {
+    // An approval names the file a write is about to touch; the write itself is its own event.
+    if (event.category === "approval" || String(event.action || "").indexOf("approval.") === 0) return false;
     var op = String((event.file && event.file.operation) || "").toLowerCase();
     return !!(WRITE_OPS[op] || WRITE_ACTIONS[event.action]);
   }
@@ -169,6 +171,7 @@
         shownDirs[dir] = 1;
         var dirRow = el("div", null, "row dir");
         dirRow.style.paddingLeft = (6 + i * 12) + "px";
+        dirRow.title = dir;
         dirRow.appendChild(el("span", parts[i] + "/", "name mono"));
         tree.appendChild(dirRow);
       }
@@ -203,7 +206,13 @@
   function renderDetail(f) {
     var detail = document.getElementById("detail");
     detail.textContent = "";
-    detail.appendChild(el("h2", f.path, "mono"));
+    // Break the path after each slash rather than mid-name.
+    var heading = el("h2", null, "mono");
+    f.path.split("/").forEach(function (part, i, parts) {
+      heading.appendChild(document.createTextNode(part + (i < parts.length - 1 ? "/" : "")));
+      if (i < parts.length - 1) heading.appendChild(document.createElement("wbr"));
+    });
+    detail.appendChild(heading);
     f.edits.forEach(function (edit) {
       var e = edit.event;
       var block = el("div", null, "edit");

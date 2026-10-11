@@ -397,6 +397,17 @@ func resolveToolResponse(input map[string]interface{}) map[string]interface{} {
 			}
 		}
 	}
+	// Cursor's postToolUse puts the result under `tool_output`, as a JSON-encoded string. Scoped to
+	// Cursor because Kimi Code uses the same key with its own reader (applyKimiToolResult).
+	if platformFlag == "cursor" {
+		if output := strings.TrimSpace(getFirstStr(input, "tool_output")); output != "" {
+			var parsed map[string]interface{}
+			if strings.HasPrefix(output, "{") && json.Unmarshal([]byte(output), &parsed) == nil && len(parsed) > 0 {
+				return parsed
+			}
+			return map[string]interface{}{"result": output}
+		}
+	}
 	// Claude Code sends an MCP tool's result as a bare list of content blocks. A list from any
 	// other runtime is read the same way: until this, every list response was dropped.
 	if content, ok := input["tool_response"].([]interface{}); ok {
