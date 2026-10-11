@@ -158,7 +158,7 @@ func load(path string) (document, error) {
 	return doc, nil
 }
 
-func update(path string, now time.Time, mutate func(*document) bool) error {
+func update(path string, now time.Time, mutate func(*document) bool) (err error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -167,7 +167,13 @@ func update(path string, now time.Time, mutate func(*document) bool) error {
 	if err != nil {
 		return err
 	}
-	defer lockFile.Close()
+	// The lock file is never written, so closing it loses nothing; its error is reported only
+	// when nothing else went wrong.
+	defer func() {
+		if cerr := lockFile.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	lock, err := filelock.Exclusive(lockFile)
 	if err != nil {
 		return err
