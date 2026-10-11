@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -31,11 +32,36 @@ var (
 	versionCheckTimeout = 2 * time.Second
 )
 
-func init() {
-	versionCmd.AddCommand(versionCheckCmd)
+// versionRefreshCmd is the background half of the startup notice: bare `beacon` starts it
+// detached when the cache is stale, and it only updates the cache. It prints nothing, so a
+// failure leaves the previous cached release in place until the next TTL.
+var versionRefreshCmd = &cobra.Command{
+	Use:          "refresh",
+	Short:        "Refresh the cached update check",
+	Hidden:       true,
+	SilenceUsage: true,
+	Args:         cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if updatecheck.Disabled(os.Getenv) || !updatecheck.CanCheckVersion(version.GetVersion()) {
+			return nil
+		}
+		path := updateCachePath()
+		if !updatecheck.LoadCache(path).Stale(rootNow()) {
+			return nil
+		}
+		_, _ = checkAndRecord(cmd)
+		return nil
+	},
 }
 
-func runVersionCheck(cmd *cobra.Command, args []string) error {
+func init() {
+	versionCmd.AddCommand(versionCheckCmd)
+	versionCmd.AddCommand(versionRefreshCmd)
+}
+
+// checkAndRecord runs one release lookup and folds it into the update-check cache, so the
+// explicit check and the background refresh leave the startup notice with the same answer.
+func checkAndRecord(cmd *cobra.Command) (updatecheck.Result, error) {
 	parent := cmd.Context()
 	if parent == nil {
 		parent = context.Background()
@@ -43,7 +69,17 @@ func runVersionCheck(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(parent, versionCheckTimeout)
 	defer cancel()
 
-	result, err := newVersionChecker(version.GetVersion()).Check(ctx)
+	current := version.GetVersion()
+	result, err := newVersionChecker(current).Check(ctx)
+	if updatecheck.CanCheckVersion(current) {
+		path := updateCachePath()
+		_ = updatecheck.SaveCache(path, updatecheck.LoadCache(path).Record(result, err, rootNow()))
+	}
+	return result, err
+}
+
+func runVersionCheck(cmd *cobra.Command, args []string) error {
+	result, err := checkAndRecord(cmd)
 	if err != nil {
 		return fmt.Errorf("unable to check for Beacon updates: %w", err)
 	}
@@ -60,9 +96,7 @@ func runVersionCheck(cmd *cobra.Command, args []string) error {
 	if result.UpdateAvailable {
 		fmt.Fprintf(out, "Beacon %s is available. Current version: %s\n", result.LatestVersion, result.CurrentVersion)
 		fmt.Fprintln(out, "If installed with Homebrew: brew upgrade beacon")
-		if result.ReleaseURL != "" {
-			fmt.Fprintf(out, "Download: %s\n", result.ReleaseURL)
-		}
+		fmt.Fprintf(out, "Download: %s\n", releaseDownloadURL(result))
 		return nil
 	}
 	fmt.Fprintf(out, "Beacon %s is up to date.\n", result.CurrentVersion)

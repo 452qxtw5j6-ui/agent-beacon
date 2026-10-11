@@ -1,17 +1,20 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 	"golang.org/x/term"
 
+	endpointconfig "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/config"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/selfupdate"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/updatecheck"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
@@ -35,13 +38,12 @@ const (
 	resetColor   = "\x1b[0m"
 
 	beaconCLIChangelogURL = "https://docs.beacon.sh/changelog/cli"
+	beaconReleasesURL     = "https://github.com/asymptote-labs/agent-beacon/releases/latest"
 )
 
 var (
-	newRootVersionChecker = func(currentVersion string) versionChecker {
-		return updatecheck.DefaultChecker(currentVersion)
-	}
-	rootUpdateCheckTimeout = 2 * time.Second
+	rootNow                = time.Now
+	rootStartUpdateRefresh = startDetachedUpdateRefresh
 	rootDetectInstall      = selfupdate.DetectInstall
 )
 
@@ -54,25 +56,56 @@ var beaconBanner = []string{
 	"╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝",
 }
 
+// maybePrintRootUpdateNotice follows the Codex/Claude Code pattern: the notice comes from the
+// cached result of an earlier lookup, so bare `beacon` never waits on the network. When the
+// cache is older than updatecheck.CacheTTL it starts a detached `beacon version refresh` that
+// updates the cache for the next run. BEACON_UPDATE_CHECK=0 or CI turns all of it off.
 func maybePrintRootUpdateNotice(cmd *cobra.Command) {
 	in, inOK := cmd.InOrStdin().(*os.File)
 	out, outOK := cmd.OutOrStdout().(*os.File)
 	if !inOK || !outOK || !isTerminal(in) || !isTerminal(out) {
 		return
 	}
+	showCachedUpdateNotice(out, shouldUseColor(out), os.Getenv)
+}
 
-	parent := cmd.Context()
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithTimeout(parent, rootUpdateCheckTimeout)
-	defer cancel()
-
-	result, err := newRootVersionChecker(version.GetVersion()).Check(ctx)
-	if err != nil || !result.UpdateAvailable {
+func showCachedUpdateNotice(out io.Writer, color bool, getenv func(string) string) {
+	current := version.GetVersion()
+	if updatecheck.Disabled(getenv) || !updatecheck.CanCheckVersion(current) {
 		return
 	}
-	printRootUpdateNotice(out, result, shouldUseColor(out), rootDetectInstall())
+
+	path := updateCachePath()
+	cache := updatecheck.LoadCache(path)
+	if cache.Stale(rootNow()) {
+		_ = rootStartUpdateRefresh()
+	}
+	result := cache.Notice(current)
+	if !result.UpdateAvailable {
+		return
+	}
+	printRootUpdateNotice(out, result, color, rootDetectInstall())
+}
+
+func updateCachePath() string {
+	return filepath.Join(endpointconfig.BaseDir(true), updatecheck.CacheFile)
+}
+
+// startDetachedUpdateRefresh runs `beacon version refresh` in the background with no standard
+// streams, so it outlives this process and never writes to the terminal.
+func startDetachedUpdateRefresh() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	child := exec.Command(exe, "version", "refresh")
+	child.Stdin, child.Stdout, child.Stderr = nil, nil, nil
+	// Its own session, so closing the terminal right after `beacon` does not kill the lookup.
+	child.SysProcAttr = service.DetachedProcAttrs()
+	if err := child.Start(); err != nil {
+		return err
+	}
+	return child.Process.Release()
 }
 
 func printRootUpdateNotice(out io.Writer, result updatecheck.Result, color bool, install selfupdate.Install) {
@@ -90,9 +123,18 @@ func printRootUpdateNotice(out io.Writer, result updatecheck.Result, color bool,
 	case selfupdate.InstallSystemPkg:
 		fmt.Fprintln(out, "Update with: sudo beacon endpoint update --apply")
 	default:
-		fmt.Fprintln(out, "Update with: beacon endpoint update")
+		// Tarballs, install.sh, go install, the MSI and source builds have no in-place
+		// updater: `beacon endpoint update` only applies to the system package.
+		fmt.Fprintf(out, "Download: %s\n", releaseDownloadURL(result))
 	}
 	fmt.Fprintln(out)
+}
+
+func releaseDownloadURL(result updatecheck.Result) string {
+	if result.ReleaseURL != "" {
+		return result.ReleaseURL
+	}
+	return beaconReleasesURL
 }
 
 func printRootSplash(cmd *cobra.Command) {
