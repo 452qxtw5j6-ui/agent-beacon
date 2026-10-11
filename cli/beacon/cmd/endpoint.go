@@ -481,7 +481,7 @@ func init() {
 	endpointTracesResetCmd.Flags().BoolVar(&endpointTraceHistoryOpts.yes, "yes", false, "Delete without asking")
 	endpointTracesListCmd.Flags().StringVarP(&endpointTraceOpts.query, "query", "q", "", "Filter traces by text")
 	endpointTracesListCmd.Flags().IntVar(&endpointTraceOpts.page, "page", 1, "Page number for trace listing")
-	endpointTracesListCmd.Flags().StringVar(&endpointTraceOpts.state, "state", "", "Filter by sharing state")
+	endpointTracesListCmd.Flags().StringVar(&endpointTraceOpts.state, "state", "", "Filter by sharing state: local_only, shared (including stale) or stale")
 	endpointTracesListCmd.Flags().StringVar(&endpointTraceOpts.visibility, "visibility", "", "Filter by sharing visibility")
 	endpointTracesSearchCmd.Flags().StringVar(&endpointTraceOpts.resultLevel, "result-level", "trace", "Return trace or event results")
 	endpointTracesShowCmd.Flags().IntVar(&endpointTraceOpts.offset, "offset", 1, "Start at this event number")

@@ -59,11 +59,24 @@ func runTopLevelTraces(cmd *cobra.Command, args []string) error {
 func printPlainTraceList(out io.Writer, result dashboard.TraceListResultV1) {
 	for _, trace := range result.Traces {
 		title := strings.Join(strings.Fields(trace.Title), " ")
-		fmt.Fprintf(out, "%s\t%s\t%s\t%s\n", trace.ID, trace.Harness.Name, trace.UpdatedAt, title)
+		fmt.Fprintf(out, "%s\t%s\t%s\t%s%s\n", trace.ID, trace.Harness.Name, trace.UpdatedAt, title, plainSharing(trace))
 	}
 	if result.Truncated {
 		fmt.Fprintf(out, "Showing %d of %d traces; use `beacon endpoint traces list --page` to continue.\n", result.Returned, result.TotalMatched)
 	}
+}
+
+// plainSharing is a shared trace's extra column: its state and link, and for a stale trace the
+// command that refreshes it.
+func plainSharing(trace dashboard.TraceSummaryV1) string {
+	if trace.Sharing.URL == "" {
+		return ""
+	}
+	column := "\t" + trace.Sharing.State + " " + trace.Sharing.URL
+	if trace.Sharing.State == "stale" && trace.Sharing.RefreshCommand != "" {
+		column += " (" + trace.Sharing.RefreshCommand + ")"
+	}
+	return column
 }
 
 var endpointTracesStatusCmd = &cobra.Command{

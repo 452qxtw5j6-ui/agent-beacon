@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/gitlink"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 // gitHookBudget bounds the post-commit hook. Linking reads recent runtime log and writes one
@@ -78,8 +79,11 @@ var gitHookPostRewriteCmd = &cobra.Command{
 }
 
 var gitSetupOpts struct {
-	allowHooksPath bool
-	shareNotes     bool
+	allowHooksPath  bool
+	shareNotes      bool
+	shareSessions   bool
+	shareVisibility string
+	yes             bool
 }
 
 func runGitSetup(cmd *cobra.Command, _ []string) error {
@@ -94,6 +98,27 @@ func runGitSetup(cmd *cobra.Command, _ []string) error {
 	}
 	if cmd.Flags().Changed("share-notes") {
 		share := gitSetupOpts.shareNotes
+		opts.ShareNotes = &share
+	}
+	shareSessions := cmd.Flags().Changed("share-sessions") && gitSetupOpts.shareSessions
+	visibility := strings.ToLower(strings.TrimSpace(gitSetupOpts.shareVisibility))
+	if shareSessions {
+		if opts.ShareNotes != nil && !*opts.ShareNotes {
+			return errors.New("--share-sessions shares sessions from the pre-push hook that --share-notes installs; it cannot be combined with --share-notes=false")
+		}
+		if !asymptoteobserve.ValidShareVisibility(visibility) {
+			return fmt.Errorf("--share-visibility must be public, direct or private, not %q", gitSetupOpts.shareVisibility)
+		}
+		if visibility == asymptoteobserve.ShareVisibilityPublic && !gitSetupOpts.yes {
+			if !shareIsTTY() || isCIEnvironment() {
+				return errors.New("public sharing lists every session linked to a pushed commit in Discover; pass --yes to set it up without a terminal to confirm")
+			}
+			fmt.Fprint(cmd.ErrOrStderr(), "Share every session linked to a pushed commit publicly? Anyone can find and read them in Discover. [y/N] ")
+			if !confirmNo(shareStdin) {
+				return errors.New("nothing was changed")
+			}
+		}
+		share := true
 		opts.ShareNotes = &share
 	}
 	result, err := gitlink.InstallHooks(ctx, repo, opts)
@@ -118,11 +143,35 @@ func runGitSetup(cmd *cobra.Command, _ []string) error {
 		}
 		return err
 	}
+	sessionsChanged := ""
+	switch {
+	case shareSessions:
+		if err := gitlink.SetShareSessions(ctx, repo, true, visibility); err != nil {
+			return err
+		}
+		sessionsChanged = "on"
+	case cmd.Flags().Changed("share-sessions") || (opts.ShareNotes != nil && !*opts.ShareNotes):
+		if enabled, _ := gitlink.ShareSessionsConfig(ctx, repo); enabled {
+			if err := gitlink.SetShareSessions(ctx, repo, false, ""); err != nil {
+				return err
+			}
+			sessionsChanged = "off"
+		}
+	}
 	if gitOpts.jsonOutput {
-		return writeIndentedJSON(out, result)
+		return writeIndentedJSON(out, struct {
+			gitlink.InstallResult
+			ShareSessions string `json:"share_sessions,omitempty"`
+		}{result, sessionsChanged})
 	}
 	for _, r := range result.Reports {
 		fmt.Fprintf(out, "%-9s %s (calls %s)\n", r.Action, r.Path, filepath.Base(r.Script))
+	}
+	switch sessionsChanged {
+	case "on":
+		fmt.Fprintf(out, "set       %s = true, %s = %s\n", gitlink.ShareSessionsKey, gitlink.ShareVisibilityKey, visibility)
+	case "off":
+		fmt.Fprintf(out, "unset     %s\n", gitlink.ShareSessionsKey)
 	}
 	if result.RewriteRefSet {
 		fmt.Fprintf(out, "set       notes.rewriteRef = %s\n", gitlink.NotesRef)
@@ -135,6 +184,9 @@ func runGitSetup(cmd *cobra.Command, _ []string) error {
 	}
 	if opts.ShareNotes != nil && *opts.ShareNotes {
 		fmt.Fprintf(out, "Commit links are shared: each `git push` also pushes %s to the same remote, and `git fetch` brings teammates' links.\n", gitlink.NotesRef)
+	}
+	if sessionsChanged == "on" {
+		fmt.Fprintf(out, "Each `git push` also shares the agent sessions linked to the pushed commits to beacon.sh (%s), using your `beacon login` or BEACON_API_KEY, and writes their links into the notes.\n", visibility)
 	}
 	fmt.Fprintln(out, "New commits in this repository are linked to the agent sessions that wrote them.")
 	fmt.Fprintln(out, "See them with `beacon git notes`; link an older commit with `beacon git link <commit>`.")
@@ -160,6 +212,9 @@ func runGitRemove(cmd *cobra.Command, _ []string) error {
 	}
 	if result.RewriteRefRemoved {
 		fmt.Fprintf(out, "unset     notes.rewriteRef = %s\n", gitlink.NotesRef)
+	}
+	if result.ShareSessionsRemoved {
+		fmt.Fprintf(out, "unset     %s\n", gitlink.ShareSessionsKey)
 	}
 	for _, remote := range result.FetchRemoved {
 		fmt.Fprintf(out, "unset     remote.%s.fetch %s\n", remote, gitlink.FetchRefspec(remote))
@@ -193,6 +248,8 @@ func runGitStatus(cmd *cobra.Command, _ []string) error {
 	for _, st := range status.States {
 		state := "not installed"
 		switch {
+		case st.Installed && st.Outdated:
+			state = "installed, from an earlier Beacon (run `beacon git setup` to update it)"
 		case st.Installed:
 			state = "installed"
 		case st.BlockPresent:
@@ -215,6 +272,15 @@ func runGitStatus(cmd *cobra.Command, _ []string) error {
 	for _, remote := range status.FetchRemotes {
 		fmt.Fprintf(out, "            fetches from %s bring its links\n", remote)
 	}
+	sessions := "off (`beacon git setup --share-sessions` turns it on)"
+	if status.ShareSessions {
+		vis := status.ShareVisibility
+		if vis == "" {
+			vis = asymptoteobserve.ShareVisibilityDirect
+		}
+		sessions = "on: pushes share linked sessions to beacon.sh (" + vis + ")"
+	}
+	fmt.Fprintf(out, "sessions    %s\n", sessions)
 	return nil
 }
 
@@ -239,7 +305,7 @@ func gitPostCommit(ctx context.Context) (gitlink.Result, bool) {
 	if err != nil || gitlink.ReplayInProgress(ctx, repo) {
 		return gitlink.Result{}, false
 	}
-	result, err := gitlink.Attribute(ctx, repo, gitlink.Options{LogPath: gitRuntimeLogPath()})
+	result, err := gitlink.Attribute(ctx, repo, gitlink.Options{LogPath: gitRuntimeLogPath(), ShareURL: gitShareURLLookup(gitRuntimeLogPath())})
 	if err != nil {
 		return gitlink.Result{}, false
 	}
@@ -261,6 +327,9 @@ func runGitHookPostRewrite(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return nil
 	}
+	// Normalizing reads the share URLs in notes; a self-hosted or staging Beacon's links must
+	// count as URLs here as they do everywhere else.
+	gitAllowShareHosts()
 	scanner := bufio.NewScanner(cmd.InOrStdin())
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
@@ -311,5 +380,8 @@ func init() {
 	}
 	gitHookPostCommitCmd.Flags().StringVar(&gitOpts.logPath, "log-path", "", "Runtime JSONL log to read sessions from (default the local runtime log)")
 	gitSetupCmd.Flags().BoolVar(&gitSetupOpts.allowHooksPath, "hooks-path", false, "Install into core.hooksPath's directory when it is set")
+	gitSetupCmd.Flags().BoolVar(&gitSetupOpts.shareSessions, "share-sessions", false, "Also share the sessions linked to pushed commits to beacon.sh during each git push, and note their links (implies --share-notes; --share-sessions=false turns it off)")
+	gitSetupCmd.Flags().StringVar(&gitSetupOpts.shareVisibility, "share-visibility", asymptoteobserve.ShareVisibilityDirect, "With --share-sessions, the visibility of new traces: direct (anyone with the link), private or public")
+	gitSetupCmd.Flags().BoolVar(&gitSetupOpts.yes, "yes", false, "With --share-visibility public, set it up without asking")
 	gitSetupCmd.Flags().BoolVar(&gitSetupOpts.shareNotes, "share-notes", false, "Share links with remotes: push them with each git push and fetch teammates' (--share-notes=false turns it off)")
 }

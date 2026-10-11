@@ -8,33 +8,42 @@ description: "Share a local agent session as a trace on beacon.sh"
 `beacon share` publishes one local agent session as a shared trace on beacon.sh and prints its link. The trace shows the session's prompts, the agent's answers and reasoning, and every tool call with its result, in order.
 
 ```bash title="Command syntax"
-beacon share [--session <id> | --source-path <path> | --cwd <dir>] [flags]
+beacon share [--current | --session <id> | --source-path <path> | --cwd <dir>] [flags]
 beacon share --list [--cwd <dir>] [--harness <runtime>]
 beacon share refresh [<external-id> | <session-id>] [flags]
+beacon share --follow [--interval 10s] [selector flags]
+beacon share auto enable [--visibility direct|private|public] [--project <dir>] [--yes]
+beacon share auto disable [--project <dir>]
+beacon share auto status [--project <dir>]
 ```
 
-Without a session flag, `beacon share` shares the most recent session that ran in the current directory. It names the session it picked before uploading anything.
+Without a session flag, `beacon share` shares the session it runs inside (see [Sharing this session](#sharing-this-session)), and otherwise the most recent session that ran in the current directory. It names the session it picked before uploading anything.
 
 ```bash title="Share the session you just finished here"
 beacon share
+```
+
+```bash title="From inside an agent: share this session"
+beacon share --current --harness claude_code --json
 ```
 
 ```bash title="See what would be uploaded, without uploading it"
 beacon share --print
 ```
 
-Sharing is always something you ask for. Hooks, plugins and background jobs never share a session, and nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint.
+Sharing is always something you ask for. Hooks, plugins and background jobs never upload a session, with one exception you turn on yourself: after [`beacon git setup --share-sessions`](/cli/git#sharing-sessions-on-push), the git pre-push hook shares the sessions linked to the commits you push, during that push, within the hook's time budget and never failing it. Nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint. [Auto-share](#auto-share), which you turn on, asks Beacon Cloud to publish sessions from the events forwarding already sends.
 
 ## Choosing the session
 
 | Flag | Picks |
 |------|-------|
+| `--current` | The session this command runs inside. The default when no other selector is given |
 | `--session <id>` | The session with this id, or the one session whose id starts with this prefix (at least 6 characters) |
 | `--source-path <path>` | The session stored in this file of its runtime's session store |
 | `--cwd <dir>` | The most recent session that ran in this directory or below it. This is the default, with the current directory |
 | `--harness <runtime>` | Only sessions of this runtime (`claude`, `codex`, `cursor`, ...). `auto`, the default, considers every runtime |
 
-`--session`, `--source-path` and `--cwd` cannot be combined. `--list` shows the candidates instead of sharing, newest first, and takes `--cwd`, `--harness` and `--limit` (default 20, `0` for all).
+`--current`, `--session`, `--source-path` and `--cwd` cannot be combined. `--list` shows the candidates instead of sharing, newest first, and takes `--cwd`, `--harness` and `--limit` (default 20, `0` for all).
 
 ```bash title="List and pick"
 beacon share --list --cwd ~/src/app
@@ -42,6 +51,16 @@ beacon share --session 5f0c1d2e
 ```
 
 Sessions are read the way [`beacon handoff`](/cli/handoff) reads them: from the runtime's own session store when Beacon reads that runtime's store, which keeps the most of each step, and otherwise from Beacon's runtime log. `--store-dir <runtime>=<path>` reads a store from another location, and `--log-path` reads another runtime log.
+
+## Sharing this session
+
+An agent asked to "share this session" runs `beacon share` from its own shell, where it does not know its session id. `--current`, which is also what `beacon share` does with no selector, finds it in this order:
+
+1. **`BEACON_SESSION_ID`** (with `BEACON_HARNESS`). Beacon's Claude Code `SessionStart` hook appends `export BEACON_SESSION_ID=<id>` and `export BEACON_HARNESS=claude_code` to the file Claude Code names in `CLAUDE_ENV_FILE`, which Claude Code runs before each shell command of the session, so every command the agent runs carries its session id. Any other launcher may set the two variables too. The step is skipped under `--cwd`, and when `--harness` names another runtime, because a runtime started from a Claude Code shell (Codex, OpenCode, Cursor, ...) inherits Claude Code's variables. For the same reason, without `--harness` the variables are trusted only when nothing contradicts them: `beacon share` refuses, naming both sessions, when the session they name ran in another directory (not this one or a directory above it), or when another runtime has worked in this directory more recently than that session (in the active-session record or the sessions listed here). Pass `--harness <runtime>` for the runtime you are in, or `--session <id>`. `--harness` naming the variables' own runtime takes them as they are. An id that is set but cannot be read is an error, never a reason to share another session, and so is an id set without `BEACON_HARNESS` or with a `BEACON_HARNESS` that names no runtime Beacon knows: set both, or name the session with `--session`.
+2. **The active-session record.** Every Beacon hook notes, per runtime and working directory, the session it last saw, in `~/.beacon/endpoint/active-sessions.json` (0600 under a 0700 directory). The record holds session ids, runtime names, directories and times, never content, and nothing in it leaves the machine. It keeps at most 256 entries and drops any not seen for 14 days; `--current` uses an entry seen within the last day, and only when it was seen at least as recently as the directory's newest session was updated: only hooks write the record, so a runtime Beacon sees only through OTLP or its session store (GitHub Copilot CLI, fx) never updates it, and its newer session wins over an older entry.
+3. **The most recent session** that ran in the directory.
+
+`--harness` narrows every step to one runtime, which matters when two runtimes worked in the same directory. When nothing ran in the directory, the error names the most recent sessions elsewhere so one can be passed with `--session`. `--json` reports how the session was chosen in `selected_by`: `env`, `active`, `recent`, `session` or `source_path`.
 
 ## What is uploaded
 
@@ -97,8 +116,40 @@ Sharing a session again updates the same trace: each session has one stable exte
 ```bash
 beacon share refresh claude_code:5f0c1d2e-aaaa-4bbb-8ccc-000000000001
 beacon share refresh 5f0c1d2e
-beacon share refresh            # the most recent session in this directory
+beacon share refresh            # this session, found like --current
 ```
+
+## Follow a running session
+
+`--follow` keeps the trace current while the session runs. It shares the session, then checks it again every `--interval` (default `10s`, at least `1s`) and uploads what changed, until the session records its end (`session.ended`, in the runtime's store or in the runtime log, where the hooks write it; a resumed session's earlier end does not count once newer activity follows it) or you press Ctrl+C. A check is a local read; a request is made only when the session's trace events changed, and it sends only the events beacon.sh lacks, the same way `refresh` does. A failed upload after the first is reported and retried on the next check. When the session has ended and its last events cannot be uploaded, `--follow` retries three more times, one interval apart, and then exits non-zero naming what the trace holds. If the runtime log cannot be written after an upload, `--follow` warns and keeps going. A check that cannot read the session is reported once per distinct error, and after five failed checks in a row `--follow` exits non-zero.
+
+```bash
+beacon share --follow                          # this session, until it ends
+beacon share --follow --session 5f0c1d2e --interval 30s
+```
+
+`--follow` waits for a session that has nothing to share yet. The link is printed after the first upload; with `--json`, each upload prints one JSON document per line, and the last carries `"final":true` (and `"ended":true` when the session ended). The runtime log gets one `session.shared` event when the trace is first shared and one after each later upload that sent events (a refresh, which keeps the share date), so the dashboard does not show a followed session as out of date. `--follow` cannot be combined with `--print` or `--list`.
+
+## Auto-share
+
+`beacon share auto enable` publishes new sessions without running `beacon share` each time. It works through [Beacon Cloud forwarding](/cli/endpoint-connect), never from the hooks over the network:
+
+1. On the first event Beacon's hooks see for a session (its `SessionStart` where the runtime has one), they write one `session.share_requested` event to the local runtime log, with the session id, runtime and the chosen visibility in `share.visibility`. One per session: the hooks remember which sessions they requested in `~/.beacon/endpoint/active-sessions.json`.
+2. Forwarding ships that line with the rest of the runtime log.
+3. beacon.sh creates the shared trace from the session's forwarded events with the same `beacon.trace.v1` projection `beacon share` uses (redaction and path rewriting included), and keeps it current as more arrive. Its external id is the one `beacon share` uses (`<runtime>:<session-id>`), so a session shared both ways is one trace.
+
+```bash
+beacon share auto enable                      # every new session, direct (link only)
+beacon share auto enable --project .          # only sessions in this repository
+beacon share auto status
+beacon share auto disable
+```
+
+`enable` warns when the endpoint is not connected to Beacon Cloud, because then nothing is published (the event is written and stays local), and when forwarding is in metadata-only mode, because the trace then has no prompts, answers, reasoning or tool output. `--visibility public` lists every new session in Discover; it asks first, and without a terminal it is refused unless you pass `--yes`. Sessions already running are requested on their next event; earlier sessions are not, so share those with `beacon share`. Turning auto-share off stops new requests; traces already published stay until you delete them on beacon.sh. `disable` without `--project` turns it off everywhere: it overrides every project you enabled with `--project`, which it names, without changing their settings, so a later `enable` brings back exactly what was on before. `disable --project <dir>` turns off only that project. `enable --project <dir>` while it is off everywhere clears that switch (other sessions stay off) and says so.
+
+The setting is in `~/.beacon/endpoint/share.json` (0600). `--project <dir>` applies the choice to one project: it is recorded there for you by path, and `<dir>/.beacon/share.json` records it in the repository so it can be committed. A project file can turn auto-share off on its own, and an off file wins over your own setting for the same directory, so a repository that opts out stays out for everyone; it turns auto-share on only for someone who ran `beacon share auto enable --project` in that project, and the visibility always comes from that person's own setting. A cloned repository can never publish your sessions. The nearest directory with a choice (yours or the repository's) decides, so a setting you made for a subdirectory applies there even under a parent repository's opt-out; elsewhere, the setting for every session does. The off switch for every session overrides all of it. `status` shows which applies in the current directory (or `--project`) and why, the setting for every session (on, off or not set), each project you set and whether the off switch overrides it, and the forwarding state; `--json` prints it as a document.
+
+The `session.share_requested` event is marked `event.fidelity=inferred` because Beacon originated it rather than a runtime reporting it, and it is not itself part of any shared trace.
 
 ## Credentials
 
@@ -108,18 +159,111 @@ beacon share refresh            # the most recent session in this directory
 2. Your [`beacon login`](/cli/account-auth) sign-in, when it carries the `traces:write` permission.
 3. A Beacon API key in `BEACON_API_KEY`.
 
-A sign-in from an older `beacon login` lacks `traces:write`; run `beacon login` again. An API key is sent to beacon.sh, or to `--auth-url` / `BEACON_AUTH_URL` when set. Either credential goes only in the request's `Authorization` header, redirects are refused, and neither is printed.
+A sign-in from an older `beacon login` lacks `traces:write`; run `beacon login` again.
+
+### API keys for CI and other headless machines
+
+Where nobody can run `beacon login` (CI runners, containers, scheduled jobs), use a Beacon API key:
+
+1. On beacon.sh, create an API key with the `traces:write` permission. It starts with `bcn_api_`.
+2. Store it as a secret in your CI system, for example a GitHub Actions secret or a masked GitLab CI/CD variable named `BEACON_API_KEY`.
+3. Expose it to the step that runs `beacon share` as the `BEACON_API_KEY` environment variable. Prefer the variable to `--key`, which puts the key on the command line where process listings can see it.
+4. Run `beacon share` in the same job as the agent, after it: the session is read from the runner's own disk.
+
+With no sign-in on the machine, `BEACON_API_KEY` is used. On a machine that also has a sign-in carrying `traces:write`, the sign-in wins unless you pass `--key`. A key for a self-hosted Beacon service goes with `BEACON_AUTH_URL` (or `--auth-url`) set to that service. An API key is sent to beacon.sh, or to `--auth-url` / `BEACON_AUTH_URL` when set. Either credential goes only in the request's `Authorization` header, redirects are refused, and neither is printed.
+
+## CI examples
+
+These run an agent and share its session in the same job. Claude Code and Codex CLI keep their sessions in stores `beacon share` reads directly, so nothing else needs to be installed. For a runtime whose sessions Beacon reads only from its runtime log, start [Beacon CI telemetry](/cli/ci-start) before the agent and pass the CI log with `--log-path`. Without a terminal, `--visibility public` needs `--yes`; the default, `direct`, makes the trace viewable by anyone with the link.
+
+### GitHub Actions
+
+```yaml title=".github/workflows/agent.yml"
+name: Agent
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Beacon
+        run: curl -fsSL https://github.com/asymptote-labs/agent-beacon/releases/latest/download/install.sh | bash
+
+      - name: Run the agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: npx -y @anthropic-ai/claude-code --print "Fix the failing test and explain the change"
+
+      - name: Share the agent session
+        id: share
+        if: always()
+        env:
+          BEACON_API_KEY: ${{ secrets.BEACON_API_KEY }}
+        run: |
+          out="$(beacon share --cwd . --harness auto --json)" || { echo "$out"; exit 0; }
+          url="$(printf '%s' "$out" | jq -r '.data.shared_url')"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "### Agent session" >> "$GITHUB_STEP_SUMMARY"
+          echo "$url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Link the session on the pull request
+        if: github.event_name == 'pull_request' && steps.share.outputs.url != ''
+        uses: actions/github-script@v7
+        env:
+          SHARE_URL: ${{ steps.share.outputs.url }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `Agent session: ${process.env.SHARE_URL}`,
+            });
+```
+
+The URL reaches the script through an environment variable rather than being written into the script, so nothing in the share output can change what the script runs. Sharing failures leave the job green (`exit 0`); drop that to make a missing trace fail the build. Share after the agent finishes, as above, rather than with `--follow`: `--follow` needs the session to exist when it starts (it exits with "no agent session found" otherwise), and most CI runners stop background processes when the step that started them ends. Keep `--follow` for watching a session from your own terminal, or for a step that runs it alongside the agent and waits for it.
+
+### GitLab CI
+
+```yaml title=".gitlab-ci.yml"
+agent:
+  image: node:22
+  variables:
+    # BEACON_API_KEY and ANTHROPIC_API_KEY are masked CI/CD variables.
+    GIT_DEPTH: "0"
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq jq sudo
+    - curl -fsSL https://github.com/asymptote-labs/agent-beacon/releases/latest/download/install.sh | bash
+  script:
+    - npx -y @anthropic-ai/claude-code --print "Fix the failing test and explain the change"
+  after_script:
+    - beacon share --cwd "$CI_PROJECT_DIR" --harness auto --json | tee beacon-share.json || true
+    - echo "Agent session: $(jq -r '.data.shared_url // empty' beacon-share.json)"
+  artifacts:
+    when: always
+    paths:
+      - beacon-share.json
+```
+
+`after_script` runs in the same job even when the agent fails, so the session is still on disk.
 
 ## Local record
 
-After an upload, `beacon share` writes one `session.shared` event to the runtime log, in the session's own timeline. It carries the link, the visibility and when the session was shared (and refreshed), so [`beacon endpoint traces list --state shared`](/cli/endpoint-traces) and the local dashboard show the session as shared. The event is marked `event.fidelity=inferred` and has no collection method, because no runtime reported it. It is not itself uploaded with the trace.
+After an upload, `beacon share` writes one `session.shared` event to the runtime log, in the session's own timeline. It carries the link, the visibility and when the session was shared (and refreshed), so [`beacon endpoint traces list --state shared`](/cli/endpoint-traces) and the local dashboard show the session as shared. A shared session with newer local activity shows as stale; `--state shared` still lists it, and `--state stale` lists only those. The event is marked `event.fidelity=inferred` and has no collection method, because no runtime reported it. It is not itself uploaded with the trace.
 
 ## Output
 
 The link goes to stdout and a summary to stderr. `--json` prints one document:
 
 ```json
-{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","harness":"claude_code","event_count":42,"uploaded":42}}
+{"ok":true,"data":{"trace_id":"k3x...","external_id":"claude_code:5f0c1d2e-...","shared_url":"https://beacon.sh/s/k3x...","visibility":"direct","harness":"claude_code","event_count":42,"uploaded":42,"selected_by":"env"}}
 ```
 
 `event_count` is how many events the trace holds on beacon.sh, and `uploaded` how many this run sent. On failure, `--json` prints `{"ok":false,"error":"..."}` and the command exits non-zero.
@@ -128,6 +272,7 @@ The link goes to stdout and a summary to stderr. `--json` prints one document:
 
 | Flag | Description |
 |------|-------------|
+| `--current` | The session this command runs inside (default with no other selector) |
 | `--session <id>` | Session id or unique prefix |
 | `--source-path <path>` | The session's file in its runtime's store |
 | `--cwd <dir>` | Most recent session in this directory (default: current directory) |
@@ -140,6 +285,8 @@ The link goes to stdout and a summary to stderr. `--json` prints one document:
 | `--limit <n>` | With `--list`, the most sessions to show |
 | `--print`, `--dry-run` | Print the payload and send nothing |
 | `--yes` | Share publicly without asking |
+| `--follow` | Keep uploading new events until the session ends or Ctrl+C |
+| `--interval <duration>` | With `--follow`, how often to check the session (default `10s`) |
 | `--json` | Print the result as JSON |
 | `--store-dir <runtime>=<path>` | Read a runtime's sessions from this directory (repeatable) |
 | `--log-path <path>` | Runtime log to read from and record the share in |

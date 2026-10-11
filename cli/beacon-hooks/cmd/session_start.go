@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"regexp"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -9,6 +12,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/logging"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/state"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 var sessionStartCmd = &cobra.Command{
@@ -69,5 +73,39 @@ func runSessionStart(cmd *cobra.Command, args []string) {
 
 	logger.Info("Session initialized", "session_id", sessionID, "platform", platformFlag)
 	emitHookEvent(logger, "session.started", "session", "info", "Agent session started", input, sessionFields(sessionID, input))
+	if err := exportClaudeSessionEnv(sessionID); err != nil {
+		logger.Warn("Failed to export the session id to CLAUDE_ENV_FILE", "error", err.Error())
+	}
 	outputJSON(emptyResponse)
+}
+
+// claudeEnvSessionID is the shape of session id written to CLAUDE_ENV_FILE. The file is run as shell
+// code before every Bash command, so anything outside this set is refused rather than quoted.
+var claudeEnvSessionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
+
+// exportClaudeSessionEnv appends BEACON_SESSION_ID and BEACON_HARNESS to the file Claude Code names
+// in CLAUDE_ENV_FILE, so the shell commands an agent runs later in the session -- `beacon share
+// --current` among them -- know which session they belong to.
+//
+// Claude Code documents CLAUDE_ENV_FILE for SessionStart hooks only: the hook appends `export`
+// lines and Claude Code runs the file before each Bash command. Appending keeps what other hooks
+// wrote, and a later SessionStart (a /clear starts a new session) appends a newer value that
+// overrides the earlier one. Other runtimes and a missing variable leave everything untouched.
+func exportClaudeSessionEnv(sessionID string) error {
+	if asymptoteobserve.NormalizeHarnessName(platformFlag) != "claude_code" {
+		return nil
+	}
+	path := strings.TrimSpace(os.Getenv("CLAUDE_ENV_FILE"))
+	if path == "" || !claudeEnvSessionID.MatchString(sessionID) {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	_, werr := fmt.Fprintf(f, "export BEACON_SESSION_ID=%s\nexport BEACON_HARNESS=claude_code\n", sessionID)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	return werr
 }

@@ -8,8 +8,10 @@ bring that memory back to any agent in any harness.
 | `beacon-memory-recall` | Before a task, fetch approved project memory (MCP `get_memory_context`, or `beacon memory list`). | None |
 | `beacon-memory-distill` | Pick traces, score them with the evaluator after a dry run and the user's yes, read each candidate's source trace, draft a grounded lesson, and approve it with the user. | Evaluator call only, with consent |
 | `beacon-memory-promote` | Install an approved memory as `.agents/skills/<slug>/SKILL.md` so harnesses load it automatically. | None |
+| `beacon-lens-create` | Build, lint, preview and install a lens for the local Beacon dashboard. | None |
+| `beacon-trace-share` | Share the current session as a trace on beacon.sh (`beacon share --current`) and post the link; direct by default, asks before public. | Uploads the session, on request |
 
-All three need the [Beacon CLI](https://docs.beacon.sh/get-started/overview) with endpoint
+Every skill needs the [Beacon CLI](https://docs.beacon.sh/get-started/overview) with endpoint
 capture installed. The plugin also registers the local `beacon mcp serve` server for
 harnesses that take MCP servers from plugins.
 

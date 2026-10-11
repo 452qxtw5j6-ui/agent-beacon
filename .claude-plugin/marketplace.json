@@ -9,7 +9,7 @@
     {
       "name": "beacon",
       "source": "./agent-skills",
-      "description": "Cross-harness memory from Beacon traces: recall reviewed project lessons, distill agent sessions into approved memory, and promote memory to Agent Skills.",
+      "description": "Cross-harness memory from Beacon traces: recall reviewed project lessons, distill agent sessions into approved memory, promote memory to Agent Skills, build dashboard lenses, and share sessions to beacon.sh.",
       "version": "0.1.0",
       "category": "productivity",
       "tags": ["memory", "traces", "observability"]

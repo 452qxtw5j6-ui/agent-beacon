@@ -22,6 +22,7 @@ control of every write to memory.
 | `beacon-memory-distill` | Turns selected traces into reviewed memory: dry run, a consented evaluation, a lesson drafted from the source trace, approval by the user | Evaluator call only, after the user agrees |
 | `beacon-memory-promote` | Installs an approved memory as a project Agent Skill | None |
 | `beacon-lens-create` | Builds a [lens](/concepts/lenses) for the local dashboard: reads the spec, inspects real trace data, writes, lints and previews the file with the user, then installs it | None |
+| `beacon-trace-share` | Shares the current session as a trace on beacon.sh with [`beacon share --current`](/cli/share#sharing-this-session) and posts the link. Direct (link-only) by default, asks before public | Uploads the session to beacon.sh, only when you ask |
 
 ## Requirements
 
@@ -30,6 +31,8 @@ control of every write to memory.
 - For `beacon-memory-distill` only: an evaluator key in `TYPESAFE_API_KEY` or
   `BEACON_JEV_API_KEY`, or `BEACON_JEV_ENDPOINT` pointing at your organization's
   compatible evaluator. Recall and promote need no key.
+- For `beacon-trace-share` only: a `beacon login` sign-in with the `traces:write`
+  permission, or a Beacon API key in `BEACON_API_KEY`.
 
 The plugin also registers Beacon's local MCP server (`beacon mcp serve`) in harnesses
 that accept MCP servers from plugins. When the server is available, recall uses the
@@ -77,7 +80,8 @@ Plugin installs also register Beacon's local MCP server. Package, power, and ski
 installs add the skills only, and recall falls back to `beacon memory list`.
 
 In Claude Code the skills appear as `/beacon:beacon-memory-recall`,
-`/beacon:beacon-memory-distill`, and `/beacon:beacon-memory-promote`. Every harness also
+`/beacon:beacon-memory-distill`, `/beacon:beacon-memory-promote`, `/beacon:beacon-lens-create`,
+and `/beacon:beacon-trace-share`. Every harness also
 loads them on its own when a request matches.
 
 ## Using the skills
@@ -113,6 +117,14 @@ when your request matches.
     `.agents/skills/<slug>/SKILL.md` once you confirm. Committing it shares it with
     every teammate and every harness that reads `.agents/skills`.
   </Step>
+  <Step title="Share a session">
+    Ask to "share this session" or "publish this trace". `beacon-trace-share` runs
+    `beacon share --current --harness <runtime> --json`, which finds the session the agent
+    is running in, and replies with the link. The trace is direct (anyone with the link) unless
+    you ask for private; the agent asks you before making a trace public. When no session is
+    found it lists candidates with `beacon share --list`, and when you are not signed in it asks
+    you to run `beacon login` yourself.
+  </Step>
 </Steps>
 
 ## Why the agent writes the lesson
@@ -141,9 +153,12 @@ flag.
 
 - **Nothing runs from hooks.** The skills act only when an agent loads them in response
   to a request.
-- **One networked step.** Only the evaluation in `beacon-memory-distill` leaves the
-  machine, after a dry run and your explicit yes. It sends the bounded, redacted trace
-  projection described in [Jev evaluation](/concepts/cross-harness-memory#jev-evaluation).
+- **Two networked steps, both on request.** The evaluation in `beacon-memory-distill`
+  leaves the machine after a dry run and your explicit yes. It sends the bounded, redacted
+  trace projection described in [Jev evaluation](/concepts/cross-harness-memory#jev-evaluation).
+  `beacon-trace-share` uploads the session you asked to share to beacon.sh, redacted as
+  [`beacon share`](/cli/share#what-is-uploaded) describes, and never makes it public without
+  asking.
 - **Keys stay out of the chat.** The agent checks whether a key is set without printing
   it, never asks you to paste one, and never passes it on the command line.
 - **No silent writes.** Approving, rejecting, superseding, and installing a skill each

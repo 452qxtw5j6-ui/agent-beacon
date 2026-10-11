@@ -141,7 +141,11 @@ func (m textMatch) condition(alias, fts string) (string, []any) {
 func sharingCondition(alias string, query TraceQuery) (string, []any) {
 	var parts []string
 	var args []any
-	if query.State != "" {
+	switch {
+	case strings.EqualFold(query.State, "shared"):
+		// As sharingStateMatches: shared includes stale.
+		parts = append(parts, "("+alias+".state = 'shared' COLLATE NOCASE OR "+alias+".state = 'stale' COLLATE NOCASE)")
+	case query.State != "":
 		parts = append(parts, alias+".state = ? COLLATE NOCASE")
 		args = append(args, query.State)
 	}

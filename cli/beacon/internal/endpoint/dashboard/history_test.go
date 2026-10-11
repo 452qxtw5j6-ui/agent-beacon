@@ -125,7 +125,7 @@ func traceAnswers(t *testing.T, path string, showIDs []string) map[string]string
 		}
 		out[fmt.Sprintf("search q=%q typed", q)] = mustJSON(t, typed)
 	}
-	for _, state := range []string{"local_only", "LOCAL_ONLY", "shared"} {
+	for _, state := range []string{"local_only", "LOCAL_ONLY", "shared", "stale"} {
 		list, err := ReadTraceList(path, TraceQuery{State: state, Limit: 50})
 		if err != nil {
 			t.Fatalf("ReadTraceList state=%s: %v", state, err)
@@ -200,6 +200,14 @@ func parityFixture() [][]byte {
 		`{"timestamp":"2026-06-11T14:00:00Z","event":{"id":"q0","action":"prompt.submitted","category":"prompt"},"harness":{"name":"codex_cli"},"session":{"id":"s6"},"prompt":{"text":"unsequenced goes first"}}`,
 		`{"timestamp":"2026-06-11T13:59:00Z","event":{"id":"q-early","action":"session.started","category":"session"},"harness":{"name":"codex_cli","version":"1.0"},"session":{"id":"s6"}}`,
 		`{"timestamp":"2026-06-11T13:00:05Z","event":{"id":"s5b","action":"command.executed","category":"command"},"harness":{"name":"opencode"},"session":{"id":"s5"},"command":{"command":"ls a-b"}}`,
+		// Shared with beacon share, then active again: the trace is stale. s8 was shared after
+		// its last activity, and the commit link after that does not make it stale.
+		`{"timestamp":"2026-06-11T15:00:00Z","event":{"id":"h1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code","collection_method":"hook"},"session":{"id":"s7"},"prompt":{"text":"share me"}}`,
+		`{"timestamp":"2026-06-11T15:01:00Z","event":{"id":"h2","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"s7"},"raw":{"shared_url":"https://beacon.sh/s/s7trace","visibility":"direct","shared_at":"2026-06-11T15:01:00Z","last_refreshed_at":"2026-06-11T15:01:00Z"}}`,
+		`{"timestamp":"2026-06-11T15:02:00Z","event":{"id":"h3","action":"command.executed","category":"command"},"harness":{"name":"claude_code","collection_method":"hook"},"session":{"id":"s7"},"command":{"command":"go test ./..."},"message":"later work"}`,
+		`{"timestamp":"2026-06-11T16:00:00Z","event":{"id":"k1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code","collection_method":"hook"},"session":{"id":"s8"},"prompt":{"text":"shared and current"}}`,
+		`{"timestamp":"2026-06-11T16:01:00Z","event":{"id":"k2","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"s8"},"raw":{"shared_url":"https://beacon.sh/s/s8trace","visibility":"private","shared_at":"2026-06-11T16:01:00Z","last_refreshed_at":"2026-06-11T16:01:00Z","shared_through":"2026-06-11T16:00:59Z"}}`,
+		`{"timestamp":"2026-06-11T16:02:00Z","event":{"id":"k3","action":"session.commit_linked","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"s8"},"message":"commit linked"}`,
 	}
 	out := make([][]byte, len(lines))
 	for i, line := range lines {
@@ -210,7 +218,7 @@ func parityFixture() [][]byte {
 
 var parityShowIDs = []string{
 	"session:cursor:s1", "trace:t-abc", "session:codex_cli:s3", "session:opencode:s4", "session:opencode:s5",
-	"session:codex_cli:s6", "event:m1", "missing",
+	"session:codex_cli:s6", "session:claude_code:s7", "session:claude_code:s8", "event:m1", "missing",
 }
 
 // The core promise: for the same log, the history answers every list, search and show exactly

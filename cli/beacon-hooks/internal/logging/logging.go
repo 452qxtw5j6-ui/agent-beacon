@@ -15,7 +15,9 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/activesession"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/filelock"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/shareauto"
 )
 
 // endpointSequence numbers the endpoint events emitted by this hook process, in the order
@@ -136,7 +138,84 @@ func (l *Logger) EndpointEventWithFidelity(action, category, severity, message, 
 		reportEndpointWriteFailure(os.Stderr, l.platform, path, err)
 		return err
 	}
+	recordActiveSession(event)
+	l.requestShareOnce(event)
 	return nil
+}
+
+// requestShareOnce writes one session.share_requested event for the event's session when the person
+// turned auto-share on for its working directory (`beacon share auto enable`). It is the first event
+// of the session the hooks see -- SessionStart where the runtime has one -- and never more than one
+// per session, deduplicated under a lock in the active-session record.
+//
+// The event is only written to the local runtime log. Beacon Cloud forwarding ships it like any
+// other line, and beacon.sh publishes the session when it receives it; without forwarding it is an
+// inert record. Nothing here touches the network. It is event.fidelity=inferred because Beacon
+// originated it: no runtime reported a share request.
+func (l *Logger) requestShareOnce(event map[string]interface{}) {
+	info, _ := event["event"].(map[string]interface{})
+	if action, _ := info["action"].(string); action == shareauto.ActionShareRequested {
+		return
+	}
+	session, _ := event["session"].(map[string]interface{})
+	harness, _ := event["harness"].(map[string]interface{})
+	if session == nil || harness == nil {
+		return
+	}
+	id, _ := session["id"].(string)
+	dir, _ := session["working_directory"].(string)
+	name, _ := harness["name"].(string)
+	if id == "" || dir == "" || name == "" {
+		return
+	}
+	decision := shareauto.ForHook(shareauto.DefaultPath(), dir)
+	if !decision.Enabled {
+		return
+	}
+	recordPath := activesession.DefaultPath()
+	markedAt := time.Now()
+	first, err := activesession.MarkShareRequested(recordPath, name, id, markedAt)
+	if err != nil || !first {
+		return
+	}
+	fields := map[string]interface{}{
+		"session": map[string]interface{}{"id": id, "working_directory": dir},
+	}
+	if visibility := decision.Visibility; visibility == "public" || visibility == "direct" || visibility == "private" {
+		fields["share"] = map[string]interface{}{"visibility": visibility}
+	}
+	if repo, _ := event["repository"].(string); repo != "" {
+		fields["repository"] = repo
+	}
+	if branch, _ := event["branch"].(string); branch != "" {
+		fields["branch"] = branch
+	}
+	if err := l.EndpointEventWithFidelity(shareauto.ActionShareRequested, "session", "info", "Auto-share requested for this session", asymptoteobserve.FidelityInferred, fields); err != nil {
+		// The request was not written (a read-only log, a sandbox): take the mark back so the next
+		// hook of the session asks again, rather than leave the session marked and never requested.
+		// Like the rest of this path it stays silent and never fails the hook.
+		_ = activesession.UnmarkShareRequested(recordPath, name, id, markedAt)
+	}
+}
+
+// recordActiveSession notes the event's session as the one its runtime is running in its working
+// directory, for `beacon share --current`. It is a local file write and never fails the hook: the
+// record is a convenience, the event above is what matters. Nothing here touches the network.
+func recordActiveSession(event map[string]interface{}) {
+	session, _ := event["session"].(map[string]interface{})
+	harness, _ := event["harness"].(map[string]interface{})
+	if session == nil || harness == nil {
+		return
+	}
+	id, _ := session["id"].(string)
+	dir, _ := session["working_directory"].(string)
+	name, _ := harness["name"].(string)
+	if id == "" || dir == "" || name == "" {
+		return
+	}
+	// Silent on failure: stderr is shown to the person on some runtimes, and a missing record
+	// only means `beacon share --current` falls back to the newest session in the directory.
+	_ = activesession.Record(activesession.DefaultPath(), name, id, dir, time.Now())
 }
 
 // reportedWriteFailures remembers which runtime log paths this process has already explained a
@@ -388,7 +467,11 @@ func firstEnv(keys ...string) string {
 	return ""
 }
 
-func writeEndpointJSON(path string, event map[string]interface{}) error {
+// writeEndpointJSON appends one endpoint event to the runtime log. A variable so a test can make one
+// write fail.
+var writeEndpointJSON = writeEndpointJSONFile
+
+func writeEndpointJSONFile(path string, event map[string]interface{}) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}

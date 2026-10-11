@@ -33,6 +33,10 @@ type Options struct {
 	MaxLookback time.Duration
 	// DryRun computes the links without writing the note.
 	DryRun bool
+	// ShareURL, when set, returns a linked session's known share URL ("" when it has none), which
+	// is written on the session's note line. It must answer from local state: the post-commit
+	// hook never touches the network.
+	ShareURL func(Link) string
 }
 
 // Candidate is a session that wrote at least one file the commit changes.
@@ -130,7 +134,13 @@ func Attribute(ctx context.Context, repo Repo, opts Options) (Result, error) {
 	result.Candidates = rankCandidates(evidence, changed, existing)
 	for _, c := range result.Candidates {
 		if !c.AlreadyLinked && len(existing)+len(result.Added) < MaxLinks {
-			result.Added = append(result.Added, c.Link)
+			link := c.Link
+			if opts.ShareURL != nil {
+				if u := opts.ShareURL(link); ValidShareURL(u) {
+					link.URL = u
+				}
+			}
+			result.Added = append(result.Added, link)
 		}
 	}
 	if len(result.Added) == 0 || opts.DryRun {
