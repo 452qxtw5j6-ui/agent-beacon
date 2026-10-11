@@ -325,7 +325,7 @@ dashboard), including interleaved sessions with no cross-contamination.
   the data source; and if the interceptor failed to run at all, a page script could offer the
   content script its own port while the document is still loading.
 - **Loopback-only delivery.** The OTLP endpoint must be `http(s)` on `127.0.0.1`, `localhost` or
-  `[::1]` with an explicit port. The service worker enforces this when settings are saved and again
+  `[::1]` (any port). The service worker enforces this when settings are saved and again
   before every send (redirects are refused), and it takes settings changes only from the
   extension's own popup and options pages, never from a content script.
 

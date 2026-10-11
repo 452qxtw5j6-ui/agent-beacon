@@ -59,8 +59,11 @@ export function parseHost(raw: unknown): string | null {
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
 /**
- * The only endpoints the extension may deliver to: http(s) on loopback, with an
- * explicit port and no credentials. Chat content never leaves the machine from
+ * The only endpoints the extension may deliver to: http(s) on loopback, with
+ * no credentials. A URL without a port uses the scheme's default port, which
+ * is still loopback; the WHATWG parser reports an explicit default port
+ * (:80 on http, :443 on https) as no port at all, so requiring one would
+ * refuse those spellings. Chat content never leaves the machine from
  * the browser; anything beyond it is the local collector's job.
  */
 export function isAllowedEndpoint(raw: unknown): raw is string {
@@ -73,7 +76,6 @@ export function isAllowedEndpoint(raw: unknown): raw is string {
   }
   if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
   if (!LOOPBACK_HOSTS.has(u.hostname)) return false;
-  if (u.port === '') return false;
   if (u.username !== '' || u.password !== '') return false;
   return true;
 }
@@ -110,7 +112,7 @@ export function parseSettingsPatch(raw: unknown): PatchResult {
           return {
             ok: false,
             error:
-              'endpoint must be an http(s) URL on 127.0.0.1, localhost or [::1] with a port, such as http://127.0.0.1:4318/v1/logs',
+              'endpoint must be an http(s) URL on 127.0.0.1, localhost or [::1], such as http://127.0.0.1:4318/v1/logs',
           };
         }
         out.endpoint = value;
