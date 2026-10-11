@@ -3,6 +3,8 @@ package shareauto
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -70,5 +72,34 @@ func TestForHookAndSave(t *testing.T) {
 	}
 	if d := ForHook(path, "/x"); d.Enabled {
 		t.Fatal("damaged file enabled")
+	}
+}
+
+// Project entries match the directory however its path is spelled: through a symlink, with a
+// trailing separator, or (on Windows) in another case or rooted on the current drive.
+func TestResolveMatchesEquivalentPaths(t *testing.T) {
+	real := t.TempDir()
+	work := filepath.Join(real, "sub")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Auto: Auto{Enabled: true}, Projects: []Project{{Path: real + string(filepath.Separator), Enabled: false}}}
+	if d := Resolve(s, work); d.Enabled || d.Source != "project" {
+		t.Fatalf("trailing separator: %+v", d)
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err == nil {
+		if d := Resolve(s, filepath.Join(link, "sub")); d.Enabled || d.Source != "project" {
+			t.Fatalf("through a symlink: %+v", d)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		if d := Resolve(s, strings.ToUpper(work)); d.Enabled || d.Source != "project" {
+			t.Fatalf("other case: %+v", d)
+		}
+	}
+	rootedOnly := Settings{Auto: Auto{Enabled: true}, Projects: []Project{{Path: "/work/project", Enabled: false}}}
+	if d := Resolve(rootedOnly, "/work/project"); d.Enabled {
+		t.Fatalf("rooted path: %+v", d)
 	}
 }
