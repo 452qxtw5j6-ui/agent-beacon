@@ -25,6 +25,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/tokens"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/activesession"
 )
 
 // `beacon share` publishes one local agent session as a shared trace on beacon.sh. It is the
@@ -49,7 +50,21 @@ var (
 	shareStdin       io.Reader = os.Stdin
 	// shareGitRemote reads the remote of the repository a session ran in, best effort.
 	shareGitRemote = gitRemoteForDir
+	// shareActiveSessionsPath is the hooks' record of each runtime's current session per directory.
+	shareActiveSessionsPath = activesession.DefaultPath
 )
+
+// Environment a runtime's shell commands carry to name the session they run in. Beacon's Claude
+// Code SessionStart hook writes both into CLAUDE_ENV_FILE; any other launcher may set them too.
+const (
+	shareSessionEnv = "BEACON_SESSION_ID"
+	shareHarnessEnv = "BEACON_HARNESS"
+)
+
+// shareActiveMaxAge is how recently a hook must have seen a session for --current to take it from
+// the active-session record. An agent that is running reports on every tool call, so a day is
+// generous; anything older is more likely a session that has since ended.
+const shareActiveMaxAge = 24 * time.Hour
 
 type shareOptions struct {
 	session    string
@@ -61,6 +76,7 @@ type shareOptions struct {
 	key        string
 	authURL    string
 	jsonOutput bool
+	current    bool
 	list       bool
 	print      bool
 	dryRun     bool
@@ -77,8 +93,11 @@ var shareCmd = &cobra.Command{
 	Short: "Share a local agent session as a trace on beacon.sh",
 	Long: `Share one local agent session as a trace on beacon.sh, and print its link.
 
-The session is the most recent one in the current directory unless --session, --source-path or
---cwd names another; --list shows the candidates. It is read from its runtime's own session store
+With no selector (or --current) the session is the one this command runs inside: the session
+named by BEACON_SESSION_ID (and BEACON_HARNESS), which Beacon's Claude Code hook exports to the
+agent's shell; otherwise the session a Beacon hook last saw in this directory; otherwise the most
+recent session in this directory. --harness narrows every step to one runtime. --session,
+--source-path or --cwd names another session; --list shows the candidates. It is read from its runtime's own session store
 when Beacon reads that runtime's store, and from Beacon's runtime log otherwise.
 
 What is uploaded: the session's prompts, assistant text and reasoning, tool calls with their
@@ -103,7 +122,8 @@ var shareRefreshCmd = &cobra.Command{
 	Long: `Upload the messages a session has gained since it was shared.
 
 The argument is the trace's external id (<runtime>:<session-id>, as ` + "`beacon share --json`" + ` prints
-it) or a session id or unique prefix; without one, the most recent session in the current directory.
+it) or a session id or unique prefix; without one, the session it runs inside, found the way
+` + "`beacon share --current`" + ` finds it.
 beacon.sh reports the last message it has, and only the messages after it are sent. Re-sending is
 harmless, so a refresh that fails part way can simply be run again. The trace's visibility is not
 changed.`,
@@ -134,10 +154,11 @@ func init() {
 	f.StringVar(&shareOpts.session, "session", "", "Session id, or a unique prefix of at least 6 characters")
 	f.StringVar(&shareOpts.sourcePath, "source-path", "", "The session's file in its runtime's store")
 	f.StringVar(&shareOpts.visibility, "visibility", asymptoteobserve.ShareVisibilityDirect, "Who can view the trace: public, direct (anyone with the link) or private")
+	f.BoolVar(&shareOpts.current, "current", false, "Share the session this command runs inside (the default with no other selector)")
 	f.BoolVar(&shareOpts.list, "list", false, "List the sessions that could be shared, newest first, and share nothing")
 	f.IntVar(&shareOpts.limit, "limit", 20, "With --list, the most sessions to show (0 for all)")
 	f.BoolVar(&shareOpts.yes, "yes", false, "Share publicly without asking")
-	shareCmd.MarkFlagsMutuallyExclusive("session", "source-path", "cwd")
+	shareCmd.MarkFlagsMutuallyExclusive("session", "source-path", "cwd", "current")
 }
 
 // shareJSONErrors also reports a failure as {"ok":false,...} on stdout under --json, so a script
@@ -158,6 +179,8 @@ type shareResult struct {
 	MessageCount int    `json:"message_count"`
 	// Uploaded is how many messages this run sent; on a first share it equals the session's count.
 	Uploaded int `json:"uploaded"`
+	// SelectedBy says how the session was chosen: session, source_path, env, active or recent.
+	SelectedBy string `json:"selected_by,omitempty"`
 }
 
 // sharePayload is what --print shows: the trace metadata of the PUT request and every message the
@@ -225,6 +248,7 @@ func runShare(cmd *cobra.Command) error {
 		AgentID:      payload.Trace.AgentID,
 		MessageCount: uploaded.MessageCount,
 		Uploaded:     len(payload.Messages),
+		SelectedBy:   subject.selectedBy,
 	}
 	if uploaded.Batches == 0 {
 		result.MessageCount = trace.MessageCount
@@ -295,6 +319,7 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 		AgentID:      payload.Trace.AgentID,
 		MessageCount: state.MessageCount,
 		Uploaded:     len(pending),
+		SelectedBy:   subject.selectedBy,
 	}
 	if uploaded.Batches > 0 {
 		result.MessageCount = uploaded.MessageCount
@@ -329,8 +354,8 @@ func validateShareFlags(cmd *cobra.Command) error {
 	}
 	if shareOpts.list {
 		switch {
-		case shareOpts.session != "" || shareOpts.sourcePath != "":
-			return errors.New("--list shows candidates; combine it with --cwd or --harness, not --session or --source-path")
+		case shareOpts.session != "" || shareOpts.sourcePath != "" || shareOpts.current:
+			return errors.New("--list shows candidates; combine it with --cwd or --harness, not --session, --source-path or --current")
 		case shareOpts.printOnly():
 			return errors.New("--list and --print cannot be combined")
 		}
@@ -391,6 +416,8 @@ type shareSubject struct {
 	session   handoff.Session
 	fromLog   bool
 	logEvents []schema.Event
+	// selectedBy says how the session was chosen (see shareResult.SelectedBy).
+	selectedBy string
 }
 
 func shareSourceNote(subject shareSubject) string {
@@ -410,45 +437,93 @@ func resolveShareSubject(harness, id string) (shareSubject, error) {
 	sources := handoffSources(dirs)
 	switch {
 	case id != "":
-		session, findErr := handoff.Find(sources, harness, id)
-		if findErr == nil {
-			return shareSubject{session: session}, nil
-		}
-		var notFound *handoff.NotFoundError
-		if !errors.As(findErr, &notFound) {
-			return shareSubject{}, findErr
-		}
-		logPath := shareLogPath()
-		session, events, found, err := handoff.LogSession(logPath, id, harness)
-		if err != nil {
-			return shareSubject{}, fmt.Errorf("read runtime log %s: %w", logPath, err)
-		}
-		if !found || (harness != "" && session.Harness != harness) {
-			return shareSubject{}, fmt.Errorf("%w; not in the runtime log %s either (`beacon share --list` shows what is available)", notFound, logPath)
-		}
-		return shareSubject{session: session, fromLog: true, logEvents: events}, nil
+		subject, err := resolveShareID(sources, harness, id)
+		subject.selectedBy = "session"
+		return subject, err
 	case strings.TrimSpace(shareOpts.sourcePath) != "":
-		return resolveShareSourcePath(sources, harness, shareOpts.sourcePath)
+		subject, err := resolveShareSourcePath(sources, harness, shareOpts.sourcePath)
+		subject.selectedBy = "source_path"
+		return subject, err
 	default:
-		dir, err := shareDirectory()
-		if err != nil {
-			return shareSubject{}, err
-		}
-		candidates, err := shareCandidates(sources, harness, dir, 1)
-		if err != nil {
-			return shareSubject{}, err
-		}
-		if len(candidates) == 0 {
-			return shareSubject{}, fmt.Errorf("no agent session found in %s; pass --session, or --cwd for another directory (`beacon share --list --cwd DIR`)", dir)
-		}
-		// A session of a runtime whose store Beacon reads is read from that store; one the store has
-		// lost since falls back to the log when its events are read (shareEvents).
-		session := candidates[0]
-		if handoff.ReadsStore(session.Harness) {
-			return shareSubject{session: session}, nil
-		}
-		return resolveShareLog(session)
+		return resolveShareCurrent(sources, harness)
 	}
+}
+
+// resolveShareID finds a session by id or unique prefix: in the runtimes' stores, then in the
+// runtime log.
+func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject, error) {
+	session, findErr := handoff.Find(sources, harness, id)
+	if findErr == nil {
+		return shareSubject{session: session}, nil
+	}
+	var notFound *handoff.NotFoundError
+	if !errors.As(findErr, &notFound) {
+		return shareSubject{}, findErr
+	}
+	logPath := shareLogPath()
+	session, events, found, err := handoff.LogSession(logPath, id, harness)
+	if err != nil {
+		return shareSubject{}, fmt.Errorf("read runtime log %s: %w", logPath, err)
+	}
+	if !found || (harness != "" && session.Harness != harness) {
+		return shareSubject{}, fmt.Errorf("%w; not in the runtime log %s either (`beacon share --list` shows what is available)", notFound, logPath)
+	}
+	return shareSubject{session: session, fromLog: true, logEvents: events}, nil
+}
+
+// resolveShareCurrent finds the session this command runs inside, in order:
+//
+//  1. BEACON_SESSION_ID (with BEACON_HARNESS), which the Claude Code hook exports to the agent's
+//     shell. Skipped under --cwd, which names another directory, and when --harness names another
+//     runtime (a Codex started from a Claude Code shell inherits Claude's variables). An id that is
+//     set but cannot be found is an error rather than a reason to share some other session.
+//  2. The session a Beacon hook last saw in the directory, from the active-session record.
+//  3. The most recent session in the directory.
+func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject, error) {
+	dir, err := shareDirectory()
+	if err != nil {
+		return shareSubject{}, err
+	}
+	if strings.TrimSpace(shareOpts.cwd) == "" {
+		if id := strings.TrimSpace(shareGetenv(shareSessionEnv)); id != "" {
+			envHarness, herr := handoff.ParseHarness(shareGetenv(shareHarnessEnv))
+			if herr == nil && (harness == "" || envHarness == "" || envHarness == harness) {
+				if envHarness == "" {
+					envHarness = harness
+				}
+				subject, err := resolveShareID(sources, envHarness, id)
+				if err != nil {
+					return shareSubject{}, fmt.Errorf("%s=%s names this session, but it cannot be read yet: %w", shareSessionEnv, id, err)
+				}
+				subject.selectedBy = "env"
+				return subject, nil
+			}
+		}
+	}
+	if entryHarness, entryID, ok := shareActiveSession(dir, harness); ok {
+		// A record whose session cannot be read (a runtime Beacon reads only from the log, whose
+		// events have rotated away) falls through to the directory's most recent session.
+		if subject, err := resolveShareID(sources, entryHarness, entryID); err == nil {
+			subject.selectedBy = "active"
+			return subject, nil
+		}
+	}
+	candidates, err := shareCandidates(sources, harness, dir, 1)
+	if err != nil {
+		return shareSubject{}, err
+	}
+	if len(candidates) == 0 {
+		return shareSubject{}, shareNoSessionError(sources, harness, dir)
+	}
+	// A session of a runtime whose store Beacon reads is read from that store; one the store has
+	// lost since falls back to the log when its events are read (shareEvents).
+	session := candidates[0]
+	if handoff.ReadsStore(session.Harness) {
+		return shareSubject{session: session, selectedBy: "recent"}, nil
+	}
+	subject, err := resolveShareLog(session)
+	subject.selectedBy = "recent"
+	return subject, err
 }
 
 func resolveShareLog(session handoff.Session) (shareSubject, error) {
@@ -493,6 +568,57 @@ func evalSymlinks(path string) string {
 		return path
 	}
 	return resolved
+}
+
+// shareActiveSession is the session a Beacon hook last saw in dir, limited to harness when it is
+// set, from the active-session record. Entries older than shareActiveMaxAge are ignored.
+func shareActiveSession(dir, harness string) (entryHarness, sessionID string, ok bool) {
+	entries, err := activesession.Read(shareActiveSessionsPath())
+	if err != nil {
+		return "", "", false
+	}
+	dir = activesession.CleanDir(dir)
+	now := shareNow()
+	for _, e := range entries {
+		if e.WorkingDirectory != dir || now.Sub(e.LastSeen) > shareActiveMaxAge {
+			continue
+		}
+		name, err := handoff.ParseHarness(e.Harness)
+		if err != nil || (harness != "" && name != harness) {
+			continue
+		}
+		return name, e.SessionID, true
+	}
+	return "", "", false
+}
+
+// shareNoSessionError explains that nothing ran in dir and names the most recent sessions anywhere,
+// so the next command can name one.
+func shareNoSessionError(sources []handoff.Source, harness, dir string) error {
+	msg := fmt.Sprintf("no agent session found in %s", dir)
+	stored, _ := handoff.List(sources, handoff.Filter{Harness: harness, Limit: 5})
+	logged, _ := handoff.LogSessions(shareLogPath(), handoff.Filter{Harness: harness, Limit: 5})
+	seen := map[string]bool{}
+	var all []handoff.Session
+	for _, s := range append(stored, logged...) {
+		if key := s.Harness + "\x00" + s.ID; !seen[key] {
+			seen[key] = true
+			all = append(all, s)
+		}
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].UpdatedAt.After(all[j].UpdatedAt) })
+	if len(all) > 5 {
+		all = all[:5]
+	}
+	if len(all) == 0 {
+		return errors.New(msg + "; Beacon has no sessions recorded yet (is `beacon endpoint install` set up for this runtime?)")
+	}
+	var b strings.Builder
+	b.WriteString(msg + "; recent sessions elsewhere (pass one with --session, or use --cwd DIR):")
+	for _, s := range all {
+		fmt.Fprintf(&b, "\n  %s %s  %s", s.Harness, s.ID, s.Directory)
+	}
+	return errors.New(b.String())
 }
 
 // shareCandidates lists the sessions in dir, newest first: those in the runtimes' own stores, then
