@@ -430,6 +430,7 @@ func BuildShareMessagesWithOptions(events []Event, opts ShareOptions) []ShareMes
 		results:     map[string]*ShareToolResultContent{},
 		callMessage: map[string]*ShareMessageV1{},
 		prompts:     map[string]*ShareMessageV1{},
+		lastPrompt:  map[string]*sharePromptRef{},
 	}
 	for _, item := range orderShareEvents(events) {
 		b.add(item)
@@ -521,9 +522,23 @@ type shareBuilder struct {
 	// a completion to pair with by tool name.
 	pending []string
 	// prompts holds user messages by harness, session and prompt.id, so one prompt captured by two
-	// paths (a hook and the OTLP export) is written once.
-	prompts map[string]*ShareMessageV1
+	// paths (a hook and the OTLP export) is written once. lastPrompt holds the newest user message
+	// per harness and session, for the copy that carries no prompt.id (Claude Code's
+	// UserPromptSubmit hook runs before the prompt is recorded, so it has none).
+	prompts    map[string]*ShareMessageV1
+	lastPrompt map[string]*sharePromptRef
 }
+
+type sharePromptRef struct {
+	message *ShareMessageV1
+	keyed   bool
+	ts      time.Time
+	hasTS   bool
+}
+
+// sharePromptPairWindow is how far apart two captures of one prompt may be. The hook and the
+// export record the same submission within moments of each other.
+const sharePromptPairWindow = 10 * time.Second
 
 type shareEventClass int
 
@@ -625,7 +640,7 @@ func (b *shareBuilder) add(item shareEvent) {
 	case sharePrompt:
 		text := sharePromptText(event)
 		key := sharePromptKey(event)
-		if existing := b.prompts[key]; key != "" && existing != nil {
+		if existing := b.samePrompt(item, key, text); existing != nil {
 			// The same prompt from a second capture path: fill in the text if the first copy
 			// had none, and write nothing new.
 			if existing.Text == sharePromptNotRetained && text != "" {
@@ -639,9 +654,11 @@ func (b *shareBuilder) add(item shareEvent) {
 			text = sharePromptNotRetained
 		}
 		b.appendText(item, ShareRoleUser, SharePartText, text)
+		message := b.messages[len(b.messages)-1]
 		if key != "" {
-			b.prompts[key] = b.messages[len(b.messages)-1]
+			b.prompts[key] = message
 		}
+		b.lastPrompt[sharePromptScope(event)] = &sharePromptRef{message: message, keyed: key != "", ts: item.ts, hasTS: item.hasTS}
 	case shareAgentText:
 		text := shareAssistantText(event, GenAIPartTypeText)
 		if text == "" {
@@ -667,6 +684,45 @@ func (b *shareBuilder) add(item shareEvent) {
 }
 
 const sharePromptNotRetained = "(prompt text not retained)"
+
+// samePrompt finds the user message an earlier capture of this prompt wrote. A prompt.id match is
+// exact. Without one, the newest prompt in the session counts as the same submission only when
+// exactly one of the two copies carries a prompt.id (they came from different capture paths), they
+// are within sharePromptPairWindow, and their texts agree or one of them retained none.
+func (b *shareBuilder) samePrompt(item shareEvent, key, text string) *ShareMessageV1 {
+	if key != "" {
+		if existing := b.prompts[key]; existing != nil {
+			return existing
+		}
+	}
+	last := b.lastPrompt[sharePromptScope(item.event)]
+	if last == nil || last.keyed == (key != "") || !last.hasTS || !item.hasTS {
+		return nil
+	}
+	gap := item.ts.Sub(last.ts)
+	if gap < 0 {
+		gap = -gap
+	}
+	if gap > sharePromptPairWindow {
+		return nil
+	}
+	if text != "" && last.message.Text != sharePromptNotRetained && b.scrub.text(text) != last.message.Text {
+		return nil
+	}
+	if key != "" {
+		b.prompts[key] = last.message
+	}
+	last.keyed = true
+	return last.message
+}
+
+func sharePromptScope(event Event) string {
+	session := ""
+	if event.Session != nil {
+		session = event.Session.ID
+	}
+	return NormalizeHarnessName(event.Harness.Name) + "\x00" + session
+}
 
 // sharePromptKey names one user prompt across capture paths: prompt.id is the runtime's own id for
 // the turn, which a hook and the OTLP export both carry.
