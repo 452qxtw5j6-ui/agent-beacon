@@ -137,7 +137,7 @@ func TestLoginUsesPKCEAndReturnsPrivateSession(t *testing.T) {
 		t.Fatalf("client payload = %#v", client)
 	}
 	scopes := service.init["scopes"].([]any)
-	if len(scopes) != 3 || scopes[0] != ScopeProfileRead || scopes[1] != ScopeDeviceEnroll || scopes[2] != ScopeMCPTokenCreate {
+	if len(scopes) != 4 || scopes[0] != ScopeProfileRead || scopes[1] != ScopeDeviceEnroll || scopes[2] != ScopeMCPTokenCreate || scopes[3] != ScopeTracesWrite {
 		t.Fatalf("requested scopes = %#v", scopes)
 	}
 	if service.exchange["state"] != service.init["state"] || service.exchange["exchange_code"] != "code-123" || service.exchange["code_verifier"] == "" {
