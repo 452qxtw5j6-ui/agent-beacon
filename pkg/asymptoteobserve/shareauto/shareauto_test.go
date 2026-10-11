@@ -155,3 +155,43 @@ func TestLoadReadsTheOldFormat(t *testing.T) {
 		}
 	}
 }
+
+// A repository's opt-out marker wins over the user's own entry for the same directory. A closer
+// directory decides over a farther one: a user entry for a subdirectory enables it even when a
+// parent's marker says off, and a subdirectory's off marker disables it under a parent's entry.
+func TestMarkerOffWinsAtItsDirectoryAndTheClosestDecides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	repo := t.TempDir()
+	sub := filepath.Join(repo, "service")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := Settings{Projects: []Project{{Path: repo, Enabled: true}}}
+	if err := SaveMarker(repo, Marker{Auto: Auto{Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := Resolve(s, repo); d.Enabled || d.Source != "marker" || d.Overridden != repo {
+		t.Fatalf("user entry plus off marker = %+v", d)
+	}
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	if d := ForHook(path, sub); d.Enabled {
+		t.Fatalf("hook decision under the repository's opt-out = %+v", d)
+	}
+	// A user entry for the subdirectory is closer than the parent's marker.
+	child := Settings{Projects: []Project{{Path: sub, Enabled: true}}}
+	if d := Resolve(child, sub); !d.Enabled || d.Source != "project" || d.Project != sub {
+		t.Fatalf("child entry under a parent's off marker = %+v", d)
+	}
+	// And a subdirectory's off marker is closer than the parent's entry.
+	if err := os.Remove(MarkerPath(repo)); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveMarker(sub, Marker{Auto: Auto{Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := Resolve(s, sub); d.Enabled || d.Source != "marker" || d.Project != sub {
+		t.Fatalf("child off marker under a parent's entry = %+v", d)
+	}
+}

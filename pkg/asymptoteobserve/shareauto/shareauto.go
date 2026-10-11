@@ -91,7 +91,8 @@ type Decision struct {
 	Source string
 	// Project is the project directory the decision came from, when it came from one.
 	Project string
-	// Overridden is the project whose enabled entry the user-wide off switch overrides here.
+	// Overridden is the project whose enabled user entry this decision overrides: by the user-wide
+	// off switch (Source "user") or by the repository's opt-out marker (Source "marker").
 	Overridden string
 	// UntrustedMarker is a marker that asks for auto-share in a project the user has not opted in.
 	UntrustedMarker string
@@ -195,9 +196,13 @@ func (s Settings) Project(dir string) (Project, bool) {
 
 // Resolve decides whether auto-share applies in workDir. The user-wide switch turned off is a kill
 // switch: nothing applies anywhere, and the project entry it overrides is reported. Otherwise the
-// nearest enclosing directory that has a user entry or a marker decides; a marker that asks for
-// auto-share without a user entry is reported and otherwise ignored. With neither, the user-wide
-// switch decides (on, or unset meaning off).
+// nearest enclosing directory that has a user entry or a marker decides, walking from workDir
+// outward. At that directory a marker that says off wins over the user's entry (the repository
+// opted out; the overridden entry is reported); otherwise the user's entry decides. A marker that
+// asks for auto-share without a user entry is reported and otherwise ignored. A closer directory
+// decides over a farther one, whichever kind each is: a user entry for a subdirectory enables it
+// even when a parent's marker says off. With neither, the user-wide switch decides (on, or unset
+// meaning off).
 func Resolve(s Settings, workDir string) Decision {
 	d := resolveProjects(s, workDir)
 	if s.Global() == GlobalOff {
@@ -223,16 +228,23 @@ func resolveProjects(s Settings, workDir string) Decision {
 			}
 		}
 		for i := 0; i < maxWalk; i++ {
-			if p, ok := projects[pathKey(dir)]; ok {
-				return Decision{Enabled: p.Enabled, Visibility: p.Visibility, Source: "project", Project: dir}
-			}
+			p, hasEntry := projects[pathKey(dir)]
 			if m, ok := LoadMarker(dir); ok {
 				if !m.Auto.Enabled {
-					return Decision{Source: "marker", Project: dir}
+					// The repository opted out, and that wins over the user's own entry for the
+					// same directory: a committed opt-out must hold for everyone who opens it.
+					off := Decision{Source: "marker", Project: dir, UntrustedMarker: d.UntrustedMarker}
+					if hasEntry && p.Enabled {
+						off.Overridden = dir
+					}
+					return off
 				}
-				if d.UntrustedMarker == "" {
+				if !hasEntry && d.UntrustedMarker == "" {
 					d.UntrustedMarker = dir
 				}
+			}
+			if hasEntry {
+				return Decision{Enabled: p.Enabled, Visibility: p.Visibility, Source: "project", Project: dir, UntrustedMarker: d.UntrustedMarker}
 			}
 			parent := filepath.Dir(dir)
 			if parent == dir {

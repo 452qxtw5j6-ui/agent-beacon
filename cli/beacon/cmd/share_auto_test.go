@@ -198,3 +198,24 @@ func TestShareAutoProjectEnableClearsTheOffSwitch(t *testing.T) {
 		t.Fatal("want the project on and other directories off")
 	}
 }
+
+// A repository's committed opt-out holds for someone who had enabled the project, and status says
+// the repository opted out.
+func TestShareAutoRepositoryOptOutOverridesAProjectEnable(t *testing.T) {
+	path := shareAutoTestEnv(t, true, managedprivacy.Standard)
+	project := t.TempDir()
+	if _, _, err := runShareAuto(t, "enable", "--project", project); err != nil {
+		t.Fatalf("enable --project: %v", err)
+	}
+	// A teammate commits an opt-out, which the pull brings in.
+	if err := shareauto.SaveMarker(project, shareauto.Marker{Auto: shareauto.Auto{Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := shareauto.ForHook(path, project); d.Enabled {
+		t.Fatalf("hook decision = %+v, want the repository's opt-out", d)
+	}
+	stdout, _, err := runShareAuto(t, "status", "--project", project)
+	if err != nil || !strings.Contains(stdout, ": off") || !strings.Contains(stdout, "disabled by the repository file") || !strings.Contains(stdout, "overrides your setting") {
+		t.Fatalf("status = %q (%v)", stdout, err)
+	}
+}
