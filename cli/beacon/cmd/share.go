@@ -441,7 +441,13 @@ func alignShareSource(subject shareSubject, payload sharePayload, state *asympto
 	}
 	var other shareSubject
 	if subject.fromLog {
-		other = shareSubject{session: subject.session}
+		// A session found in the log carries no store path, which store readers match on, so the
+		// store's own listing has to name it.
+		if dirs, err := shareStoreDirs(); err == nil {
+			if session, err := handoff.Find(handoffSources(dirs), subject.session.Harness, subject.session.ID); err == nil {
+				other = shareSubject{session: session}
+			}
+		}
 	} else if logSubject, err := resolveShareLog(subject.session); err == nil {
 		other = logSubject
 	}
