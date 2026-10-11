@@ -336,6 +336,7 @@ var siemDestinations = []siemDestination{
 				fmt.Printf("Confirm delivery at %s by searching for \"Beacon endpoint Asymptote validation event\"; forwarded events appear within a minute or two.\n", dashboardHomeURL(""))
 			},
 		},
+		extra: addAsymptoteReconcileCommand,
 	},
 	{
 		name:  "sentinel",

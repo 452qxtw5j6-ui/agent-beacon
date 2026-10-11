@@ -178,6 +178,7 @@ func runEndpointInstall(cmd *cobra.Command, args []string) error {
 	case result.InventoryJobDetail != "":
 		fmt.Printf("Scheduled inventory job not installed: %s\n", result.InventoryJobDetail)
 	}
+	reportManagedForwarder(os.Stdout, cmd.ErrOrStderr(), result.ManagedForwarder)
 	printLingerGap(cmd.ErrOrStderr(), result)
 	installHookTargetsFromEndpointInstall(cmd.ErrOrStderr(), selection.Hooks)
 	refreshAgentSkills(cmd.ErrOrStderr())
@@ -361,6 +362,7 @@ func runEndpointRepair(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Endpoint repaired. Manifest: %s\n", result.ManifestPath)
+	reportManagedForwarder(os.Stdout, cmd.ErrOrStderr(), result.ManagedForwarder)
 	printLingerGap(cmd.ErrOrStderr(), result)
 	installHookTargetsFromEndpointInstall(cmd.ErrOrStderr(), selection.Hooks)
 	refreshAgentSkills(cmd.ErrOrStderr())
