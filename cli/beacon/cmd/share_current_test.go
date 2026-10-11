@@ -9,6 +9,7 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/handoff"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/activesession"
 )
 
@@ -130,5 +131,53 @@ func TestShareCurrentNamesCandidatesWhenNothingRanHere(t *testing.T) {
 	}
 	if _, _, err := runShareCommand(t, "--current", "--session", shareTestSession, "--print"); err == nil {
 		t.Fatal("--current with --session accepted")
+	}
+}
+
+func TestShareCurrentPassesOverAnOlderActiveEntry(t *testing.T) {
+	env := newShareEnv(t)
+	t.Chdir(env.projectDir)
+	recordPath := filepath.Join(env.home, "active.json")
+	prev := shareActiveSessionsPath
+	shareActiveSessionsPath = func() string { return recordPath }
+	t.Cleanup(func() { shareActiveSessionsPath = prev })
+	hourAgo := time.Now().Add(-time.Hour)
+	stubHandoffSources(t, stubHandoffSource{
+		harness: handoff.HarnessClaude,
+		sessions: []handoff.Session{{
+			Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: hourAgo,
+		}},
+		events: shareFixtureEvents(env.projectDir),
+	})
+	// The hook saw Claude Code here an hour ago; Copilot CLI, which only exports OTLP and never
+	// writes the record, has worked here since.
+	if err := activesession.Record(recordPath, handoff.HarnessClaude, shareTestSession, env.projectDir, hourAgo); err != nil {
+		t.Fatal(err)
+	}
+	copilot := schema.NewEvent(schema.NewEventOptions{Action: "prompt.submitted", Category: "prompt", Harness: schema.HarnessInfo{Name: handoff.HarnessCopilot, CollectionMethod: schema.CollectionMethodOTLP}})
+	copilot.Timestamp = schema.FormatTimestamp(time.Now().Add(-5 * time.Minute))
+	copilot.Session = &schema.SessionInfo{ID: "copilot-session-1", WorkingDirectory: env.projectDir}
+	copilot.Prompt = &schema.PromptInfo{Text: "Bump the version"}
+	if _, err := writer.AppendEvent(copilot, writer.Options{Path: env.logPath, UserMode: true}); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err := runShareCommand(t, "--print", "--log-path", env.logPath)
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if got := sharePrintedExternalID(t, stdout); got != handoff.HarnessCopilot+":copilot-session-1" {
+		t.Fatalf("external id = %q, want the newer Copilot session", got)
+	}
+
+	// Once the hook sees Claude Code again, its entry is the newest and is chosen.
+	if err := activesession.Record(recordPath, handoff.HarnessClaude, shareTestSession, env.projectDir, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	stdout, _, err = runShareCommand(t, "--json", "--print", "--log-path", env.logPath)
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if got := sharePrintedExternalID(t, stdout); got != "claude_code:"+shareTestSession {
+		t.Fatalf("external id = %q, want the active Claude Code session", got)
 	}
 }
