@@ -31,7 +31,7 @@ import (
 // store cannot answer a query.
 //
 // The store must answer the same question the JSONL scan answers. Every event is stored, in log
-// order, and projected by the same code (traceEventFromRecord and traceAggregate), so trace
+// order, and projected by the same code (asymptoteobserve.TraceEventFromEvent and TraceBuilder), so trace
 // membership, event numbers, summaries and search results match the JSONL path for the same log.
 
 const (

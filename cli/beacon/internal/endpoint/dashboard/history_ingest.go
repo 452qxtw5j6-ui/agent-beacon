@@ -607,7 +607,7 @@ func (p *historyPass) foldTrace(traceKey string, added []*historyEvent) error {
 	if err != nil {
 		return err
 	}
-	var agg *traceAggregate
+	var agg *asymptoteobserve.TraceBuilder
 	base := 0
 	var existing []*historyEvent
 	if state.exists {
@@ -728,17 +728,17 @@ func decodeStoredEvent(compressed []byte) (schema.Event, error) {
 type traceFolder struct {
 	pass     *historyPass
 	traceKey string
-	agg      *traceAggregate
+	agg      *asymptoteobserve.TraceBuilder
 	seq      int
 }
 
 func (f *traceFolder) fold(ev *historyEvent) error {
 	f.seq++
 	if f.agg == nil {
-		f.agg = newTraceAggregate(f.traceKey, ev.event)
+		f.agg = asymptoteobserve.NewTraceBuilder(f.traceKey, ev.event)
 	}
 	te := traceEventFromRecord(EventRecord{ID: ev.recordID, Event: ev.event}, f.seq)
-	f.agg.update(ev.event, te)
+	f.agg.Fold(ev.event, te)
 	if ev.seq != f.seq {
 		if _, err := f.pass.updateSeq.Exec(f.seq, ev.id); err != nil {
 			return err
@@ -746,7 +746,7 @@ func (f *traceFolder) fold(ev *historyEvent) error {
 		ev.seq = f.seq
 	}
 	if f.seq%historyCheckpointEvery == 0 {
-		state, err := json.Marshal(f.agg.state())
+		state, err := json.Marshal(f.agg.State())
 		if err != nil {
 			return err
 		}
@@ -760,9 +760,9 @@ func (f *traceFolder) fold(ev *historyEvent) error {
 
 func (f *traceFolder) finish(previous historyTraceState) error {
 	p := f.pass
-	summary := f.agg.finishedSummary()
+	summary := f.agg.Summary()
 	hay := strings.ToLower(traceSummaryHaystack(summary))
-	state, err := json.Marshal(f.agg.state())
+	state, err := json.Marshal(f.agg.State())
 	if err != nil {
 		return err
 	}
@@ -795,50 +795,15 @@ func (f *traceFolder) finish(previous historyTraceState) error {
 	return err
 }
 
-// traceAggregateState is a trace's running aggregate between catch-ups: the summary before finish()
-// and the sets finish() reads. finish() runs on a copy each time a summary is read, so it never
-// feeds back into the running state.
-type traceAggregateState struct {
-	Summary       TraceSummaryV1 `json:"summary"`
-	Models        []string       `json:"models,omitempty"`
-	Methods       []string       `json:"methods,omitempty"`
-	TitlePriority int            `json:"title_priority"`
-}
-
-func (a *traceAggregate) state() traceAggregateState {
-	return traceAggregateState{
-		Summary:       a.summary,
-		Models:        sortedKeys(a.models),
-		Methods:       sortedKeys(a.methods),
-		TitlePriority: a.titlePriority,
-	}
-}
-
-func decodeTraceAggregate(raw string) (*traceAggregate, error) {
-	var state traceAggregateState
+// The aggregate column and trace checkpoints hold asymptoteobserve.TraceBuilderState: a trace's
+// running state between catch-ups, the summary before Summary() finishes it and the sets finishing
+// reads. Summary() works on a copy, so reading a summary never feeds back into the running state.
+func decodeTraceAggregate(raw string) (*asymptoteobserve.TraceBuilder, error) {
+	var state asymptoteobserve.TraceBuilderState
 	if err := json.Unmarshal([]byte(raw), &state); err != nil {
 		return nil, err
 	}
-	agg := &traceAggregate{
-		summary:       state.Summary,
-		spans:         map[string]*TraceSpanV1{},
-		models:        map[string]bool{},
-		methods:       map[string]bool{},
-		titlePriority: state.TitlePriority,
-	}
-	for _, model := range state.Models {
-		agg.models[model] = true
-	}
-	for _, method := range state.Methods {
-		agg.methods[method] = true
-	}
-	return agg, nil
-}
-
-func (a *traceAggregate) finishedSummary() TraceSummaryV1 {
-	copied := *a
-	copied.finish()
-	return copied.summary
+	return asymptoteobserve.RestoreTraceBuilder(state), nil
 }
 
 func finishedSummaryFromState(raw string) (TraceSummaryV1, error) {
@@ -846,7 +811,7 @@ func finishedSummaryFromState(raw string) (TraceSummaryV1, error) {
 	if err != nil {
 		return TraceSummaryV1{}, err
 	}
-	return agg.finishedSummary(), nil
+	return agg.Summary(), nil
 }
 
 // rebuildHistoryDerived recomputes every derived column, the search index and the summaries from
