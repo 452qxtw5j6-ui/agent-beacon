@@ -101,7 +101,7 @@ which would rotate the device key. The re-render:
 - validates the new config with the forwarder's own Vector exactly as `connect` does, and only
   then replaces the old file atomically. A config Vector rejects is reported as a warning, and the
   running forwarder keeps the old one;
-- restarts the forwarder only when the content changed and the service is loaded.
+- restarts the forwarder only when the content changed and the forwarder is running (a stopped one reads the new config when it next starts).
 
 It does nothing on an endpoint that is not connected, after a connect that did not finish, when
 the forwarder service is not installed, or where the service manager cannot run it (supervised

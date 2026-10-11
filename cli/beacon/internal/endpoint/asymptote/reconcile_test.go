@@ -320,3 +320,23 @@ func TestReconcileUpdatesAStoppedForwarderWithoutStartingIt(t *testing.T) {
 	}
 	f.assertCredentialsAndCheckpointsUntouched(t)
 }
+
+// On systemd an operator can stop the forwarder without disabling it; the unit still reports
+// Loaded. Reconcile must update the config without starting it again.
+func TestReconcileDoesNotStartAnEnabledButStoppedForwarder(t *testing.T) {
+	f := newReconcileFixture(t, "metadata-only")
+	writeStaleConfig(t)
+	f.fwd.stopped = true
+	loads := f.fwd.loads
+	result, err := ReconcileForwarder(ReconcileOptions{UserMode: true, Forwarder: f.fwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Updated || result.Restarted {
+		t.Fatalf("result = %+v, want updated without a restart", result)
+	}
+	if f.fwd.loads != loads {
+		t.Fatal("reconcile started a forwarder an operator stopped")
+	}
+	f.assertCredentialsAndCheckpointsUntouched(t)
+}

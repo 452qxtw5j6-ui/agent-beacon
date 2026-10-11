@@ -179,9 +179,10 @@ func ReconcileForwarder(opts ReconcileOptions) (ReconcileResult, error) {
 		return result, fmt.Errorf("could not write the validated forwarder config %s: %w", configPath, err)
 	}
 	result.Updated = true
-	// Restart only a forwarder that is registered, so reconcile never starts one an operator
-	// stopped. An unregistered one picks the new config up when it is next started.
-	if !manager.Status().Loaded {
+	// Restart only a forwarder that is running, so reconcile never starts one an operator stopped.
+	// Loaded is not enough: on systemd an enabled unit that was stopped still reports Loaded. A
+	// forwarder that is not running reads the new config when it is next started.
+	if !manager.Status().Running {
 		return result, nil
 	}
 	if err := manager.Load(); err != nil {
