@@ -181,6 +181,10 @@ type shareResult struct {
 	Uploaded int `json:"uploaded"`
 	// SelectedBy says how the session was chosen: session, source_path, env, active or recent.
 	SelectedBy string `json:"selected_by,omitempty"`
+	// SharedThrough is when the session was read for this upload: an event logged after it was
+	// not sent, however soon the upload finished. The session.shared record carries it as
+	// shared_through, which is what the dashboard compares later activity against.
+	SharedThrough time.Time `json:"-"`
 }
 
 // sharePayload is what --print shows: the trace metadata of the PUT request and every message the
@@ -208,6 +212,7 @@ func runShare(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
+	readAt := shareNow()
 	payload, err := buildSharePayload(subject)
 	if err != nil {
 		return err
@@ -252,14 +257,15 @@ func runShare(cmd *cobra.Command) error {
 		return fmt.Errorf("the trace was created at %s, but uploading its messages failed (run the same command again to retry): %w", trace.URL, err)
 	}
 	result := shareResult{
-		TraceID:      trace.ID,
-		ExternalID:   payload.ExternalID,
-		SharedURL:    trace.URL,
-		Visibility:   trace.Visibility,
-		AgentID:      payload.Trace.AgentID,
-		MessageCount: uploaded.MessageCount,
-		Uploaded:     len(payload.Messages),
-		SelectedBy:   subject.selectedBy,
+		TraceID:       trace.ID,
+		ExternalID:    payload.ExternalID,
+		SharedURL:     trace.URL,
+		Visibility:    trace.Visibility,
+		AgentID:       payload.Trace.AgentID,
+		MessageCount:  uploaded.MessageCount,
+		Uploaded:      len(payload.Messages),
+		SelectedBy:    subject.selectedBy,
+		SharedThrough: readAt,
 	}
 	if uploaded.Batches == 0 {
 		result.MessageCount = trace.MessageCount
@@ -294,6 +300,7 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	readAt := shareNow()
 	payload, err := buildSharePayload(subject)
 	if err != nil {
 		return err
@@ -327,14 +334,15 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	result := shareResult{
-		TraceID:      trace.ID,
-		ExternalID:   payload.ExternalID,
-		SharedURL:    trace.URL,
-		Visibility:   trace.Visibility,
-		AgentID:      payload.Trace.AgentID,
-		MessageCount: state.MessageCount,
-		Uploaded:     len(pending),
-		SelectedBy:   subject.selectedBy,
+		TraceID:       trace.ID,
+		ExternalID:    payload.ExternalID,
+		SharedURL:     trace.URL,
+		Visibility:    trace.Visibility,
+		AgentID:       payload.Trace.AgentID,
+		MessageCount:  state.MessageCount,
+		Uploaded:      len(pending),
+		SelectedBy:    subject.selectedBy,
+		SharedThrough: readAt,
 	}
 	if uploaded.Batches > 0 {
 		result.MessageCount = uploaded.MessageCount
@@ -954,6 +962,9 @@ func shareRecordEvent(session handoff.Session, result shareResult, refresh bool,
 	}
 	if !refresh {
 		event.Raw["shared_at"] = stamp
+	}
+	if !result.SharedThrough.IsZero() {
+		event.Raw["shared_through"] = schema.FormatTimestamp(result.SharedThrough)
 	}
 	return event
 }

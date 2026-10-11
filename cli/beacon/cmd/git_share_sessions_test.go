@@ -203,3 +203,42 @@ func TestGitPrePushWithoutTheBlockLeavesStdinAlone(t *testing.T) {
 		t.Fatalf("remote note %q, want the session shared from HEAD", note)
 	}
 }
+
+// Pre-push sharing to a trace that already exists keeps the title set on it earlier (with --title
+// or a rename on beacon.sh) and its visibility.
+func TestGitPrePushKeepsAnExistingTracesTitle(t *testing.T) {
+	root, remote := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	// Shared from elsewhere (another log, so this machine's log has no record of it), titled.
+	elsewhere := filepath.Join(t.TempDir(), "other.jsonl")
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Login fix", "--visibility", "private", "--log-path", elsewhere); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	t.Setenv(gitlink.HookStdinEnv, "1")
+
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", "beacon:claude_code/"+shareTestSession, sha)
+	if _, err := runGit(t, "setup", "--cwd", root, "--share-sessions"); err != nil {
+		t.Fatal(err)
+	}
+	rootCmd.SetIn(strings.NewReader("refs/heads/main " + sha + " refs/heads/main " + old + "\n"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var stderr bytes.Buffer
+	before := len(srv.requests)
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil || stderr.Len() != 0 {
+		t.Fatalf("pre-push: %v %q", err, stderr.String())
+	}
+	if len(srv.requests) == before {
+		t.Fatal("pre-push made no share request")
+	}
+	if srv.trace.Title != "Login fix" || srv.trace.Visibility != "private" {
+		t.Fatalf("trace title %q visibility %q, want the ones set earlier", srv.trace.Title, srv.trace.Visibility)
+	}
+}
