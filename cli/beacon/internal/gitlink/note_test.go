@@ -133,3 +133,21 @@ func TestMergeNoteAndSetLinkURLsKeepTheURL(t *testing.T) {
 		t.Fatalf("ParseNote = %+v", links)
 	}
 }
+
+// Merging keeps a link's line with trailing fields over the bare line even when this process
+// cannot validate the URL in it: merging never loses data.
+func TestMergeNoteKeepsAnUnvalidatedURLOverTheBareLine(t *testing.T) {
+	url := "https://beacon.unknown-host.example/s/abc"
+	if ValidShareURL(url) {
+		t.Fatal("the test host must not be allowed")
+	}
+	got := MergeNote("beacon:cursor/s1\nbeacon:cursor/s1 "+url+"\n", nil)
+	if got != "beacon:cursor/s1 "+url+"\n" {
+		t.Fatalf("merged %q", got)
+	}
+	// The first line with fields still wins over a later one.
+	got = MergeNote("beacon:cursor/s1 "+url+"\nbeacon:cursor/s1 https://beacon.sh/s/x\n", nil)
+	if got != "beacon:cursor/s1 "+url+"\n" {
+		t.Fatalf("merged %q", got)
+	}
+}

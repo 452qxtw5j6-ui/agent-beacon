@@ -20,6 +20,11 @@ const (
 	// DisableEnv, set to 0, turns every installed Beacon git hook into a no-op for one command:
 	// BEACON_GIT_HOOKS=0 git commit ...
 	DisableEnv = "BEACON_GIT_HOOKS"
+	// HookStdinEnv is set to 1 by Beacon's hook block when it hands Beacon a copy of the hook's
+	// stdin and replays the original to the rest of the hook. Without it, `beacon git hook
+	// pre-push` leaves stdin alone: called straight from a hook manager or a hook in another
+	// language (HookCall), reading it would take the refs from the steps after it.
+	HookStdinEnv = "BEACON_HOOK_STDIN"
 )
 
 // ManagedHooks are the git hooks Beacon installs. post-commit links a new commit; post-rewrite
@@ -305,11 +310,11 @@ func hookBlock(hook string) string {
 	// Beacon the copy, and points the hook's own stdin at the file before the rest runs. The file
 	// is unlinked once it is open; the descriptor keeps it readable. When it cannot be copied,
 	// Beacon gets nothing and stdin is left alone.
-	feed := `    "$beacon_hook" "$@" <"$beacon_stdin"` + "\n"
+	feed := `    ` + HookStdinEnv + `=1 "$beacon_hook" "$@" <"$beacon_stdin"` + "\n"
 	if hook == ShareHook {
 		// The refs being pushed matter to Beacon only when it shares sessions on push.
 		feed = `    if [ "$(git config --local --get ` + ShareSessionsKey + ` 2>/dev/null)" = "true" ]; then` + "\n" +
-			`      "$beacon_hook" "$@" <"$beacon_stdin"` + "\n" +
+			`      ` + HookStdinEnv + `=1 "$beacon_hook" "$@" <"$beacon_stdin"` + "\n" +
 			"    else\n" +
 			`      "$beacon_hook" "$@" </dev/null` + "\n" +
 			"    fi\n"

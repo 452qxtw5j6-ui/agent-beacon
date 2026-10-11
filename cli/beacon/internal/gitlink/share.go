@@ -355,6 +355,22 @@ func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, 
 	return out, nil
 }
 
+// HeadPushLine stands in for a pre-push hook's stdin when Beacon was not given it: one line pushing
+// HEAD to a new branch, so PushedCommits returns the commits on HEAD that none of the remote's
+// tracking branches has. It is "" when remote is not a configured remote (there would be nothing
+// to exclude) or HEAD has no commit.
+func HeadPushLine(ctx context.Context, repo Repo, remote string) string {
+	if !isRemote(ctx, repo, remote) {
+		return ""
+	}
+	head, err := repo.Git.Run(ctx, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+	head = strings.TrimSpace(head)
+	if err != nil || !isSHA(head) {
+		return ""
+	}
+	return "HEAD " + head + " HEAD " + strings.Repeat("0", len(head))
+}
+
 // hasCommit reports whether sha names a commit present in this repository.
 func hasCommit(ctx context.Context, repo Repo, sha string) bool {
 	_, err := repo.Git.Run(ctx, nil, "cat-file", "-e", sha+"^{commit}")

@@ -179,8 +179,8 @@ func ParseNote(note string) []Link {
 // links a note already has returns it unchanged apart from that normalization.
 //
 // The one exception to "the first line wins" is the share URL: when the kept line is the bare
-// `beacon:<harness>/<id>` and a repeat (or a new link) carries a URL, the line with the URL takes
-// its place. Git's cat_sort_uniq merge sorts the bare line first, and without this a teammate's
+// `beacon:<harness>/<id>` and a repeat carries trailing fields (a URL, valid here or not), or a new
+// link carries a valid URL, that line takes its place. Git's cat_sort_uniq merge sorts the bare line first, and without this a teammate's
 // URL would be dropped by the next normalization.
 //
 // Links are never removed here. A note is shared history, and a teammate's link on the same commit
@@ -196,7 +196,11 @@ func MergeNote(note string, links []Link) string {
 		}
 		if link, ok := ParseLine(line); ok {
 			if i, seen := index[link.Key()]; seen {
-				if link.URL != "" && bare(i, link) {
+				// Any trailing fields beat the bare line, whether or not this process can
+				// validate the URL in them (a self-hosted Beacon this process was not told
+				// about, or a field a newer version writes): merging never loses data, and
+				// validation applies only when a URL is shown or used.
+				if bare(i, link) && strings.TrimSpace(line) != linePrefix+link.Key() {
 					lines[i] = line
 				}
 				continue

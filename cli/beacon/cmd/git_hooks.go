@@ -327,6 +327,9 @@ func runGitHookPostRewrite(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return nil
 	}
+	// Normalizing reads the share URLs in notes; a self-hosted or staging Beacon's links must
+	// count as URLs here as they do everywhere else.
+	gitAllowShareHosts()
 	scanner := bufio.NewScanner(cmd.InOrStdin())
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
