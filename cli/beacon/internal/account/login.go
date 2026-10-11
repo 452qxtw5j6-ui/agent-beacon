@@ -38,10 +38,13 @@ const (
 	// tokens (`beacon mcp token create`). The sign-in page lists it, and beacon.sh
 	// approves the sign-in only when the permissions it showed match these.
 	ScopeMCPTokenCreate = "mcp:token:create"
+	// ScopeTracesWrite lets the account token upload shared traces (`beacon share`) to
+	// /v1/traces on beacon.sh. A session from an older `beacon login` lacks it.
+	ScopeTracesWrite = "traces:write"
 )
 
 // LoginScopes are the permissions every `beacon login` asks for.
-var LoginScopes = []string{ScopeProfileRead, ScopeDeviceEnroll, ScopeMCPTokenCreate}
+var LoginScopes = []string{ScopeProfileRead, ScopeDeviceEnroll, ScopeMCPTokenCreate, ScopeTracesWrite}
 
 type LoginOptions struct {
 	BaseURL     string
