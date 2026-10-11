@@ -429,6 +429,7 @@ func BuildShareMessagesWithOptions(events []Event, opts ShareOptions) []ShareMes
 		calls:       map[string]*ShareToolCallContent{},
 		results:     map[string]*ShareToolResultContent{},
 		callMessage: map[string]*ShareMessageV1{},
+		prompts:     map[string]*ShareMessageV1{},
 	}
 	for _, item := range orderShareEvents(events) {
 		b.add(item)
@@ -519,6 +520,9 @@ type shareBuilder struct {
 	// pending holds call ids of invocations that named no runtime call id, newest last, waiting for
 	// a completion to pair with by tool name.
 	pending []string
+	// prompts holds user messages by harness, session and prompt.id, so one prompt captured by two
+	// paths (a hook and the OTLP export) is written once.
+	prompts map[string]*ShareMessageV1
 }
 
 type shareEventClass int
@@ -573,7 +577,10 @@ func isShareInvocation(event Event) bool {
 	switch strings.ToLower(strings.TrimSpace(event.Event.Action)) {
 	case "tool.invoked", "tool.started", "tool.call", "tool.execute.before", "tool.execution_start",
 		"command.invoked", "command.execute.before", "mcp.tool_call":
-		return true
+		// The hook adapter also labels a post-tool event tool.invoked for tools it has no more
+		// specific action for (WebFetch, Task, Grep, ...). That event carries the finished call's
+		// result, and is a completion.
+		return !hasShareCompletionEvidence(event)
 	}
 	return false
 }
@@ -585,13 +592,20 @@ func isShareCompletion(event Event) bool {
 	case "tool.completed", "tool.failed", "tool.execute.after", "tool.execution_complete", "tool.result":
 		return true
 	}
+	if event.File != nil && event.File.Diff != "" {
+		return true
+	}
+	return hasShareCompletionEvidence(event)
+}
+
+// hasShareCompletionEvidence reports an event that carries what only a finished call has: a
+// result, command output or exit code, or an error. A diff is not evidence on its own, because an
+// edit's invocation can carry the patch it is about to apply.
+func hasShareCompletionEvidence(event Event) bool {
 	if event.GenAI != nil && event.GenAI.Tool != nil && event.GenAI.Tool.Call != nil && event.GenAI.Tool.Call.Result != nil {
 		return true
 	}
 	if event.Command != nil && (event.Command.Output != "" || event.Command.ExitCode != nil || event.Command.DurationMS > 0) {
-		return true
-	}
-	if event.File != nil && event.File.Diff != "" {
 		return true
 	}
 	return event.Error != nil && event.Error.Type != ""
@@ -610,10 +624,24 @@ func (b *shareBuilder) add(item shareEvent) {
 	switch class {
 	case sharePrompt:
 		text := sharePromptText(event)
+		key := sharePromptKey(event)
+		if existing := b.prompts[key]; key != "" && existing != nil {
+			// The same prompt from a second capture path: fill in the text if the first copy
+			// had none, and write nothing new.
+			if existing.Text == sharePromptNotRetained && text != "" {
+				text = b.scrub.text(text)
+				existing.Text = text
+				existing.Parts = []SharePartV1{{Type: SharePartText, Order: 1, Content: ShareTextContent{Text: text}}}
+			}
+			return
+		}
 		if text == "" {
-			text = "(prompt text not retained)"
+			text = sharePromptNotRetained
 		}
 		b.appendText(item, ShareRoleUser, SharePartText, text)
+		if key != "" {
+			b.prompts[key] = b.messages[len(b.messages)-1]
+		}
 	case shareAgentText:
 		text := shareAssistantText(event, GenAIPartTypeText)
 		if text == "" {
@@ -636,6 +664,21 @@ func (b *shareBuilder) add(item shareEvent) {
 	default:
 		b.addSystem(item)
 	}
+}
+
+const sharePromptNotRetained = "(prompt text not retained)"
+
+// sharePromptKey names one user prompt across capture paths: prompt.id is the runtime's own id for
+// the turn, which a hook and the OTLP export both carry.
+func sharePromptKey(event Event) string {
+	if event.Prompt == nil || strings.TrimSpace(event.Prompt.ID) == "" {
+		return ""
+	}
+	session := ""
+	if event.Session != nil {
+		session = event.Session.ID
+	}
+	return NormalizeHarnessName(event.Harness.Name) + "\x00" + session + "\x00" + strings.TrimSpace(event.Prompt.ID)
 }
 
 func (b *shareBuilder) newMessage(item shareEvent, id, role, text string, parts ...SharePartV1) *ShareMessageV1 {
@@ -1237,7 +1280,8 @@ func replacePathPrefix(value, prefix, repl string) string {
 		end := i + len(prefix)
 		consumed := len(value) - len(rest)
 		before := consumed + i
-		if (before == 0 || !continuesPath(value[before-1], true)) &&
+		// A URL's "://" is not a parent directory: file:///Users/al is the path /Users/al.
+		if (before == 0 || !continuesPath(value[before-1], true) || strings.HasSuffix(value[:before], "://")) &&
 			(end == len(rest) || !continuesPath(rest[end], false) || endsSentence(rest[end:])) {
 			b.WriteString(rest[:i])
 			b.WriteString(repl)
