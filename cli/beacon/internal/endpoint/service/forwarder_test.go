@@ -13,7 +13,7 @@ import (
 )
 
 func TestForwarderPlistRunsVectorResidentWithKeepAlive(t *testing.T) {
-	got := forwarderPlist(ForwarderLabel, "/opt/beacon/bin/vector", "/Users/me/.beacon/endpoint/asymptote/vector.toml")
+	got := forwarderPlist(ForwarderLabel, "/opt/beacon/bin/vector", "/Users/me/.beacon/endpoint/asymptote/vector.toml", "/Users/me/Library/Logs/Beacon/f.out", "/Users/me/Library/Logs/Beacon/f.err")
 	for _, want := range []string{
 		"<string>com.beacon.endpoint.asymptote-forwarder</string>",
 		"<string>/opt/beacon/bin/vector</string>",
@@ -30,8 +30,9 @@ func TestForwarderPlistRunsVectorResidentWithKeepAlive(t *testing.T) {
 	if strings.Contains(got, "StartCalendarInterval") {
 		t.Fatal("forwarder must be resident, not scheduled")
 	}
-	escaped := forwarderPlist("l", "/tmp/a&b", "/tmp/<c>.toml")
-	if !strings.Contains(escaped, "/tmp/a&amp;b") || !strings.Contains(escaped, "&lt;c&gt;") {
+	escaped := forwarderPlist("l", "/tmp/a&b", "/tmp/<c>.toml", `/x/"o".out`, "/x/e&.err")
+	if !strings.Contains(escaped, "/tmp/a&amp;b") || !strings.Contains(escaped, "&lt;c&gt;") ||
+		!strings.Contains(escaped, "/x/&quot;o&quot;.out") || !strings.Contains(escaped, "/x/e&amp;.err") {
 		t.Fatalf("plist must XML-escape paths:\n%s", escaped)
 	}
 }

@@ -79,7 +79,13 @@ and never fails the install. Re-running install reads only what changed since th
 A system, package or MDM install runs as root, whose home holds no agent sessions, so it reads the
 session stores of the active console user instead: the same person system hook repair and the
 scheduled inventory resolve (`SUDO_USER` or the logind seat on Linux, the console owner on macOS,
-the active session on Windows). Its collector cursors stay under the system base directory. When
+the active session on Windows). Its collector cursors stay under the system base directory. Because
+root is reading a home that user controls, the read is confined to that home: a link that leads out
+of it, a file the user does not own (including a hard link to someone else's), and a FIFO, socket or
+device are skipped rather than read, and install lists what it skipped. SQLite stores are read from
+a private copy under the system base directory, retaken if the runtime rewrites its write-ahead log
+mid-copy; a database larger than 512 MiB with its log is not copied, and install names the
+runtime's sync command to run as the user instead. A manual `beacon endpoint <runtime> sync` run as the user is not confined. When
 nobody is logged in, install says the backfill was skipped and the next connect or manual sync
 reads the sessions. `--dry-run` installs skip it, and `--no-backfill` or `BEACON_BACKFILL=0` turn it
 off. If this install also connects to Beacon Cloud, the same history is

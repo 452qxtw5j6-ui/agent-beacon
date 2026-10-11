@@ -34,14 +34,14 @@ class ClaudeParser implements TurnParser {
   private cacheReadInputTokens?: number;
   private startedAt = Date.now();
   private completedAt?: number;
-  private reqId: number;
+  private reqId: string;
   /** Stable per-turn id from message_start; used for turnId so ids don't collide
    *  across service-worker restarts (which reset the reqId counter). */
   private messageId = '';
   // tool_use blocks keyed by content-block index.
   private blocks = new Map<number, { type: string; tool?: ToolCall; argBuf: string }>();
 
-  constructor(reqId: number) {
+  constructor(reqId: string) {
     this.reqId = reqId;
   }
 

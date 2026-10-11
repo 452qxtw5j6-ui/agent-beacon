@@ -1,6 +1,7 @@
 package threatrules
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
@@ -128,7 +129,10 @@ func ScanEvents(rules []*CompiledRule, events []asymptoteobserve.Event) ([]Findi
 	for _, rule := range rules {
 		found, err := rule.Findings(events)
 		if err != nil {
-			return nil, err
+			// Name the rule: an evaluation error (such as one that exceeded MaxEvalCost)
+			// belongs to the rule, not to the log, and the operator needs to know which to
+			// remove.
+			return nil, fmt.Errorf("rule %q: %w", rule.Rule().ID, err)
 		}
 		all = append(all, found...)
 	}

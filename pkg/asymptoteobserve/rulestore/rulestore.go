@@ -103,8 +103,12 @@ func baselineRulePath(name string) string {
 // LoadActive resolves the active rule set:
 //
 //   - if rulesDir is non-empty, load only from that directory (explicit override);
-//   - else load from storeDir; if the store is empty (or absent), fall back to the
-//     embedded baseline.
+//   - else load the store rules from storeDir plus every embedded baseline rule whose
+//     id the store does not define (a store rule replaces the baseline rule with the
+//     same id). An empty or absent store therefore yields exactly the baseline.
+//
+// The baseline stays active alongside the store so that installing one rule can never
+// silently switch the baseline off; a store rule overrides a baseline rule only by id.
 //
 // Every returned rule has passed validation (via threatrules.LoadDir / Baseline). A rule
 // that needs a newer spec than this engine supports fails the load; LoadActiveSkipping is
@@ -125,12 +129,8 @@ func LoadActive(storeDir, rulesDir string) ([]LoadedRule, error) {
 // of the corpus still runs. Callers surface skipped as warnings. The embedded baseline is
 // never skipped: it ships with the engine that evaluates it.
 func LoadActiveSkipping(storeDir, rulesDir string) ([]LoadedRule, []threatrules.SkippedRule, error) {
-	dir := rulesDir
-	if dir == "" && HasRuleFiles(storeDir) {
-		dir = storeDir
-	}
-	if dir != "" {
-		rules, skipped, err := threatrules.LoadDirSkipping(dir)
+	if rulesDir != "" {
+		rules, skipped, err := threatrules.LoadDirSkipping(rulesDir)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -141,7 +141,38 @@ func LoadActiveSkipping(storeDir, rulesDir string) ([]LoadedRule, []threatrules.
 	if err != nil {
 		return nil, nil, err
 	}
-	return tag(base, SourceBaseline), nil, nil
+	if !HasRuleFiles(storeDir) {
+		return tag(base, SourceBaseline), nil, nil
+	}
+	stored, skipped, err := threatrules.LoadDirSkipping(storeDir)
+	if err != nil {
+		return nil, nil, err
+	}
+	active := tag(stored, SourceStore)
+	defined := make(map[string]bool, len(stored))
+	for _, r := range stored {
+		defined[r.ID] = true
+	}
+	for _, r := range base {
+		if !defined[r.ID] {
+			active = append(active, LoadedRule{Rule: r, Source: SourceBaseline})
+		}
+	}
+	return active, skipped, nil
+}
+
+// IsBaselineID reports whether id names a rule in the embedded baseline.
+func IsBaselineID(id string) bool {
+	base, err := Baseline()
+	if err != nil {
+		return false
+	}
+	for _, r := range base {
+		if r.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func tag(rules []*threatrules.Rule, src Source) []LoadedRule {

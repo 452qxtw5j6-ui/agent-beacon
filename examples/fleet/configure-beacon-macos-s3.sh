@@ -389,7 +389,7 @@ EOF
 BEACON_POLICIES=(
   "${INSTALLED_POLICY_NAME}|policies/beacon-installed|The Beacon package receipt and /opt/beacon/bin/beacon are present.|Install the Beacon Endpoint Agent software package on this host."
   "Beacon: collector running|policies/collector-running|The Beacon collector (beacon-otelcol) is running as root.|Run /opt/beacon/fleet/scripts/repair.sh, or reinstall the Beacon package."
-  "Beacon: S3 forwarder running|policies/s3-forwarder-running|The Vector S3 forwarder is running with the Beacon S3 config.|Run the ${CONFIGURE_S3_SCRIPT_NAME} script, then check /tmp/com.beacon.endpoint.s3-forwarder.err."
+  "Beacon: S3 forwarder running|policies/s3-forwarder-running|The Vector S3 forwarder is running with the Beacon S3 config.|Run the ${CONFIGURE_S3_SCRIPT_NAME} script, then check /Library/Logs/Beacon/com.beacon.endpoint.s3-forwarder.err."
   "Beacon: S3 forwarding configured|policies/s3-forwarding-configured|The S3 forwarder env file, Vector config, and LaunchDaemon are present.|Run the ${CONFIGURE_S3_SCRIPT_NAME} script on this host."
   "Beacon: inventory heartbeat within 4 days|policies/inventory-heartbeat-recent|The scheduled inventory job wrote a heartbeat in the last 96 hours. It runs every 6 hours while the Mac is awake.|Run sudo launchctl kickstart system/com.beacon.endpoint.inventory, then check sudo /opt/beacon/bin/beacon endpoint status --system."
 )

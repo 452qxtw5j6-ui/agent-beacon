@@ -86,7 +86,7 @@ func cursorStatusFromRuntime(status runtimeStatus) CursorStatus {
 }
 
 func installCursorHooksJSON(path, binaryPath, logPath, configPath string) error {
-	hooksJSON, err := readHooksJSON(path)
+	hooksFile, err := readCursorHooksFile(path)
 	if err != nil {
 		return err
 	}
@@ -103,9 +103,13 @@ func installCursorHooksJSON(path, binaryPath, logPath, configPath string) error 
 		"sessionEnd":         {Command: commandPrefix + " session-end"},
 	}
 	for hookName, ref := range endpointHooks {
-		hooksJSON.Hooks[hookName] = mergeEndpointHook(hooksJSON.Hooks[hookName], ref)
+		entry, err := json.Marshal(ref)
+		if err != nil {
+			return err
+		}
+		hooksFile.hooks[hookName] = mergeEndpointHook(hooksFile.hooks[hookName], entry)
 	}
-	data, err := json.MarshalIndent(hooksJSON, "", "  ")
+	data, err := hooksFile.marshal()
 	if err != nil {
 		return err
 	}
@@ -162,29 +166,94 @@ func cursorCloudCommandPrefix(binaryPath, logPath string) string {
 	)
 }
 
-func readHooksJSON(path string) (HooksJSON, error) {
-	var hooksJSON HooksJSON
-	data, err := os.ReadFile(path)
-	if err == nil {
-		if err := json.Unmarshal(data, &hooksJSON); err != nil {
-			return HooksJSON{}, err
-		}
-	} else if !os.IsNotExist(err) {
-		return HooksJSON{}, err
-	}
-	if hooksJSON.Version == 0 {
-		hooksJSON.Version = 1
-	}
-	if hooksJSON.Hooks == nil {
-		hooksJSON.Hooks = map[string][]HookRef{}
-	}
-	return hooksJSON, nil
+// cursorHooksFile is a Cursor hooks.json as read from disk. Beacon owns only the command entries it
+// wrote, so everything else is held as the JSON it was read as and written back unchanged: other
+// top-level keys, and every other hook entry with all of its fields. Cursor's hook options include
+// `type` ("command" or "prompt"), `prompt`, `model`, `loop_limit` and `failClosed` besides the
+// three HookRef models. Decoding the file into HookRef and encoding it back deleted them, which
+// turned a user's fail-closed guard into a fail-open one and a prompt hook into `{"command":""}`.
+type cursorHooksFile struct {
+	values map[string]json.RawMessage
+	hooks  map[string][]json.RawMessage
 }
 
-func mergeEndpointHook(existing []HookRef, ref HookRef) []HookRef {
-	out := make([]HookRef, 0, len(existing)+1)
+func readCursorHooksFile(path string) (cursorHooksFile, error) {
+	file := cursorHooksFile{
+		values: map[string]json.RawMessage{},
+		hooks:  map[string][]json.RawMessage{},
+	}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if err := json.Unmarshal(data, &file.values); err != nil {
+			return cursorHooksFile{}, err
+		}
+		if file.values == nil {
+			file.values = map[string]json.RawMessage{}
+		}
+		if rawHooks, ok := file.values["hooks"]; ok {
+			if err := json.Unmarshal(rawHooks, &file.hooks); err != nil {
+				return cursorHooksFile{}, err
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return cursorHooksFile{}, err
+	}
+	if file.hooks == nil {
+		file.hooks = map[string][]json.RawMessage{}
+	}
+	return file, nil
+}
+
+// marshal encodes the file with Beacon's indentation. A missing or zero version is written as 1,
+// as Cursor requires a positive version; any other version is kept as it was.
+func (file cursorHooksFile) marshal() ([]byte, error) {
+	out := make(map[string]json.RawMessage, len(file.values)+2)
+	for key, value := range file.values {
+		out[key] = value
+	}
+	var version int
+	if raw, ok := out["version"]; !ok || (json.Unmarshal(raw, &version) == nil && version == 0) {
+		out["version"] = json.RawMessage("1")
+	}
+	hooks, err := json.Marshal(file.hooks)
+	if err != nil {
+		return nil, err
+	}
+	out["hooks"] = hooks
+	return json.MarshalIndent(out, "", "  ")
+}
+
+// onlyHooks reports whether the file holds nothing besides its version and hooks, so removing
+// Beacon's last hook may remove the file instead of leaving an empty one.
+func (file cursorHooksFile) onlyHooks() bool {
+	for key := range file.values {
+		if key != "version" && key != "hooks" {
+			return false
+		}
+	}
+	return len(file.hooks) == 0
+}
+
+// cursorHookCommand returns the command of one hook entry, or "" for an entry with no string
+// command (a prompt hook, or anything Beacon cannot read), which is never Beacon's.
+func cursorHookCommand(entry json.RawMessage) string {
+	var ref struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(entry, &ref); err != nil {
+		return ""
+	}
+	return ref.Command
+}
+
+func isEndpointHookEntry(entry json.RawMessage) bool {
+	return isEndpointHook(cursorHookCommand(entry))
+}
+
+func mergeEndpointHook(existing []json.RawMessage, ref json.RawMessage) []json.RawMessage {
+	out := make([]json.RawMessage, 0, len(existing))
 	for _, item := range existing {
-		if !isEndpointHook(item.Command) {
+		if !isEndpointHookEntry(item) {
 			out = append(out, item)
 		}
 	}
@@ -192,40 +261,39 @@ func mergeEndpointHook(existing []HookRef, ref HookRef) []HookRef {
 }
 
 func removeEndpointHooks(path string) (bool, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
-		}
-		return false, err
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return false, nil
 	}
-	var hooksJSON HooksJSON
-	if err := json.Unmarshal(data, &hooksJSON); err != nil {
+	file, err := readCursorHooksFile(path)
+	if err != nil {
 		return false, err
 	}
 	changed := false
-	for hookName, refs := range hooksJSON.Hooks {
-		filtered := refs[:0]
-		for _, ref := range refs {
-			if isEndpointHook(ref.Command) {
-				changed = true
+	for hookName, entries := range file.hooks {
+		filtered := make([]json.RawMessage, 0, len(entries))
+		for _, entry := range entries {
+			if isEndpointHookEntry(entry) {
 				continue
 			}
-			filtered = append(filtered, ref)
+			filtered = append(filtered, entry)
 		}
+		if len(filtered) == len(entries) {
+			continue
+		}
+		changed = true
 		if len(filtered) == 0 {
-			delete(hooksJSON.Hooks, hookName)
+			delete(file.hooks, hookName)
 		} else {
-			hooksJSON.Hooks[hookName] = filtered
+			file.hooks[hookName] = filtered
 		}
 	}
 	if !changed {
 		return false, nil
 	}
-	if len(hooksJSON.Hooks) == 0 {
+	if file.onlyHooks() {
 		return true, os.Remove(path)
 	}
-	out, err := json.MarshalIndent(hooksJSON, "", "  ")
+	out, err := file.marshal()
 	if err != nil {
 		return false, err
 	}
@@ -237,17 +305,13 @@ func isEndpointHook(command string) bool {
 }
 
 func isCursorInstalledAt(path string) bool {
-	data, err := os.ReadFile(path)
+	file, err := readCursorHooksFile(path)
 	if err != nil {
 		return false
 	}
-	var hooksJSON HooksJSON
-	if err := json.Unmarshal(data, &hooksJSON); err != nil {
-		return false
-	}
-	for _, refs := range hooksJSON.Hooks {
-		for _, ref := range refs {
-			if isEndpointHook(ref.Command) {
+	for _, entries := range file.hooks {
+		for _, entry := range entries {
+			if isEndpointHookEntry(entry) {
 				return true
 			}
 		}

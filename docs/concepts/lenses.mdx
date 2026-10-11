@@ -32,12 +32,11 @@ agent can write one.
 
 ## How a lens runs
 
-A lens is untrusted code looking at sensitive data, so the dashboard runs it on a short
-leash:
+A lens is code looking at sensitive data, so the dashboard runs it on a short leash:
 
-- **No network.** The lens runs in a sandboxed frame under a Content Security Policy with
-  `connect-src 'none'`. It cannot fetch, open a socket, load a remote image or font, or
-  navigate its frame anywhere else. A lens that tries to navigate is closed.
+- **No ordinary network.** The lens runs in a sandboxed frame under a Content Security
+  Policy with `connect-src 'none'`. It cannot fetch, open a socket, load a remote image or
+  font, or navigate its frame anywhere else. A lens that tries to navigate is closed.
 - **No dashboard access.** The frame has an opaque origin. It cannot read the dashboard's
   pages, storage or API.
 - **One delivery of data.** The trace arrives once, through `window.beacon.getTrace()`,
@@ -50,9 +49,24 @@ leash:
 The data is the trace bundle every Beacon trace consumer reads, plus the trace's rule
 findings and its token usage as [`beacon token-usage`](/cli/token-usage) counts it. A lens
 sees whatever content the local log retained, after Beacon's redaction: prompts, command
-output and diffs when retention is `full`. It can show that on screen and nowhere else.
-[Forwarding privacy modes](/concepts/vector-forwarding) control what leaves the machine;
-they do not reduce what a local lens receives.
+output and diffs when retention is `full`.
+[Forwarding privacy modes](/concepts/vector-forwarding) control what Beacon sends off the
+machine; they do not reduce what a local lens receives.
+
+### What the sandbox does not guarantee
+
+The sandbox keeps a lens away from Beacon and the dashboard and blocks the ordinary network
+APIs, but it cannot fully prevent a lens from sending the trace data it is shown out of the
+machine. Some browser features are not governed by a Content Security Policy or any other
+control a page can set: WebRTC, and resource hints and speculative loading such as
+`preconnect` and speculation rules. The dashboard removes WebRTC from the lens and refuses
+nested frames, `<link>` elements and speculation rules before any lens code runs. That is
+best-effort hardening that closes the common paths, not a boundary: a determined lens may
+find another.
+
+So an installed lens is code you trust with the trace data it is shown. The built-in lenses
+ship with Beacon. Read any other lens before you install it, and install only lenses you
+trust; [`beacon lenses add`](/cli/lenses#beacon-lenses-add) asks you to confirm that.
 
 ## Make your own lens
 
@@ -86,9 +100,9 @@ beacon lenses add my.lens.html           # install it into the lens store
    CDN.
 4. **Preview.** `beacon lenses preview` serves the dashboard with the file added and prints
    the session page to open. The file is read again on every reload.
-5. **Install.** `beacon lenses add` copies the file into the lens store
-   (`~/.beacon/endpoint/lenses`), where every session page offers it. To update a lens, bump
-   the `version` in its manifest and add it again.
+5. **Install.** `beacon lenses add` asks you to confirm that you trust the lens, then copies
+   the file into the lens store (`~/.beacon/endpoint/lenses`), where every session page
+   offers it. To update a lens, bump the `version` in its manifest and add it again.
 
 See [`beacon lenses`](/cli/lenses) for every command and flag, and the
 [lens specification](https://github.com/asymptote-labs/agent-beacon/blob/main/spec/lenses/SPEC.md)

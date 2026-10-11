@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io"
 	"io/fs"
 	"os"
@@ -66,12 +67,12 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func (s *Store) Exists() bool {
-	info, err := os.Stat(s.ProjectsDir)
+	info, err := sessionfs.Stat(s.ProjectsDir)
 	return err == nil && info.IsDir()
 }
 
 func (s *Store) List() ([]SessionRef, error) {
-	entries, err := os.ReadDir(s.ProjectsDir)
+	entries, err := sessionfs.ReadDir(s.ProjectsDir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, nil
@@ -86,7 +87,7 @@ func (s *Store) List() ([]SessionRef, error) {
 		}
 		projectDir := filepath.Join(s.ProjectsDir, entry.Name())
 		index := readIndex(projectDir)
-		if err := filepath.WalkDir(projectDir, func(path string, d fs.DirEntry, walkErr error) error {
+		if err := sessionfs.WalkDir(projectDir, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return nil
 			}
@@ -139,7 +140,7 @@ func (s *Store) List() ([]SessionRef, error) {
 }
 
 func (s *Store) Read(ref SessionRef) ([]Record, Stats, error) {
-	f, err := os.Open(ref.Path)
+	f, err := sessionfs.Open(ref.Path)
 	if err != nil {
 		return nil, Stats{}, err
 	}
@@ -237,7 +238,7 @@ func readLine(br *bufio.Reader) ([]byte, lineStatus, error) {
 }
 
 func readIndex(projectDir string) map[string]*IndexEntry {
-	data, err := os.ReadFile(filepath.Join(projectDir, "sessions-index.json"))
+	data, err := sessionfs.ReadFile(filepath.Join(projectDir, "sessions-index.json"))
 	if err != nil {
 		return nil
 	}
@@ -257,7 +258,7 @@ func readIndex(projectDir string) map[string]*IndexEntry {
 }
 
 func readSubagentMeta(path string) *SubagentMeta {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return nil
 	}

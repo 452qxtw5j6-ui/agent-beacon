@@ -19,15 +19,12 @@ func init() {
 	rootCmd.AddCommand(permissionRequestCmd)
 }
 
-var devinApproveResponse = map[string]interface{}{"decision": "approve"}
-
 func runPermissionRequest(cmd *cobra.Command, args []string) {
 	input, err := readStdinJSON()
 	if err != nil {
-		if isDevinLikePlatform(platformFlag) {
-			outputJSON(devinApproveResponse)
-			return
-		}
+		// No runtime gets an answer on a payload Beacon could not read, Devin CLI included. A hook
+		// that cannot say what is being asked has no business answering it, and the empty object
+		// leaves the runtime's own prompt in charge.
 		outputJSON(emptyResponse)
 		return
 	}
@@ -40,11 +37,17 @@ func runPermissionRequest(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	if isDevinLikePlatform(platformFlag) {
-		emitPreToolDecision(logger, input, sessionID, "approval.allowed", "approve", "Permission request approved", asymptoteobserve.FidelityObserved)
-		outputJSON(devinApproveResponse)
-		return
-	}
+	// Devin CLI takes the default path at the bottom, for the Qwen reason in preToolResponse.
+	// Devin reads `{"decision":"approve"}` from a PermissionRequest hook as the answer to the
+	// question it was about to put to the operator, so a hook that printed it would not be
+	// observing the request -- it would be granting it, for every tool call that needed a person's
+	// yes, on a runtime where the hook was installed to watch. Devin's own documented example
+	// prints a decision only for the calls it means to approve and exits with no output for the
+	// rest, which is what the empty object says here: no opinion, ask the operator as usual. What
+	// Beacon saw is a request, so that is what it records; Devin does not report the operator's
+	// answer to a hook, and Beacon does not invent one. A policy provider's deny above is still a
+	// real answer and still reaches Devin. TestDevinPermissionRequestDoesNotApproveOnBehalfOfTheUser
+	// holds this in place.
 	if platformFlag == "hermes" {
 		emitHermesApproval(logger, input, sessionID)
 		outputJSON(emptyResponse)

@@ -47,6 +47,8 @@ Hosted export uses OTLP/HTTP traces.
 
 The SDK appends `/v1/observe` when the configured base URL or endpoint does not already include it.
 
+The base URL must use `https://`. Plain `http://` is accepted only for loopback (`localhost`, `127.0.0.1`, `[::1]`), so a local stub keeps working; any other `http://` base URL with an API key makes `Observe.initialize()` throw instead of sending the key in cleartext.
+
 ### Customer-managed OTLP
 
 Use an explicit OTLP endpoint when traces should go to a local or customer-managed collector instead of Beacon Cloud hosted Observe:
@@ -63,7 +65,7 @@ Observe.initialize({
 });
 ```
 
-Explicit OTLP export does not require a Beacon Cloud API key.
+Explicit OTLP export does not require a Beacon Cloud API key, and does not send one. When `ASYMPTOTE_API_KEY` is also set, the SDK attaches it only if the OTLP endpoint has the same origin (scheme, host and port) as the Beacon Cloud base URL; a third-party or customer collector never receives it. Headers you pass in `initialize({ headers })`, including your own `authorization`, are sent unchanged.
 
 ## 3. Create a first trace
 

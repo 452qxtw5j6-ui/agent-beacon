@@ -140,6 +140,31 @@ func TestQwenPolicyDenyUsesQwensPermissionDecisionShape(t *testing.T) {
 	}
 }
 
+// Qwen's PermissionRequest event reads `hookSpecificOutput.decision.behavior`, not
+// permissionDecision, so the PreToolUse object sent from the permission phase would be ignored and
+// the deny recorded as enforced would never take effect.
+func TestQwenPermissionRequestPolicyDenyUsesDecisionObject(t *testing.T) {
+	origPlatform := platformFlag
+	t.Cleanup(func() { platformFlag = origPlatform })
+	platformFlag = "qwen"
+
+	deny := policyDenyResponse("Security policy blocks database writes", policycontract.PhasePermissionRequest)
+	specific, ok := deny["hookSpecificOutput"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("deny response = %#v, want hookSpecificOutput", deny)
+	}
+	if _, ok := specific["permissionDecision"]; ok {
+		t.Errorf("hookSpecificOutput = %#v carries the PreToolUse permissionDecision on PermissionRequest", specific)
+	}
+	decision, ok := specific["decision"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("hookSpecificOutput = %#v, want a decision object", specific)
+	}
+	if decision["behavior"] != "deny" || decision["message"] != "Security policy blocks database writes" {
+		t.Errorf("decision = %#v, want behavior=deny with the provider's reason as message", decision)
+	}
+}
+
 // Beacon's own default platform is claude, and an unknown --platform value falls through to
 // "unknown platform -> allow". Naming qwen explicitly is what keeps it out of that fallback; this
 // guards the pairing between the flag value the installer writes and the branch the adapter takes.

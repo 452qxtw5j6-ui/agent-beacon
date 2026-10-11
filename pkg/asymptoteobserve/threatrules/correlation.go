@@ -47,6 +47,12 @@ func (c *CompiledRule) matchSessionInSequence(events []asymptoteobserve.Event) (
 	// Try every step-0 match as a candidate anchor. A single greedy pass is not enough:
 	// an early anchor whose final step falls outside the window must not mask a later
 	// anchor that completes in-window with the same downstream event.
+	//
+	// The cursors are shared by every anchor, so each later step's expression runs at most
+	// once per event in the session. Without them a session with many step-0 matches
+	// re-evaluated every later event once per anchor, quadratic in the session (8,000
+	// credential reads took over half a minute for one rule).
+	cursors := make([]stepCursor, len(c.steps))
 	for start := range events {
 		matched, err := c.eval(c.steps[0], events[start])
 		if err != nil {
@@ -55,7 +61,7 @@ func (c *CompiledRule) matchSessionInSequence(events []asymptoteobserve.Event) (
 		if !matched {
 			continue
 		}
-		seq, err := c.completeFrom(events, start)
+		seq, err := c.completeFrom(events, start, cursors)
 		if err != nil {
 			return nil, err
 		}
@@ -75,31 +81,67 @@ func (c *CompiledRule) matchSessionInSequence(events []asymptoteobserve.Event) (
 // time of the final step, so if the greedy-earliest final is outside the window no other
 // alignment from this anchor could do better — the anchor is abandoned and the caller
 // tries the next one.
-func (c *CompiledRule) completeFrom(events []asymptoteobserve.Event, start int) ([]asymptoteobserve.Event, error) {
-	startTime, startKnown := eventTime(events[start])
-	final := len(c.steps) - 1
-	stepIdx := 1
+func (c *CompiledRule) completeFrom(events []asymptoteobserve.Event, start int, cursors []stepCursor) ([]asymptoteobserve.Event, error) {
 	seq := make([]asymptoteobserve.Event, 1, len(c.steps))
 	seq[0] = events[start]
-	for j := start + 1; j < len(events); j++ {
-		matched, err := c.eval(c.steps[stepIdx], events[j])
+	prev := start
+	for s := 1; s < len(c.steps); s++ {
+		j, err := c.nextHit(&cursors[s], s, events, prev)
 		if err != nil {
 			return nil, err
 		}
-		if !matched {
-			continue
+		if j < 0 {
+			return nil, nil
 		}
 		seq = append(seq, events[j])
-		if stepIdx == final {
-			t, known := eventTime(events[j])
-			if startKnown && known && t.Sub(startTime) > c.window {
-				return nil, nil
-			}
-			return seq, nil
-		}
-		stepIdx++
+		prev = j
 	}
-	return nil, nil
+	startTime, startKnown := eventTime(events[start])
+	t, known := eventTime(events[prev])
+	if startKnown && known && t.Sub(startTime) > c.window {
+		return nil, nil
+	}
+	return seq, nil
+}
+
+// stepCursor records how far one sequence step has been evaluated across the anchors of
+// one session.
+//
+// Anchors are tried in order, and the greedy chain from a later anchor sits, step by
+// step, at or after the chain from an earlier one: the earliest hit after a later position
+// is never earlier. So the positions each step is asked about only move forward, and one
+// pass over the session per step answers every anchor. The zero value is a cursor that
+// has evaluated nothing.
+type stepCursor struct {
+	scanned int // events before this index have been evaluated against the step
+	hit     int // 1 + the index of the last hit found, or 0 for none
+}
+
+// nextHit returns the index of the earliest event after `after` that satisfies step s, or
+// -1 when none does. Successive calls on one cursor must pass a non-decreasing `after`.
+func (c *CompiledRule) nextHit(cur *stepCursor, s int, events []asymptoteobserve.Event, after int) (int, error) {
+	if hit := cur.hit - 1; hit > after {
+		// The query that found it started at or before after and saw no earlier hit, so
+		// there is none between after and it either.
+		return hit, nil
+	}
+	j := after + 1
+	if cur.scanned > j {
+		// Only after an exhausted scan, which found nothing from an earlier position on.
+		j = cur.scanned
+	}
+	for ; j < len(events); j++ {
+		matched, err := c.eval(c.steps[s], events[j])
+		if err != nil {
+			return -1, err
+		}
+		if matched {
+			cur.scanned, cur.hit = j+1, j+1
+			return j, nil
+		}
+	}
+	cur.scanned, cur.hit = len(events), 0
+	return -1, nil
 }
 
 // matchSessionAnyOrder returns the matched events, in the order they occurred, for the

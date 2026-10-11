@@ -212,7 +212,7 @@ Both services should report `state = running`.
 ### Check forwarder logs
 
 ```bash
-sudo tail -n 50 /tmp/com.beacon.endpoint.falcon-forwarder.err
+sudo tail -n 50 /Library/Logs/Beacon/com.beacon.endpoint.falcon-forwarder.err
 ```
 
 Expected:
@@ -277,7 +277,7 @@ Check launchd and stderr:
 
 ```bash
 sudo launchctl print system/com.beacon.endpoint.falcon-forwarder
-sudo tail -n 100 /tmp/com.beacon.endpoint.falcon-forwarder.err
+sudo tail -n 100 /Library/Logs/Beacon/com.beacon.endpoint.falcon-forwarder.err
 ```
 
 Load it manually:

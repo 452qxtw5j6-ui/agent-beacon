@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -59,7 +60,7 @@ func richTextPreview(value string) string {
 }
 
 func transcriptPreview(path string) string {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return "(No preview)"
 	}
@@ -751,7 +752,7 @@ func normalizeTraceID(id string) string {
 }
 
 func birthUnixMS(path string, fallback int64) int64 {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	if err != nil {
 		return fallback
 	}

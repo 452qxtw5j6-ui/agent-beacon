@@ -11,6 +11,10 @@ FULL_CLEANUP_SCRIPT="$ROOT_DIR/packaging/macos/jamf/scripts/full-cleanup.sh"
 FLEET_REPAIR_SCRIPT="$ROOT_DIR/packaging/macos/fleet/scripts/repair.sh"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
+# The forwarder installers write their LaunchDaemon logs under /Library/Logs/Beacon; keep every
+# invocation in this file inside the temp dir instead.
+BEACON_FORWARDER_LOG_DIR="$TMP_DIR/forwarder-logs"
+export BEACON_FORWARDER_LOG_DIR
 
 sh -n "$INSTALL_SCRIPT"
 sh -n "$UNINSTALL_SCRIPT"
@@ -67,6 +71,18 @@ if ! grep -q 'com.beacon.endpoint.gcs-forwarder' "$ROOT_DIR/packaging/macos/scri
   echo "postinstall should restore the optional GCS forwarder" >&2
   exit 1
 fi
+for installer in "$ROOT_DIR"/packaging/macos/jamf/claude/*/install-forwarder.sh; do
+  # Root daemons must not log to fixed names in world-writable /tmp: a local user could pre-create
+  # the file or plant a symlink for root to append through.
+  if grep -q '/tmp/\$LABEL' "$installer"; then
+    echo "forwarder installer must not send LaunchDaemon output to /tmp: $installer" >&2
+    exit 1
+  fi
+  if ! grep -q '/Library/Logs/Beacon' "$installer"; then
+    echo "forwarder installer should log under /Library/Logs/Beacon: $installer" >&2
+    exit 1
+  fi
+done
 for installer in \
   "$ROOT_DIR/packaging/macos/jamf/claude/s3/install-forwarder.sh" \
   "$ROOT_DIR/packaging/macos/jamf/claude/gcs/install-forwarder.sh"
@@ -648,6 +664,18 @@ if ! grep -q 'RunAtLoad' "$LAUNCHDAEMONS_DIR/com.beacon.endpoint.falcon-forwarde
   echo "Falcon Vector plist missing RunAtLoad" >&2
   exit 1
 fi
+if ! grep -q "<string>$BEACON_FORWARDER_LOG_DIR/com.beacon.endpoint.falcon-forwarder.err</string>" "$LAUNCHDAEMONS_DIR/com.beacon.endpoint.falcon-forwarder.plist" \
+  || grep -q '/tmp/com.beacon' "$LAUNCHDAEMONS_DIR/com.beacon.endpoint.falcon-forwarder.plist"; then
+  echo "Falcon Vector plist should log under the forwarder log dir, not /tmp" >&2
+  exit 1
+fi
+case "$(ls -ld "$BEACON_FORWARDER_LOG_DIR" | awk '{print $1}')" in
+  drwxr-xr-x*) ;;
+  *)
+    echo "forwarder log dir should be 0755" >&2
+    exit 1
+    ;;
+esac
 
 FALCON_VECTOR_STATE="$(BEACON_FORWARDER_BASE_DIR="$FORWARDER_BASE" BEACON_LAUNCHDAEMONS_DIR="$LAUNCHDAEMONS_DIR" "$ROOT_DIR/packaging/macos/jamf/extension-attributes/falcon-vector-forwarding-configured.sh")"
 case "$FALCON_VECTOR_STATE" in
@@ -688,6 +716,11 @@ fi
 S3_FORWARDER_BASE="$TMP_DIR/s3-forwarders"
 S3_LAUNCHDAEMONS_DIR="$TMP_DIR/s3-launchdaemons"
 mkdir -p "$S3_LAUNCHDAEMONS_DIR"
+# A symlink planted where the daemon's log goes must be removed, never followed.
+S3_LOG_VICTIM="$TMP_DIR/s3-log-victim"
+printf '%s\n' keep >"$S3_LOG_VICTIM"
+mkdir -p "$BEACON_FORWARDER_LOG_DIR"
+ln -sf "$S3_LOG_VICTIM" "$BEACON_FORWARDER_LOG_DIR/com.beacon.endpoint.s3-forwarder.err"
 BEACON_VECTOR_BIN="$FAKE_VECTOR" \
 BEACON_S3_FORWARDER_WRAPPER="$ROOT_DIR/packaging/macos/jamf/claude/s3/run-forwarder.sh" \
 BEACON_FORWARDER_BASE_DIR="$S3_FORWARDER_BASE" \
@@ -714,6 +747,18 @@ if [ ! -f "$S3_FORWARDER_BASE/s3-vector.env" ]; then
 fi
 if [ ! -f "$S3_LAUNCHDAEMONS_DIR/com.beacon.endpoint.s3-forwarder.plist" ]; then
   echo "S3 Vector plist was not written" >&2
+  exit 1
+fi
+if [ -L "$BEACON_FORWARDER_LOG_DIR/com.beacon.endpoint.s3-forwarder.err" ]; then
+  echo "S3 forwarder installer should remove a symlink planted at its log path" >&2
+  exit 1
+fi
+if [ "$(cat "$S3_LOG_VICTIM")" != "keep" ]; then
+  echo "S3 forwarder installer touched the planted symlink's target" >&2
+  exit 1
+fi
+if ! grep -q "<string>$BEACON_FORWARDER_LOG_DIR/com.beacon.endpoint.s3-forwarder.out</string>" "$S3_LAUNCHDAEMONS_DIR/com.beacon.endpoint.s3-forwarder.plist"; then
+  echo "S3 Vector plist should log under the forwarder log dir" >&2
   exit 1
 fi
 if ! grep -q 'sinks.beacon_runtime_s3' "$S3_FORWARDER_BASE/s3-vector.toml"; then

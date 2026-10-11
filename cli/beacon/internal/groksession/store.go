@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,12 +33,12 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func (s *Store) Exists() bool {
-	info, err := os.Stat(s.Dir)
+	info, err := sessionfs.Stat(s.Dir)
 	return err == nil && info.IsDir()
 }
 
 func (s *Store) List() ([]SessionRef, error) {
-	entries, err := os.ReadDir(s.Dir)
+	entries, err := sessionfs.ReadDir(s.Dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -54,7 +55,7 @@ func (s *Store) List() ([]SessionRef, error) {
 			workspace = project.Name()
 		}
 		projectDir := filepath.Join(s.Dir, project.Name())
-		sessions, err := os.ReadDir(projectDir)
+		sessions, err := sessionfs.ReadDir(projectDir)
 		if err != nil {
 			continue
 		}
@@ -67,7 +68,7 @@ func (s *Store) List() ([]SessionRef, error) {
 				continue
 			}
 			ref := SessionRef{ID: session.Name(), Workspace: workspace, SourcePath: sourcePath}
-			if info, err := os.Stat(sourcePath); err == nil {
+			if info, err := sessionfs.Stat(sourcePath); err == nil {
 				ref.ModTimeUnixMS = info.ModTime().UnixMilli()
 			}
 			if summary, err := readJSONFile[Summary](filepath.Join(sourcePath, "summary.json")); err == nil {
@@ -125,7 +126,7 @@ func (s *Store) Read(ref SessionRef) (SessionData, Stats, error) {
 }
 
 func readJSONFile[T any](path string) (*T, error) {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +151,7 @@ func readJSONFile[T any](path string) (*T, error) {
 // collector decides what to do with its cursor from the number of lines a file holds, and a read
 // failure that looks like an empty file is a read failure that looks like a rewrite.
 func readJSONLines[T any](path string) ([]T, int, int, error) {
-	f, err := os.Open(path)
+	f, err := sessionfs.Open(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, 0, 0, nil
@@ -199,7 +200,7 @@ func readJSONLines[T any](path string) ([]T, int, int, error) {
 }
 
 func readTerminalLogs(dir string, logs map[string]string) error {
-	entries, err := os.ReadDir(dir)
+	entries, err := sessionfs.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -211,7 +212,7 @@ func readTerminalLogs(dir string, logs map[string]string) error {
 			continue
 		}
 		path := filepath.Join(dir, entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := sessionfs.ReadFile(path)
 		if err != nil {
 			continue
 		}
@@ -225,6 +226,6 @@ func readTerminalLogs(dir string, logs map[string]string) error {
 }
 
 func fileExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	return err == nil && !info.IsDir()
 }

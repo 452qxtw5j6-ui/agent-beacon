@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -64,23 +65,48 @@ func findingsFixture(t *testing.T, rules map[string]string) *httptest.ResponseRe
 	return rec
 }
 
-func TestFindingsAllRulesSkippedNamesThem(t *testing.T) {
+// TestFindingsAllStoreRulesSkippedStillRunsBaseline: the embedded baseline stays active
+// alongside the store, so a store whose every rule needs a newer Beacon still scans with
+// the baseline and names the skipped rules instead of failing.
+func TestFindingsAllStoreRulesSkippedStillRunsBaseline(t *testing.T) {
 	rec := findingsFixture(t, map[string]string{
 		"future-a": storeRule("future-a", "threat-rules/v1.2"),
 		"future-b": storeRule("future-b", "threat-rules/v2"),
 	})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body %s", rec.Code, rec.Body.String())
 	}
-	var body struct {
-		Error   string   `json:"error"`
-		Skipped []string `json:"skipped"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+	var resp FindingsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal: %v\n%s", err, rec.Body.String())
 	}
-	if strings.Contains(body.Error, "store is empty") {
-		t.Fatalf("error must not claim the store is empty: %s", body.Error)
+	if len(resp.Skipped) != 2 || !strings.Contains(strings.Join(resp.Skipped, "\n"), "future-a.rule.yaml") {
+		t.Fatalf("want both rules in skipped, got %v", resp.Skipped)
+	}
+}
+
+// TestRunScanAllRulesSkippedNamesThem: with an explicit rules directory (no baseline),
+// every rule needing a newer Beacon is a NoRulesError that names them.
+func TestRunScanAllRulesSkippedNamesThem(t *testing.T) {
+	testenv.SetHome(t, t.TempDir())
+	dir := t.TempDir()
+	for id, spec := range map[string]string{"future-a": "threat-rules/v1.2", "future-b": "threat-rules/v2"} {
+		if err := os.WriteFile(filepath.Join(dir, id+".rule.yaml"), []byte(storeRule(id, spec)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
+	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := RunScan(true, logPath, dir, "", "")
+	var noRules *detect.NoRulesError
+	if !errors.As(err, &noRules) || len(noRules.Skipped) != 2 {
+		t.Fatalf("want a NoRulesError naming both rules, got %v", err)
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "store is empty") {
+		t.Fatalf("error must not claim the store is empty: %s", msg)
 	}
 	for _, want := range []string{
 		`rule "future-a" requires threat-rules/v1.2`,
@@ -88,12 +114,9 @@ func TestFindingsAllRulesSkippedNamesThem(t *testing.T) {
 		"supports up to " + threatrules.SupportedSpec,
 		"upgrade Beacon",
 	} {
-		if !strings.Contains(body.Error, want) {
-			t.Errorf("error %q missing %q", body.Error, want)
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
 		}
-	}
-	if len(body.Skipped) != 2 || !strings.Contains(strings.Join(body.Skipped, "\n"), "future-a.rule.yaml") {
-		t.Fatalf("want both rules in skipped, got %v", body.Skipped)
 	}
 }
 

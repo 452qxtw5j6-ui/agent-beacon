@@ -28,8 +28,10 @@ var lintChecks = []struct {
 	pattern *regexp.Regexp
 	message string
 }{
-	{regexp.MustCompile(`\.(innerHTML|outerHTML)\s*[+]?=|insertAdjacentHTML\s*\(|document\.write(ln)?\s*\(`),
+	{regexp.MustCompile(`\.(innerHTML|outerHTML)\s*[+]?=|insertAdjacentHTML\s*\(`),
 		"parses a string as HTML; trace content is untrusted, so build nodes with textContent"},
+	{regexp.MustCompile(`document\.write(ln)?\s*\(`),
+		"uses document.write, which the lens frame refuses; build nodes with textContent"},
 	{regexp.MustCompile(`\beval\s*\(|\bnew\s+Function\s*\(|setTimeout\s*\(\s*["'` + "`" + `]`),
 		"evaluates a string as code, which the lens CSP blocks"},
 	{regexp.MustCompile(`\bfetch\s*\(|\bXMLHttpRequest\b|\bnew\s+WebSocket\b|\bnew\s+EventSource\b|\bsendBeacon\s*\(`),
@@ -46,6 +48,16 @@ var lintChecks = []struct {
 		"sizes to the viewport; the frame grows to fit the document, so a viewport-height root never settles"},
 	{regexp.MustCompile(`new\s+Worker\s*\(|new\s+SharedWorker\s*\(|serviceWorker`),
 		"starts a worker, which the lens CSP blocks"},
+	{regexp.MustCompile(`\b(webkit)?RTC(PeerConnection|DataChannel)\b`),
+		"uses WebRTC, which the lens frame removes; everything comes from getTrace()"},
+	{regexp.MustCompile(`(?i)<\s*(iframe|frame|frameset|object|embed|portal|fencedframe)\b|createElement(NS)?\s*\([^)]*["'](\w+:)?(iframe|frame|object|embed|portal|fencedframe)["']|\bsrcdoc\b`),
+		"creates a nested frame, which the lens frame refuses; a frame is a fresh page outside the lens's hardening"},
+	{regexp.MustCompile(`(?i)<\s*link\b|createElement(NS)?\s*\([^)]*["'](\w+:)?link["']|\b(preconnect|prefetch|prerender|dns-prefetch|modulepreload)\b`),
+		"adds a <link> or resource hint, which the lens frame refuses: a lens loads nothing by URL, and hints like preconnect can start requests the CSP does not see"},
+	{regexp.MustCompile(`(?i)\bspeculationrules\b`),
+		"adds speculation rules, which the lens frame refuses: they can start requests the CSP does not see"},
+	{regexp.MustCompile(`(?i)\bshadowrootmode\b`),
+		"declares a shadow root in markup; keep the lens in its own document, where the lens frame's hardening can see it"},
 }
 
 // Lint checks a lens file against spec/lenses/SPEC.md. The file-level rules (size, manifest) are

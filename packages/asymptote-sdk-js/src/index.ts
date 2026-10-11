@@ -381,10 +381,60 @@ export function resolveExporterConfig(options: InitializeOptions = {}): Resolved
 
   const observeUrl = skipDefault ? undefined : explicitEndpoint ? observeURL(explicitEndpoint) : observeURL(baseUrl);
   const headers: Record<string, string> = { ...(options.headers ?? {}) };
-  if (apiKey && !headers.authorization && !headers.Authorization) {
+  const callerSetAuthorization = Object.keys(headers).some(name => name.toLowerCase() === "authorization");
+  if (apiKey && observeUrl && !callerSetAuthorization && exportsToAsymptote(mode, observeUrl, baseUrl)) {
+    requireSecureKeyURL(observeUrl);
     headers.authorization = `Bearer ${apiKey}`;
   }
   return { observeUrl, headers, mode };
+}
+
+// The Asymptote API key is a credential for Asymptote's own ingest, so it is
+// sent only there: in hosted mode, or when an explicit OTLP endpoint has the
+// same origin as the configured Asymptote base URL. OTEL_EXPORTER_OTLP_ENDPOINT
+// is an ambient, vendor-neutral variable that usually names a third-party or
+// customer collector, which must never receive the key.
+function exportsToAsymptote(mode: ExportMode, observeUrl: string, baseUrl: string): boolean {
+  if (mode === "hosted") {
+    return true;
+  }
+  if (mode !== "otlp") {
+    return false;
+  }
+  const endpointOrigin = urlOrigin(observeUrl);
+  return endpointOrigin !== undefined && endpointOrigin === urlOrigin(baseUrl);
+}
+
+function urlOrigin(value: string): string | undefined {
+  try {
+    const origin = new URL(value).origin;
+    return origin === "null" ? undefined : origin;
+  } catch {
+    return undefined;
+  }
+}
+
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+// A URL that carries the API key must be https, except loopback over http so
+// local stubs and collectors keep working.
+function requireSecureKeyURL(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`Asymptote SDK refuses to send ASYMPTOTE_API_KEY to an invalid URL: ${JSON.stringify(value)}`);
+  }
+  if (url.protocol === "https:") {
+    return;
+  }
+  if (url.protocol === "http:" && LOOPBACK_HOSTNAMES.has(url.hostname.toLowerCase())) {
+    return;
+  }
+  throw new Error(
+    `Asymptote SDK refuses to send ASYMPTOTE_API_KEY over ${url.protocol.replace(/:$/, "")} to ${url.host}; ` +
+      "use an https:// base URL (plain http is allowed only for localhost, 127.0.0.1, and [::1])",
+  );
 }
 
 function makeSpanProcessor(exporter: SpanExporter, options: InitializeOptions): SpanProcessor {

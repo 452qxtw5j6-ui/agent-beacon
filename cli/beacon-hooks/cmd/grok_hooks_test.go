@@ -73,7 +73,7 @@ func TestGrokIgnoresLegacyRetentionEnv(t *testing.T) {
 	}
 }
 
-func TestGrokPreToolRecordsToolAndAllows(t *testing.T) {
+func TestGrokPreToolRecordsToolWithoutApproving(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "grok"
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
@@ -89,8 +89,8 @@ func TestGrokPreToolRecordsToolAndAllows(t *testing.T) {
 			"command": "npm test",
 		},
 	})
-	if got := out["decision"]; got != "allow" {
-		t.Fatalf("decision = %q, want allow", got)
+	if out == nil || len(out) != 0 {
+		t.Fatalf("pre-tool response = %#v, want an empty object carrying no decision", out)
 	}
 	event := lastEndpointEvent(t, logPath)
 	if action := event["event"].(map[string]interface{})["action"]; action != "tool.invoked" {

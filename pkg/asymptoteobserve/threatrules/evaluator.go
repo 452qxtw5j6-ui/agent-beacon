@@ -32,9 +32,16 @@ type CompiledRule struct {
 	derived bool
 }
 
+// evalObserver, when set, is called once per expression evaluation. It is nil outside tests,
+// which set it to count how much work a rule does without timing it.
+var evalObserver func()
+
 // eval evaluates one compiled expression against one event, deriving fields first only for
 // rules that reference them.
 func (c *CompiledRule) eval(prog cel.Program, event asymptoteobserve.Event) (bool, error) {
+	if evalObserver != nil {
+		evalObserver()
+	}
 	if c.derived {
 		event = withDerivedFields(event)
 	}

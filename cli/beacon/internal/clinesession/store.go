@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"io/fs"
 	"net/url"
 	"os"
@@ -131,14 +132,14 @@ func (s *Store) Read(ref TraceRef) ([]Record, error) {
 }
 
 func (s *Store) ReadEntries(path string) ([]Entry, error) {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	if err != nil {
 		return nil, err
 	}
 	if info.Size() > maxHistoryFileBytes {
 		return nil, fmt.Errorf("Cline history %s is %d bytes, over the %d-byte limit", path, info.Size(), maxHistoryFileBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +161,7 @@ func (s *Store) ReadEntries(path string) ([]Entry, error) {
 
 func (s *Store) collectHistoryRefs(out map[string]TraceRef) {
 	for _, root := range s.TasksDirs {
-		entries, err := os.ReadDir(root)
+		entries, err := sessionfs.ReadDir(root)
 		if err != nil {
 			continue
 		}
@@ -192,7 +193,7 @@ func (s *Store) collectHistoryRefs(out map[string]TraceRef) {
 }
 
 func (s *Store) collectSessionRefs(out map[string]TraceRef) {
-	entries, err := os.ReadDir(s.SessionsDir)
+	entries, err := sessionfs.ReadDir(s.SessionsDir)
 	if err != nil {
 		return
 	}
@@ -207,7 +208,7 @@ func (s *Store) collectSessionRefs(out map[string]TraceRef) {
 		count++
 		leadID := entry.Name()
 		dir := filepath.Join(s.SessionsDir, leadID)
-		files, err := os.ReadDir(dir)
+		files, err := sessionfs.ReadDir(dir)
 		if err != nil {
 			continue
 		}
@@ -250,7 +251,7 @@ func (s *Store) collectSessionRefs(out map[string]TraceRef) {
 }
 
 func (s *Store) collectKanbanRefs(out map[string]TraceRef) {
-	workspaces, err := os.ReadDir(s.KanbanWorkspacesDir)
+	workspaces, err := sessionfs.ReadDir(s.KanbanWorkspacesDir)
 	if err != nil {
 		return
 	}
@@ -297,7 +298,7 @@ func (s *Store) collectKanbanRefs(out map[string]TraceRef) {
 				Directory:       firstNonEmpty(normalizeDirectory(stringValue(session["workspacePath"])), normalizeDirectory(stringValue(session["cwd"]))),
 				UpdatedAtUnixMS: updated,
 			}
-			if info, err := os.Stat(sessionsPath); err == nil {
+			if info, err := sessionfs.Stat(sessionsPath); err == nil {
 				ref.SizeBytes = info.Size()
 			}
 			key := ref.Kind + ":" + ref.ID
@@ -403,7 +404,7 @@ func extractKanbanError(session map[string]interface{}) string {
 func newestPathMtimeMS(paths ...string) int64 {
 	var latest int64
 	for _, path := range paths {
-		if info, err := os.Stat(path); err == nil && info.ModTime().UnixMilli() > latest {
+		if info, err := sessionfs.Stat(path); err == nil && info.ModTime().UnixMilli() > latest {
 			latest = info.ModTime().UnixMilli()
 		}
 	}
@@ -411,7 +412,7 @@ func newestPathMtimeMS(paths ...string) int64 {
 }
 
 func (s *Store) buildHistoryRef(id, source, traceDir, kind, relatedTo string) (TraceRef, bool) {
-	info, err := os.Stat(source)
+	info, err := sessionfs.Stat(source)
 	if err != nil || info.IsDir() {
 		return TraceRef{}, false
 	}
@@ -508,7 +509,7 @@ func resolveTraceTimestamp(entries []Entry, source string) int64 {
 	if latest > 0 {
 		return latest
 	}
-	if info, err := os.Stat(source); err == nil {
+	if info, err := sessionfs.Stat(source); err == nil {
 		return info.ModTime().UnixMilli()
 	}
 	return time.Now().UnixMilli()
@@ -593,7 +594,7 @@ func normalizeDirectory(value string) string {
 }
 
 func readJSONRecord(path string) map[string]interface{} {
-	data, err := os.ReadFile(path)
+	data, err := sessionfs.ReadFile(path)
 	if err != nil {
 		return nil
 	}
@@ -605,7 +606,7 @@ func readJSONRecord(path string) map[string]interface{} {
 }
 
 func dirExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	return err == nil && info.IsDir()
 }
 
@@ -614,8 +615,8 @@ func validPathSegment(value string) bool {
 }
 
 func fileExists(path string) bool {
-	info, err := os.Stat(path)
+	info, err := sessionfs.Stat(path)
 	return err == nil && !info.IsDir()
 }
 
-func readDirNames(path string) ([]fs.DirEntry, error) { return os.ReadDir(path) }
+func readDirNames(path string) ([]fs.DirEntry, error) { return sessionfs.ReadDir(path) }

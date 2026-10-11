@@ -13,6 +13,8 @@ beacon rules remove <id> [flags]
 
 Use [`beacon rules list`](/cli/rules-list) first when you need to confirm the active rule ids.
 
+Built-in baseline rules are not in the store and cannot be removed. When the removed store rule shares its id with a baseline rule, the baseline copy becomes active again and the command says so.
+
 ## Examples
 
 Remove one rule from the user-mode store:

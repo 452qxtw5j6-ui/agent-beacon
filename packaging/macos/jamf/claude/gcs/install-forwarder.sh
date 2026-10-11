@@ -6,6 +6,7 @@ VECTOR_BIN="${BEACON_VECTOR_BIN:-/opt/beacon/bin/vector}"
 WRAPPER="${BEACON_GCS_FORWARDER_WRAPPER:-/opt/beacon/jamf/claude/gcs/run-forwarder.sh}"
 BASE_DIR="${BEACON_FORWARDER_BASE_DIR:-/Library/Application Support/Beacon/Forwarders}"
 LAUNCHDAEMONS_DIR="${BEACON_LAUNCHDAEMONS_DIR:-/Library/LaunchDaemons}"
+LOG_DIR="${BEACON_FORWARDER_LOG_DIR:-/Library/Logs/Beacon}"
 CONFIG_PATH="${BEACON_GCS_VECTOR_CONFIG:-$BASE_DIR/gcs-vector.toml}"
 ENV_PATH="${BEACON_GCS_VECTOR_ENV:-$BASE_DIR/gcs-vector.env}"
 DATA_DIR="${BEACON_GCS_VECTOR_DATA_DIR:-$BASE_DIR/vector-data/gcs}"
@@ -159,6 +160,26 @@ trap cleanup_temp_files EXIT
 trap 'exit 1' INT TERM
 
 mkdir -p "$BASE_DIR" "$DATA_DIR" "$LAUNCHDAEMONS_DIR"
+
+# launchd opens StandardOutPath/StandardErrorPath as root for this daemon. They used to be fixed
+# names in world-writable /tmp, where any local user could pre-create them or plant a symlink for
+# root to append through. Keep them in a root-owned 0755 directory instead, and drop any job log
+# file that is not a plain file owned by root; launchd recreates it on the next start.
+if [ -L "$LOG_DIR" ]; then
+  rm -f "$LOG_DIR"
+fi
+mkdir -p "$LOG_DIR"
+if [ "$(id -u)" = "0" ]; then
+  chown 0:0 "$LOG_DIR"
+fi
+chmod 0755 "$LOG_DIR"
+for log_file in "$LOG_DIR/$LABEL.out" "$LOG_DIR/$LABEL.err"; do
+  if [ -L "$log_file" ] || { [ -e "$log_file" ] && [ ! -f "$log_file" ]; }; then
+    rm -rf "$log_file"
+  elif [ -e "$log_file" ] && [ "$(id -u)" = "0" ] && [ -n "$(find "$log_file" -prune ! -user 0 2>/dev/null)" ]; then
+    rm -f "$log_file"
+  fi
+done
 chmod 0755 "$BASE_DIR" "$DATA_DIR" "$LAUNCHDAEMONS_DIR" 2>/dev/null || true
 
 RUNTIME_INCLUDES="$(include_array "$RUNTIME_LOG_PATHS")"
@@ -289,9 +310,9 @@ cat >"$PLIST_TMP" <<EOF
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/$LABEL.out</string>
+  <string>$(xml_escape "$LOG_DIR/$LABEL.out")</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/$LABEL.err</string>
+  <string>$(xml_escape "$LOG_DIR/$LABEL.err")</string>
 </dict>
 </plist>
 EOF
@@ -352,7 +373,7 @@ else
   echo "launchctl unavailable; wrote config but did not start $LABEL" >&2
 fi
 
-if [ -f "/tmp/$LABEL.err" ]; then
+if [ -f "$LOG_DIR/$LABEL.err" ]; then
   echo "Last GCS Vector stderr lines:"
-  tail -n 20 "/tmp/$LABEL.err" || true
+  tail -n 20 "$LOG_DIR/$LABEL.err" || true
 fi

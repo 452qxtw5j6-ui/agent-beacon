@@ -11,9 +11,9 @@ import {
 } from '../../src/shared/permissions.js';
 
 const HOSTS = [
-  '*://claude.ai/*',
-  '*://chatgpt.com/*',
-  '*://chat.openai.com/*',
+  'https://claude.ai/*',
+  'https://chatgpt.com/*',
+  'https://chat.openai.com/*',
   'http://127.0.0.1/*',
   'http://localhost/*',
 ];
@@ -73,8 +73,8 @@ describe('missingOrigins', () => {
   });
 
   it('lists only the withheld hosts, in manifest order', async () => {
-    const { api } = fakeApi(['*://claude.ai/*', 'http://127.0.0.1/*']);
-    expect(await missingOrigins(api)).toEqual(['*://chatgpt.com/*', '*://chat.openai.com/*', 'http://localhost/*']);
+    const { api } = fakeApi(['https://claude.ai/*', 'http://127.0.0.1/*']);
+    expect(await missingOrigins(api)).toEqual(['https://chatgpt.com/*', 'https://chat.openai.com/*', 'http://localhost/*']);
   });
 
   it('treats a failing check as missing rather than hiding a gap', async () => {
@@ -98,7 +98,7 @@ describe('missingOrigins', () => {
 
 describe('describeOrigin', () => {
   it('reduces a match pattern to its host', () => {
-    expect(describeOrigin('*://claude.ai/*')).toBe('claude.ai');
+    expect(describeOrigin('https://claude.ai/*')).toBe('claude.ai');
     expect(describeOrigin('http://127.0.0.1/*')).toBe('127.0.0.1');
     expect(describeOrigin('<all_urls>')).toBe('<all_urls>');
   });
@@ -115,7 +115,7 @@ describe('mountPermissionBanner', () => {
 
   it('shows the not-granted state naming the missing sites', async () => {
     const { doc, els } = fakeDoc();
-    mountPermissionBanner(fakeApi(['*://claude.ai/*']).api, doc);
+    mountPermissionBanner(fakeApi(['https://claude.ai/*']).api, doc);
     await settle();
     expect(els['perm-missing'].hidden).toBe(false);
     expect(els['perm-missing'].dataset.state).toBe('missing');
@@ -124,7 +124,7 @@ describe('mountPermissionBanner', () => {
 
   it('requests exactly the missing hosts synchronously on click, then hides once granted', async () => {
     const { doc, els } = fakeDoc();
-    const { api, request } = fakeApi(['*://claude.ai/*'], { grantOnRequest: true });
+    const { api, request } = fakeApi(['https://claude.ai/*'], { grantOnRequest: true });
     mountPermissionBanner(api, doc);
     await settle();
     els['perm-grant'].click!();

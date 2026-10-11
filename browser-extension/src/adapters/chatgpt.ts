@@ -28,7 +28,7 @@ import { turnId } from '../shared/ids.js';
 
 class ChatGptParser implements TurnParser {
   private sse = new SSEParser();
-  private reqId: number;
+  private reqId: string;
   private sessionId = '';
   private requestModel?: string;
   private promptText = '';
@@ -43,7 +43,7 @@ class ChatGptParser implements TurnParser {
   /** Reference to the visible assistant message object (mutated in place by ops). */
   private assistantMsg: any = null;
 
-  constructor(reqId: number) {
+  constructor(reqId: string) {
     this.reqId = reqId;
   }
 

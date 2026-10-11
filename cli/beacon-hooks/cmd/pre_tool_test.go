@@ -584,7 +584,7 @@ func TestRunPreToolEmitsDevinToolTelemetryWithoutApproval(t *testing.T) {
 	}
 }
 
-func TestRunPermissionRequestApprovesDevinCLI(t *testing.T) {
+func TestRunPermissionRequestObservesDevinCLI(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "devin-cli"
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
@@ -596,16 +596,16 @@ func TestRunPermissionRequestApprovesDevinCLI(t *testing.T) {
 			"command": "git status",
 		},
 	})
-	if out["decision"] != "approve" {
-		t.Fatalf("devin-cli permission response = %#v, want approve", out)
+	if len(out) != 0 {
+		t.Fatalf("devin-cli permission response = %#v, want an empty object carrying no decision", out)
 	}
 
 	event := lastEndpointEvent(t, logPath)
 	if harness := event["harness"].(map[string]interface{})["name"]; harness != "devin-cli" {
 		t.Fatalf("harness = %q, want devin-cli", harness)
 	}
-	if action := event["event"].(map[string]interface{})["action"]; action != "approval.allowed" {
-		t.Fatalf("event.action = %q, want approval.allowed", action)
+	if action := event["event"].(map[string]interface{})["action"]; action != "approval.requested" {
+		t.Fatalf("event.action = %q, want approval.requested", action)
 	}
 }
 
@@ -668,8 +668,8 @@ func TestRunPreToolEmitsAntigravityCommandTelemetry(t *testing.T) {
 		},
 		"stepIdx": 19,
 	})
-	if out["decision"] != "allow" {
-		t.Fatalf("antigravity pre-tool response = %#v, want decision=allow", out)
+	if out != nil {
+		t.Fatalf("antigravity pre-tool response = %#v, want no output", out)
 	}
 
 	event := lastEndpointEvent(t, logPath)
@@ -709,13 +709,11 @@ func TestRunPreToolSynthesizesAntigravityPromptFromTranscript(t *testing.T) {
 		"toolCall":        map[string]interface{}{"name": "list_dir", "args": map[string]interface{}{"DirectoryPath": `"/repo"`}},
 		"artifactDirPath": "/tmp/artifacts",
 	}
-	out := runHookWithInput(t, runPreTool, input)
-	if out["decision"] != "allow" {
-		t.Fatalf("antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("antigravity pre-tool response = %#v, want no output", out)
 	}
-	out = runHookWithInput(t, runPreTool, input)
-	if out["decision"] != "allow" {
-		t.Fatalf("second antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("second antigravity pre-tool response = %#v, want no output", out)
 	}
 
 	events := endpointEvents(t, logPath)
@@ -747,14 +745,14 @@ func TestRunPreToolRetriesAntigravityPromptUntilTranscriptExists(t *testing.T) {
 		"toolCall":       map[string]interface{}{"name": "list_dir", "args": map[string]interface{}{"DirectoryPath": `"/repo"`}},
 	}
 
-	if out := runHookWithInput(t, runPreTool, input); out["decision"] != "allow" {
-		t.Fatalf("first antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("first antigravity pre-tool response = %#v, want no output", out)
 	}
 	if err := os.WriteFile(transcriptPath, []byte(`{"source":"USER_EXPLICIT","type":"USER_INPUT","content":"<USER_REQUEST>\nshow me the full prompt\n</USER_REQUEST>"}`+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if out := runHookWithInput(t, runPreTool, input); out["decision"] != "allow" {
-		t.Fatalf("second antigravity pre-tool response = %#v, want decision=allow", out)
+	if out := runHookWithInput(t, runPreTool, input); out != nil {
+		t.Fatalf("second antigravity pre-tool response = %#v, want no output", out)
 	}
 
 	events := endpointEvents(t, logPath)
@@ -769,7 +767,7 @@ func TestRunPreToolRetriesAntigravityPromptUntilTranscriptExists(t *testing.T) {
 	}
 }
 
-func TestRunPermissionRequestEmitsDevinApproval(t *testing.T) {
+func TestRunPermissionRequestEmitsDevinApprovalRequest(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "devin"
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
@@ -782,17 +780,17 @@ func TestRunPermissionRequestEmitsDevinApproval(t *testing.T) {
 			"command": "git status",
 		},
 	})
-	if out["decision"] != "approve" {
-		t.Fatalf("devin permission response = %#v, want decision=approve", out)
+	if len(out) != 0 {
+		t.Fatalf("devin permission response = %#v, want an empty object carrying no decision", out)
 	}
 
 	event := lastEndpointEvent(t, logPath)
-	if action := event["event"].(map[string]interface{})["action"]; action != "approval.allowed" {
-		t.Fatalf("event.action = %q, want approval.allowed", action)
+	if action := event["event"].(map[string]interface{})["action"]; action != "approval.requested" {
+		t.Fatalf("event.action = %q, want approval.requested", action)
 	}
 	approval := event["approval"].(map[string]interface{})
-	if approval["decision"] != "approve" {
-		t.Fatalf("approval = %#v, want approve", approval)
+	if approval["decision"] != "requested" || approval["required"] != true {
+		t.Fatalf("approval = %#v, want a required request with no decision", approval)
 	}
 }
 

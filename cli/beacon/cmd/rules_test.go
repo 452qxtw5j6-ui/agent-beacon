@@ -4,13 +4,20 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/detect"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 	"github.com/spf13/cobra"
 )
@@ -284,5 +291,246 @@ func TestLoadRuleFilesSingleFile(t *testing.T) {
 	}
 	if len(rules) != 1 || rules[0].ID != "cli-test-rule" {
 		t.Fatalf("unexpected: %+v", rules)
+	}
+}
+
+// pullTestSetup isolates the store and resets the pull options and limits for a test.
+func pullTestSetup(t *testing.T) {
+	t.Helper()
+	testenv.SetHome(t, t.TempDir())
+	prevOpts := rulesOpts
+	prevTransport := rulesPullTransport
+	prevDownload, prevEntries, prevTar, prevEntry := rulesPullMaxDownloadBytes, rulesPullMaxTarEntries, rulesPullMaxTarBytes, rulesPullMaxEntryBytes
+	rulesOpts.userMode, rulesOpts.systemMode, rulesOpts.force, rulesOpts.sha256 = true, false, false, ""
+	t.Cleanup(func() {
+		rulesOpts = prevOpts
+		rulesPullTransport = prevTransport
+		rulesPullMaxDownloadBytes, rulesPullMaxTarEntries, rulesPullMaxTarBytes, rulesPullMaxEntryBytes = prevDownload, prevEntries, prevTar, prevEntry
+	})
+}
+
+// storeIsEmpty reports whether nothing was installed into the user-mode rule store.
+func storeIsEmpty(t *testing.T) bool {
+	t.Helper()
+	entries, err := os.ReadDir(detect.StoreDir(true))
+	if os.IsNotExist(err) {
+		return true
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".rule.yaml") {
+			return false
+		}
+	}
+	return true
+}
+
+func TestRulesPullRefusesNonLoopbackHTTP(t *testing.T) {
+	pullTestSetup(t)
+	for _, u := range []string{
+		"http://example.com/pack.tar.gz",
+		"http://10.0.0.1/x.rule.yaml",
+		"ftp://example.com/pack.tar.gz",
+		"file:///tmp/pack.tar.gz",
+	} {
+		cmd, _ := newCmd()
+		err := runRulesPull(cmd, []string{u})
+		if err == nil || !strings.Contains(err.Error(), "https://") {
+			t.Errorf("%s: want an https-required error, got %v", u, err)
+		}
+	}
+	for _, u := range []string{"http://127.0.0.1:1/x", "http://localhost/x", "http://[::1]/x", "https://example.com/x"} {
+		parsed, _ := neturl.Parse(u)
+		if err := checkRulesPullURL(parsed); err != nil {
+			t.Errorf("%s should be accepted: %v", u, err)
+		}
+	}
+}
+
+func TestRulesPullOverHTTPS(t *testing.T) {
+	pullTestSetup(t)
+	pack := makeTarGz(t, map[string]string{"cli-test-rule.rule.yaml": validRuleYAML})
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(pack) }))
+	t.Cleanup(srv.Close)
+	rulesPullTransport = srv.Client().Transport
+
+	sum := sha256.Sum256(pack)
+	rulesOpts.sha256 = "SHA256:" + strings.ToUpper(hex.EncodeToString(sum[:]))
+	cmd, buf := newCmd()
+	if err := runRulesPull(cmd, []string{srv.URL + "/pack.tar.gz"}); err != nil {
+		t.Fatalf("https pull: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "Verified sha256") || !strings.Contains(buf.String(), "installed cli-test-rule") {
+		t.Fatalf("want a verified install, got:\n%s", buf.String())
+	}
+}
+
+func TestRulesPullRefusesHTTPSToHTTPRedirect(t *testing.T) {
+	pullTestSetup(t)
+	pack := makeTarGz(t, map[string]string{"cli-test-rule.rule.yaml": validRuleYAML})
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(pack) }))
+	t.Cleanup(plain.Close)
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/pack.tar.gz", http.StatusFound)
+	}))
+	t.Cleanup(tlsSrv.Close)
+	rulesPullTransport = tlsSrv.Client().Transport
+
+	cmd, buf := newCmd()
+	err := runRulesPull(cmd, []string{tlsSrv.URL + "/pack.tar.gz"})
+	if err == nil || !strings.Contains(err.Error(), "refusing redirect from https") {
+		t.Fatalf("want the downgrade refused, got %v\n%s", err, buf.String())
+	}
+	if !storeIsEmpty(t) {
+		t.Fatal("nothing may be installed after a refused redirect")
+	}
+}
+
+func TestRulesPullRedirectChecks(t *testing.T) {
+	req := &http.Request{URL: &neturl.URL{Scheme: "http", Host: "example.com", Path: "/x.tar.gz"}}
+	via := []*http.Request{{URL: &neturl.URL{Scheme: "http", Host: "127.0.0.1", Path: "/x.tar.gz"}}}
+	if err := rulesPullCheckRedirect(req, via); err == nil {
+		t.Fatal("a redirect from loopback http to a remote http host must be refused")
+	}
+	same := &http.Request{URL: &neturl.URL{Scheme: "https", Host: "objects.example.com", Path: "/x.tar.gz"}}
+	viaTLS := []*http.Request{{URL: &neturl.URL{Scheme: "https", Host: "github.com", Path: "/x.tar.gz"}}}
+	if err := rulesPullCheckRedirect(same, viaTLS); err != nil {
+		t.Fatalf("an https to https redirect must be followed: %v", err)
+	}
+}
+
+func TestRulesPullSHA256MismatchInstallsNothing(t *testing.T) {
+	pullTestSetup(t)
+	pack := makeTarGz(t, map[string]string{"cli-test-rule.rule.yaml": validRuleYAML})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write(pack) }))
+	t.Cleanup(srv.Close)
+
+	rulesOpts.sha256 = strings.Repeat("0", 64)
+	cmd, buf := newCmd()
+	err := runRulesPull(cmd, []string{srv.URL + "/pack.tar.gz"})
+	if err == nil || !strings.Contains(err.Error(), "sha256 mismatch") || !strings.Contains(err.Error(), "nothing was installed") {
+		t.Fatalf("want a sha256 mismatch, got %v\n%s", err, buf.String())
+	}
+	if !storeIsEmpty(t) {
+		t.Fatal("a checksum mismatch must install nothing")
+	}
+
+	rulesOpts.sha256 = "not-hex"
+	if err := runRulesPull(cmd, []string{srv.URL + "/pack.tar.gz"}); err == nil || !strings.Contains(err.Error(), "--sha256") {
+		t.Fatalf("want a malformed --sha256 refused, got %v", err)
+	}
+}
+
+func TestRulesPullRefusesOversizedDownload(t *testing.T) {
+	pullTestSetup(t)
+	rulesPullMaxDownloadBytes = 1024
+	big := strings.Repeat("#", 4096)
+	for name, chunked := range map[string]bool{"content-length": false, "chunked": true} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if chunked {
+				w.(http.Flusher).Flush() // no Content-Length: the body cap must catch it
+			}
+			w.Write([]byte(big))
+		}))
+		cmd, _ := newCmd()
+		err := runRulesPull(cmd, []string{srv.URL + "/x.rule.yaml"})
+		srv.Close()
+		if err == nil || !strings.Contains(err.Error(), "limit for a rule pack") {
+			t.Errorf("%s: want the download limit refused, got %v", name, err)
+		}
+	}
+	if !storeIsEmpty(t) {
+		t.Fatal("an oversized download must install nothing")
+	}
+}
+
+func TestExtractRuleTarballTooManyEntries(t *testing.T) {
+	pullTestSetup(t)
+	rulesPullMaxTarEntries = 5
+	entries := map[string]string{}
+	for i := 0; i < 6; i++ {
+		entries[fmt.Sprintf("notes-%d.txt", i)] = "x"
+	}
+	err := extractRuleTarball(bytes.NewReader(makeTarGz(t, entries)), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "more than 5 entries") {
+		t.Fatalf("want the entry cap enforced, got %v", err)
+	}
+}
+
+func TestExtractRuleTarballTooManyBytes(t *testing.T) {
+	pullTestSetup(t)
+	rulesPullMaxTarBytes = 64 << 10
+	// A highly compressible non-rule entry, as in a gzip bomb: small on the wire, large
+	// once decompressed.
+	data := makeTarGz(t, map[string]string{
+		"a.rule.yaml": "id: a",
+		"bomb.bin":    strings.Repeat("\x00", 1<<20),
+	})
+	if int64(len(data)) >= rulesPullMaxTarBytes {
+		t.Fatalf("fixture should compress below the limit, got %d bytes", len(data))
+	}
+	err := extractRuleTarball(bytes.NewReader(data), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "uncompressed limit") {
+		t.Fatalf("want the decompressed-size cap enforced, got %v", err)
+	}
+}
+
+func TestExtractRuleTarballOversizedEntry(t *testing.T) {
+	pullTestSetup(t)
+	rulesPullMaxEntryBytes = 16
+	err := extractRuleTarball(bytes.NewReader(makeTarGz(t, map[string]string{"big.rule.yaml": strings.Repeat("a", 64)})), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "limit for one rule") {
+		t.Fatalf("want an oversized rule entry refused rather than truncated, got %v", err)
+	}
+}
+
+func TestBoundedReaderAllowsExactLimit(t *testing.T) {
+	r := &boundedReader{r: strings.NewReader("abcd"), n: 4}
+	got, err := io.ReadAll(r)
+	if err != nil || string(got) != "abcd" {
+		t.Fatalf("exact-limit read: %q, %v", got, err)
+	}
+	r = &boundedReader{r: strings.NewReader("abcde"), n: 4}
+	if _, err := io.ReadAll(r); !errors.Is(err, errTarStreamTooLarge) {
+		t.Fatalf("over-limit read: want errTarStreamTooLarge, got %v", err)
+	}
+}
+
+func TestRulesListAndRemoveShowBaseline(t *testing.T) {
+	pullTestSetup(t)
+	src := t.TempDir()
+	writeRuleFile(t, src, "ok.rule.yaml", validRuleYAML)
+	cmd, buf := newCmd()
+	if err := rulesAddCmd.RunE(cmd, []string{src}); err != nil {
+		t.Fatalf("rules add: %v", err)
+	}
+	buf.Reset()
+	if err := rulesListCmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("rules list: %v", err)
+	}
+	base, err := detect.Baseline()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf("%d rule(s): 1 from the store, %d from the built-in baseline.", len(base)+1, len(base))
+	if !strings.Contains(buf.String(), want) {
+		t.Fatalf("want %q in:\n%s", want, buf.String())
+	}
+
+	// Installing and then removing a store copy of a baseline rule says the baseline
+	// copy is active again.
+	id := base[0].ID
+	override := writeRuleFile(t, t.TempDir(), "override.rule.yaml", strings.Replace(validRuleYAML, "id: cli-test-rule", "id: "+id, 1))
+	if err := rulesAddCmd.RunE(cmd, []string{override}); err != nil {
+		t.Fatalf("rules add override: %v", err)
+	}
+	buf.Reset()
+	if err := rulesRemoveCmd.RunE(cmd, []string{id}); err != nil {
+		t.Fatalf("rules remove: %v", err)
+	}
+	if !strings.Contains(buf.String(), "baseline copy is active again") {
+		t.Fatalf("want the baseline note, got:\n%s", buf.String())
 	}
 }

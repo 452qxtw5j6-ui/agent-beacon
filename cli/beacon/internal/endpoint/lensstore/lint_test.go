@@ -25,6 +25,17 @@ func TestLintFlagsWhatTheSandboxBlocks(t *testing.T) {
 		`location.href = "/elsewhere"`:                       "navigates a window",
 		`main { height: 100vh }`:                             "viewport",
 		`new Worker(url)`:                                    "worker",
+		`new RTCPeerConnection(config)`:                      "WebRTC",
+		`document.write("<p>x</p>")`:                         "document.write",
+		`<iframe srcdoc="<p>x</p>"></iframe>`:                "nested frame",
+		`document.createElement("IFRAME")`:                   "nested frame",
+		`frame.srcdoc = markup`:                              "nested frame",
+		`<embed src="data:,x">`:                              "nested frame",
+		`<link rel="preconnect" href="https://x">`:           "resource hint",
+		`document.createElement('link')`:                     "resource hint",
+		`hint.rel = "dns-prefetch"`:                          "resource hint",
+		`script.type = "speculationrules"`:                   "speculation rules",
+		`<template shadowrootmode="closed"></template>`:      "shadow root",
 	}
 	for line, want := range cases {
 		html := "<!doctype html>\n" + lintManifest + "\n<script>window.beacon.getTrace()</script>\n" + line + "\n"

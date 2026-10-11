@@ -3,9 +3,20 @@
 <head>
 <meta charset="utf-8">
 <script type="application/beacon-lens+json">{"id":"probe","title":"Probe","version":1,"api":"beacon.lens.v1"}</script>
+<script>
+// Registered before the static markup below is parsed, so a static child that ran would be heard.
+var staticChildMessages = [];
+window.addEventListener("message", function (event) {
+  if (event.data && typeof event.data === "object" && "staticChild" in event.data) staticChildMessages.push(event.data.staticChild);
+});
+</script>
 </head>
 <body>
 <pre id="results"></pre>
+<!-- The lens file's own markup reaches the document through the parser, not the DOM APIs. -->
+<iframe id="static-frame" srcdoc="<script>parent.postMessage({staticChild: typeof RTCPeerConnection}, '*')</script>"></iframe>
+<link id="static-preconnect" rel="preconnect" href="http://127.0.0.1:9/?via=static-preconnect">
+<script id="static-rules" type="speculationrules">{"prefetch":[{"source":"list","urls":["http://127.0.0.1:9/?via=static-rules"]}]}</script>
 <script>
 // Hostile on purpose: tries every way out of the sandbox and records what happened.
 var seenPorts = 0;
@@ -75,6 +86,204 @@ window.beacon.getTrace().then(async function (data) {
       setTimeout(function () { reject(new Error("timeout")); }, 2000);
     });
   });
+  // WebRTC is outside the CSP, so the prelude removes it. Each probe passes only if no peer
+  // connection constructor is reachable, whether named directly, by a computed name, through the
+  // webkit alias, or after trying to delete or redefine the removed global.
+  function rtcReachable(get) {
+    return attempt(function () {
+      var ctor = get();
+      if (typeof ctor !== "function") throw new Error("absent");
+      return typeof ctor;
+    });
+  }
+  r.rtcDirect = await rtcReachable(function () { return window.RTCPeerConnection; });
+  r.rtcComputed = await rtcReachable(function () { return window["RTCPeer" + "Connection"]; });
+  r.rtcWebkit = await rtcReachable(function () { return window.webkitRTCPeerConnection; });
+  r.rtcDataChannel = await rtcReachable(function () { return window.RTCDataChannel; });
+  r.rtcDelete = await rtcReachable(function () {
+    try { delete window.RTCPeerConnection; } catch (e) {}
+    return window.RTCPeerConnection;
+  });
+  r.rtcRedefine = await rtcReachable(function () {
+    try { Object.defineProperty(window, "RTCPeerConnection", { value: function () {}, configurable: true, writable: true }); } catch (e) {}
+    try { window.RTCPeerConnection = function () {}; } catch (e) {}
+    return window.RTCPeerConnection;
+  });
+  // A child frame is a fresh realm the prelude never ran in. The prelude refuses to create one, and
+  // each of these probes would still pass if it did not, as long as the parent cannot reach a peer
+  // connection constructor through the child.
+  function childFrame(setup) {
+    var f = document.createElement("iframe");
+    if (setup) setup(f);
+    document.body.appendChild(f);
+    return f;
+  }
+  r.rtcChildNoSrc = await rtcReachable(function () { return childFrame().contentWindow.RTCPeerConnection; });
+  r.rtcChildAboutBlank = await rtcReachable(function () {
+    return childFrame(function (f) { f.src = "about:blank"; }).contentWindow.RTCPeerConnection;
+  });
+  r.rtcChildSrcdoc = await rtcReachable(function () {
+    var f = childFrame(function (f) { f.srcdoc = "<p>child</p>"; });
+    return new Promise(function (resolve, reject) {
+      f.onload = function () { try { resolve(f.contentWindow.RTCPeerConnection); } catch (e) { reject(e); } };
+      setTimeout(function () { reject(new Error("timeout")); }, 2000);
+    });
+  });
+  r.rtcChildDocumentWrite = await rtcReachable(function () {
+    var d = childFrame().contentDocument;
+    d.open(); d.write("<p>child</p>"); d.close();
+    return d.defaultView.RTCPeerConnection;
+  });
+  r.rtcChildIndexed = await rtcReachable(function () {
+    childFrame();
+    return window[window.length - 1].RTCPeerConnection;
+  });
+  r.rtcChildFrames = await rtcReachable(function () {
+    childFrame();
+    return window.frames[window.frames.length - 1].RTCPeerConnection;
+  });
+  // A srcdoc child runs its own scripts, so it is asked what it sees rather than read from outside.
+  // Only the prelude's refusal to create the frame stops this one.
+  r.rtcChildOwnScript = await attempt(function () {
+    return new Promise(function (resolve, reject) {
+      var f = childFrame(function (f) {
+        f.srcdoc = "<script>parent.postMessage({rtcChild: typeof RTCPeerConnection}, '*')<\/script>";
+      });
+      window.addEventListener("message", function (event) {
+        if (event.source !== f.contentWindow || !event.data || !("rtcChild" in event.data)) return;
+        if (event.data.rtcChild === "function") resolve(event.data.rtcChild); else reject(new Error(event.data.rtcChild));
+      });
+      setTimeout(function () { reject(new Error("timeout")); }, 2000);
+    });
+  });
+  // Every other way of putting a frame, a resource hint or speculation rules into the document.
+  // Each passes only if the prelude refused it (or, for the file's own markup, removed it).
+  var childMarkup = '<iframe srcdoc="<script>parent.postMessage({rtcChild: typeof RTCPeerConnection}, \'*\')<\/script>"></iframe>';
+  var hintMarkup = '<link rel="preconnect" href="http://127.0.0.1:9/?via=markup-preconnect">';
+  var rulesMarkup = '<script type="speculationrules">{"prefetch":[{"source":"list","urls":["http://127.0.0.1:9/?via=markup-rules"]}]}<\/script>';
+  function added(fn) { return attempt(function () { fn(); return "added"; }); }
+  function holder() { var d = document.createElement("div"); document.body.appendChild(d); return d; }
+  r.frameCreateNS = await added(function () { document.createElementNS("http://www.w3.org/1999/xhtml", "x:IFRAME".toLowerCase()); });
+  r.frameInnerHTML = await added(function () { holder().innerHTML = childMarkup; });
+  r.frameOuterHTML = await added(function () { holder().outerHTML = childMarkup; });
+  r.frameInsertAdjacentHTML = await added(function () { holder().insertAdjacentHTML("beforeend", childMarkup); });
+  r.frameSetHTMLUnsafe = await added(function () {
+    holder().setHTMLUnsafe('<div><template shadowrootmode="open">' + childMarkup + "</template></div>");
+  });
+  // Writing to the lens's own document after load would replace it, results and all; the guard is on
+  // Document.prototype, so a spare document shows whether write is refused.
+  r.frameDocumentWrite = await added(function () { document.implementation.createHTMLDocument("").write(childMarkup); });
+  r.frameParsedAdopt = await added(function () {
+    var parsed = new DOMParser().parseFromString(childMarkup, "text/html");
+    holder().appendChild(document.importNode(parsed.body.firstChild, true));
+  });
+  r.frameFragment = await added(function () {
+    holder().append(document.createRange().createContextualFragment(childMarkup));
+  });
+  r.frameShadow = await added(function () {
+    var root = holder().attachShadow({ mode: "closed" });
+    root.innerHTML = childMarkup;
+  });
+  r.frameTemplateClone = await added(function () {
+    var t = document.createElement("template");
+    t.innerHTML = "<p>inert</p>";
+    t.content.firstChild.replaceWith(new DOMParser().parseFromString(childMarkup, "text/html").body.firstChild);
+    holder().appendChild(t.content.cloneNode(true));
+  });
+  // Markup the browser parses differently from a plain whole-document parse: with scripting on, a
+  // <noscript> is raw text, so the attribute below closes it and what follows is real markup; and in
+  // an <svg> or <math> context, <style> holds markup and an integration point turns it back into
+  // HTML. A check that parses differently from the real call sees only text here. Each probe also
+  // reports whether a refused element survived, so a run without the guard shows the differential.
+  var noscriptMarkup = '<noscript><p title="</noscript><link rel=preconnect href=http://127.0.0.1:9/?via=noscript><iframe></iframe>"></p></noscript>';
+  function survived(root, fn) {
+    return attempt(function () {
+      fn();
+      return root.querySelector("iframe, link") ? "present" : "absent";
+    });
+  }
+  var h;
+  h = holder(); r.noscriptInnerHTML = await survived(h, function () { h.innerHTML = noscriptMarkup; });
+  h = holder(); r.noscriptInsertAdjacentHTML = await survived(h, function () { h.insertAdjacentHTML("afterbegin", noscriptMarkup); });
+  h = holder(); r.noscriptSetHTMLUnsafe = await survived(h, function () { h.setHTMLUnsafe(noscriptMarkup); });
+  h = holder(); var inner = document.createElement("span"); h.appendChild(inner);
+  r.noscriptOuterHTML = await survived(h, function () { inner.outerHTML = noscriptMarkup; });
+  h = holder(); var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); h.appendChild(svg);
+  r.foreignSvg = await survived(h, function () {
+    svg.innerHTML = '<style><foreignObject><iframe></iframe></foreignObject></style>';
+  });
+  h = holder(); var math = document.createElementNS("http://www.w3.org/1998/Math/MathML", "math"); h.appendChild(math);
+  r.foreignMath = await survived(h, function () { math.innerHTML = '<style><mi><iframe></iframe></mi></style>'; });
+  // A closed declarative shadow root hides its content from every later scan, so only the check of
+  // the markup itself can stop this one.
+  h = holder();
+  r.templateClosedShadow = await survived(h, function () {
+    h.setHTMLUnsafe('<div><template shadowrootmode="closed">' + noscriptMarkup + "</template></div>");
+  });
+  r.parseHTMLUnsafeClosedShadow = await survived(h, function () {
+    if (typeof Document.parseHTMLUnsafe !== "function") throw new Error("unsupported");
+    var parsed = Document.parseHTMLUnsafe('<div id="shadow-host"><template shadowrootmode="closed"><iframe></iframe></template></div>');
+    h.appendChild(document.adoptNode(parsed.getElementById("shadow-host")));
+  });
+  r.execCommandInsertHTML = await added(function () {
+    var editable = holder();
+    editable.contentEditable = "true";
+    editable.focus();
+    document.getSelection().selectAllChildren(editable);
+    if (!document.execCommand("insertHTML", false, "<iframe></iframe>")) throw new Error("not run");
+  });
+  // Benign markup must come out exactly as the browser's own parsing builds it.
+  r.benignParsing = (function () {
+    var d = holder();
+    d.innerHTML = "<b>x</b><script>window.innerScriptRan = true<\/script>";
+    d.insertAdjacentHTML("beforeend", "<i>y</i>");
+    d.insertAdjacentHTML("beforebegin", "<hr id=before>");
+    d.firstChild.outerHTML = "<u>z</u><s>w</s>";
+    var svgEl = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    d.appendChild(svgEl);
+    svgEl.innerHTML = "<circle r='1'/>";
+    var table = document.createElement("table");
+    d.appendChild(table);
+    table.innerHTML = "<tr><td>2</td></tr>";
+    var template = document.createElement("template");
+    template.innerHTML = "<tr><td>1</td></tr>";
+    var shadow = holder().attachShadow({ mode: "open" });
+    shadow.innerHTML = "<em>s</em>";
+    var noscript = holder();
+    noscript.innerHTML = "<noscript><p>n</p></noscript>";
+    return [
+      Array.prototype.map.call(d.childNodes, function (n) { return n.localName; }).join("+"),
+      d.previousSibling.id, window.innerScriptRan === undefined ? "inert" : "ran",
+      svgEl.firstChild.namespaceURI === "http://www.w3.org/2000/svg" ? "svg" : "html",
+      table.firstChild.localName, template.content.firstChild.localName, shadow.firstChild.localName,
+      noscript.firstChild.firstChild.nodeType,
+    ].join(",");
+  })();
+  r.frameStatic = staticChildMessages.length ? "allowed:" + staticChildMessages[0]
+    : document.getElementById("static-frame") ? "present" : "blocked";
+  r.hintCreate = await added(function () { document.createElement("LINK"); });
+  r.hintInnerHTML = await added(function () { holder().innerHTML = hintMarkup; });
+  r.hintStatic = document.getElementById("static-preconnect") ? "present" : "blocked";
+  r.rulesTypeProperty = await added(function () {
+    var sc = document.createElement("script");
+    sc.type = " SpeculationRules ";
+    sc.textContent = '{"prefetch":[{"source":"list","urls":["http://127.0.0.1:9/?via=dom-rules"]}]}';
+    document.head.appendChild(sc);
+  });
+  r.rulesSetAttribute = await added(function () {
+    var sc = document.createElement("script");
+    sc.setAttribute("TYPE", "speculationrules");
+  });
+  r.rulesMutateManifest = await added(function () {
+    var manifest = document.querySelector('script[type="application/beacon-lens+json"]');
+    manifest.setAttribute("type", "speculationrules");
+  });
+  r.rulesInnerHTML = await added(function () { holder().innerHTML = rulesMarkup; });
+  r.rulesStatic = document.getElementById("static-rules") ? "present" : "blocked";
+  // A static child that escaped the guard would have posted by now.
+  await new Promise(function (resolve) { setTimeout(resolve, 500); });
+  if (staticChildMessages.length) r.frameStatic = "allowed:" + staticChildMessages[0];
+  r.dnsPrefetchMeta = !!document.querySelector('meta[http-equiv="x-dns-prefetch-control"][content="off"]');
   r.origin = self.origin;
   r.seenPorts = seenPorts;
   document.getElementById("results").textContent = JSON.stringify(r);

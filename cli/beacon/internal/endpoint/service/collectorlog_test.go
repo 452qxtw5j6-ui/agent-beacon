@@ -16,14 +16,18 @@ func TestCollectorLogNamesWhereEachBackendSendsStderr(t *testing.T) {
 	testenv.SetHome(t, home)
 
 	launchd := Manager{UserMode: true, Kind: KindLaunchd}.CollectorLog()
-	if launchd.Path != "/tmp/"+UserLabel+".err" {
-		t.Errorf("launchd user log = %q, want /tmp/%s.err", launchd.Path, UserLabel)
+	if want := filepath.Join(home, "Library", "Logs", "Beacon", UserLabel+".err"); launchd.Path != want {
+		t.Errorf("launchd user log = %q, want %q", launchd.Path, want)
 	}
-	if !strings.Contains(plist(UserLabel, "/bin/otelcol", "/tmp/otelcol.yaml"), "<string>"+launchd.Path+"</string>") {
+	stdout, stderr, err := launchdLogPaths(true, UserLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(plist(UserLabel, "/bin/otelcol", "/x/otelcol.yaml", stdout, stderr), "<string>"+launchd.Path+"</string>") {
 		t.Errorf("launchd log path %q is not the plist's StandardErrorPath", launchd.Path)
 	}
-	if got := (Manager{UserMode: false, Kind: KindLaunchd}).CollectorLog().Path; got != "/tmp/"+SystemLabel+".err" {
-		t.Errorf("launchd system log = %q, want /tmp/%s.err", got, SystemLabel)
+	if got := (Manager{UserMode: false, Kind: KindLaunchd}).CollectorLog().Path; got != "/Library/Logs/Beacon/"+SystemLabel+".err" {
+		t.Errorf("launchd system log = %q, want /Library/Logs/Beacon/%s.err", got, SystemLabel)
 	}
 
 	supervised := Manager{UserMode: true, Kind: KindSupervised}.CollectorLog()

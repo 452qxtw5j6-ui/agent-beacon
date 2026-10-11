@@ -30,6 +30,10 @@ func stubBackfill(t *testing.T, maxBytes, shareBytes int64, runners ...endpointB
 	endpointBackfillRunners = func() []endpointBackfillRunner { return runners }
 	endpointBackfillMaxBytes, endpointBackfillShareBytes = maxBytes, shareBytes
 	endpointBackfillNow = func() time.Time { return time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC) }
+	oldScratch := endpointBackfillScratchDir
+	t.Cleanup(func() { endpointBackfillScratchDir = oldScratch })
+	scratch := filepath.Join(t.TempDir(), "backfill-snapshots")
+	endpointBackfillScratchDir = func() string { return scratch }
 }
 
 func writingRunner(name string, events int, since *time.Time) endpointBackfillRunner {

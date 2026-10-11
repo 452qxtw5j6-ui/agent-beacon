@@ -127,7 +127,15 @@ func (m UpdaterManager) WriteUnit(program string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	return path, os.WriteFile(path, []byte(updaterPlist(UpdaterLabel, program)), 0o644)
+	// The updater is only ever a LaunchDaemon, so its output goes to the root-owned system dir.
+	if err := ensureLaunchdLogDir(false, UpdaterLabel); err != nil {
+		return "", err
+	}
+	stdout, stderr, err := launchdLogPaths(false, UpdaterLabel)
+	if err != nil {
+		return "", err
+	}
+	return path, os.WriteFile(path, []byte(updaterPlist(UpdaterLabel, program, stdout, stderr)), 0o644)
 }
 
 // writeSystemdUnits writes the oneshot service plus the timer that drives it.
@@ -270,7 +278,7 @@ WantedBy=timers.target
 
 // updaterPlist renders the updater LaunchDaemon. It runs at business-hour intervals in local
 // time and does not RunAtLoad or KeepAlive; each invocation resolves the configured mode.
-func updaterPlist(label, program string) string {
+func updaterPlist(label, program, stdoutPath, stderrPath string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -320,12 +328,12 @@ func updaterPlist(label, program string) string {
   <key>RunAtLoad</key>
   <false/>
   <key>StandardOutPath</key>
-  <string>/tmp/%s.out</string>
+  <string>%s</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/%s.err</string>
+  <string>%s</string>
 </dict>
 </plist>
-`, label, program, label, label)
+`, xmlEscape(label), xmlEscape(program), xmlEscape(stdoutPath), xmlEscape(stderrPath))
 }
 
 func shellQuote(s string) string {

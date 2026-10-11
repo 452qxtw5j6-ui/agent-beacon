@@ -49,6 +49,7 @@ Beacon writes user-level Antigravity hooks to `~/.gemini/config/hooks.json` and 
 |------|---------|
 | Prompt telemetry | Supported through `PreInvocation` and `UserPromptSubmit` hooks |
 | Command, tool, and file telemetry | Supported for pre-tool, post-tool, invocation stop, command, failed edit, quoted path, diff, and file edit payloads where Antigravity exposes them |
+| Approvals | Not recorded or synthesized. The `PreToolUse` hook writes nothing to stdout, so Antigravity's own permission settings decide every call: Antigravity reads a hook's `allow` as approving the call automatically and an object without a decision as a deny. A deny from a `BEACON_POLICY_PROVIDER` policy provider still returns `{"decision":"deny"}` |
 | Local JSONL and dashboard | Supported |
 | MDM deployment | Supported for the endpoint agent. Antigravity hooks are installed separately in the logged-in user's context or project context |
 

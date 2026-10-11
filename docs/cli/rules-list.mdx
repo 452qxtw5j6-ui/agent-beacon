@@ -11,7 +11,9 @@ description: "List active Beacon threat-detection rules"
 beacon rules list [flags]
 ```
 
-The output includes each rule id, severity, maturity status, and source. The source shows whether Beacon loaded the rule from the local store or the built-in baseline.
+The output includes each rule id, severity, maturity status, and source. The source shows whether Beacon loaded the rule from the local store or the built-in baseline, and the closing line counts the rules from each.
+
+The built-in baseline stays active alongside the store. A store rule replaces a baseline rule only when it has the same id, so installing your own rules adds to the baseline rather than switching it off.
 
 ## Examples
 
