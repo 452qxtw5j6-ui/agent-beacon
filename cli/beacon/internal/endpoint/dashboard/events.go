@@ -263,14 +263,26 @@ func classifySessions(path string, query EventQuery) (map[string]sessionClassifi
 		Until: query.Until,
 	}
 	stats := map[string]*sessionStateStats{}
-	sharingAcc := map[string]*sessionAccumulator{}
+	sessionRecords := map[string][]EventRecord{}
+	shared := map[string]bool{}
 	for _, source := range eventSources(path) {
-		if err := collectSessionStateStats(source, stateQuery, stats, sharingAcc); err != nil {
+		if err := collectSessionStateStats(source, stateQuery, stats, sessionRecords, shared); err != nil {
 			return nil, nil, err
 		}
 	}
+	// Sharing state depends on the order of a session's events, so fold them in append order
+	// (across rotated archives), as ReadSessionDetail and the trace history do.
 	sharing := map[string]*SessionSharing{}
-	for id, acc := range sharingAcc {
+	for id := range shared {
+		records := sessionRecords[id]
+		SortRecordsAppendOrder(records)
+		acc := &sessionAccumulator{record: SessionRecord{ID: id}}
+		for _, record := range records {
+			if acc.record.Harness == "" {
+				acc.record.Harness = record.Event.Harness.Name
+			}
+			acc.noteSharing(record)
+		}
 		if acc.record.Sharing == nil {
 			continue
 		}
@@ -301,7 +313,7 @@ func classifySessions(path string, query EventQuery) (map[string]sessionClassifi
 	return classifications, sharing, nil
 }
 
-func collectSessionStateStats(source eventSource, query EventQuery, stats map[string]*sessionStateStats, sharing map[string]*sessionAccumulator) error {
+func collectSessionStateStats(source eventSource, query EventQuery, stats map[string]*sessionStateStats, sessionRecords map[string][]EventRecord, shared map[string]bool) error {
 	file, err := os.Open(source.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -337,12 +349,11 @@ func collectSessionStateStats(source eventSource, query EventQuery, stats map[st
 		if event.Session == nil || event.Session.ID == "" {
 			continue
 		}
-		if acc := sharing[event.Session.ID]; acc == nil {
-			sharing[event.Session.ID] = &sessionAccumulator{record: SessionRecord{ID: event.Session.ID, Harness: event.Harness.Name}}
-		} else if acc.record.Harness == "" {
-			acc.record.Harness = event.Harness.Name
+		// Every session's records, slimmed to what the sharing state reads, whatever the filters.
+		sessionRecords[event.Session.ID] = append(sessionRecords[event.Session.ID], shareRelevantRecord(record))
+		if event.Event.Action == "session.shared" {
+			shared[event.Session.ID] = true
 		}
-		sharing[event.Session.ID].noteSharing(record)
 		if !matchesQuery(record, query) {
 			continue
 		}

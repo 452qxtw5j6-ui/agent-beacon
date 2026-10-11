@@ -1,6 +1,8 @@
 package dashboard
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -234,5 +236,51 @@ func TestShareFromOutsideTheSessionGoesStaleOnAReply(t *testing.T) {
 		if trace.ID == "session:claude_code:out1" && trace.Sharing.State != "stale" {
 			t.Fatalf("trace sharing = %+v, want stale", trace.Sharing)
 		}
+	}
+}
+
+// Sharing state folds a session's events in append order across rotated archives, so the session
+// list, the session page and the trace list agree after a rotation.
+func TestSharingStateAcrossARotatedLog(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "runtime.jsonl")
+	archived := []string{
+		`{"timestamp":"2026-06-11T10:00:00Z","event":{"id":"r1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"rot1"},"prompt":{"text":"share this"}}`,
+		`{"timestamp":"2026-06-11T10:00:05Z","event":{"id":"r2","action":"tool.invoked","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"rot1"},"tool":{"name":"Bash","command":"beacon share"},"gen_ai":{"tool":{"call":{"id":"call-r"}}}}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","event":{"id":"r3","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"rot1"},"raw":{"shared_url":"https://beacon.sh/s/rot1","visibility":"direct","shared_at":"2026-06-11T10:00:09Z","last_refreshed_at":"2026-06-11T10:00:09Z","shared_through":"2026-06-11T10:00:06Z"}}`,
+	}
+	active := []string{
+		`{"timestamp":"2026-06-11T10:00:10Z","event":{"id":"r4","action":"tool.completed","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"rot1"},"tool":{"name":"Bash"},"gen_ai":{"tool":{"call":{"id":"call-r"}}}}`,
+		`{"timestamp":"2026-06-11T10:00:15Z","event":{"id":"r5","action":"agent.message","category":"agent"},"harness":{"name":"claude_code"},"session":{"id":"rot1"},"message":"Shared."}`,
+	}
+	if err := os.WriteFile(path+".1", []byte(strings.Join(archived, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(active, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withoutHistory(t)
+	if s := sessionSharing(t, path, EventQuery{})["rot1"]; s == nil || s.State != "shared" {
+		t.Fatalf("ReadSessions sharing = %+v, want shared", s)
+	}
+	detail, ok, err := ReadSessionDetail(path, "rot1")
+	if err != nil || !ok || detail.Session.Sharing == nil || detail.Session.Sharing.State != "shared" {
+		t.Fatalf("ReadSessionDetail sharing = %+v (%v %v), want shared", detail.Session.Sharing, ok, err)
+	}
+	list, err := ReadTraceList(path, TraceQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, trace := range list.Traces {
+		if trace.ID == "session:claude_code:rot1" {
+			found = true
+			if trace.Sharing.State != "shared" {
+				t.Fatalf("trace sharing = %+v, want shared", trace.Sharing)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("trace list missed rot1")
 	}
 }

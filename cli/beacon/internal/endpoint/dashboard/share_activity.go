@@ -109,3 +109,43 @@ func isAssistantOutput(event schema.Event) bool {
 	}
 	return event.GenAI != nil && event.GenAI.Usage != nil
 }
+
+// shareRelevantRecord is the part of record that the sharing state reads (noteSharing and
+// shareActivity), so the unfiltered sharing pass can hold a session's records until it can fold
+// them in append order without holding their content.
+func shareRelevantRecord(record EventRecord) EventRecord {
+	e := record.Event
+	slim := schema.Event{
+		Timestamp: e.Timestamp,
+		Event:     e.Event,
+		Harness:   e.Harness,
+		Session:   e.Session,
+		MCP:       e.MCP,
+	}
+	if e.Event.Action == "session.shared" {
+		slim.Raw = e.Raw
+	}
+	if e.Prompt != nil {
+		slim.Prompt = &schema.PromptInfo{ID: e.Prompt.ID}
+		if strings.TrimSpace(e.Prompt.Text) != "" {
+			slim.Prompt.Text = "-"
+		}
+	}
+	if e.Command != nil {
+		slim.Command = &schema.CommandInfo{Command: e.Command.Command}
+	}
+	if e.Tool != nil {
+		tool := *e.Tool
+		slim.Tool = &tool
+	}
+	if e.File != nil {
+		slim.File = &schema.FileInfo{Path: e.File.Path}
+	}
+	if e.GenAI != nil {
+		slim.GenAI = &schema.GenAIInfo{Usage: e.GenAI.Usage}
+		if id := asymptoteobserve.ToolCallID(&e); id != "" {
+			slim.GenAI.Tool = &asymptoteobserve.GenAIToolInfo{Call: &asymptoteobserve.GenAIToolCallInfo{ID: id}}
+		}
+	}
+	return EventRecord{ID: record.ID, Line: record.Line, Event: slim, Parsed: record.Parsed}
+}
