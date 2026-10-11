@@ -49,8 +49,8 @@ poll, and OTLP collection paths.
 - **Token Usage:** review runtime-reported token usage and cost where sources
   provide it.
 - **Detections:** browse the active [threat-rule](/detections) set that Beacon
-  would use for local scans, including rules installed in the local store or the
-  built-in baseline when no store is installed.
+  would use for local scans: rules installed in the local store plus the
+  built-in baseline rules the store does not replace by id.
 - **Findings:** run the active rules over the configured runtime log on demand and
   review matching evidence with severity and session filters.
 - **Agent Inventory:** inspect [Inventory Local Agent Runtimes](/guides/inventory)

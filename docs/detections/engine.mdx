@@ -15,7 +15,7 @@ When `beacon scan` runs, Beacon resolves the active rules in this order:
 
 1. If `--rules <dir>` is provided, load `.rule.yaml` files from that directory.
 2. Otherwise, load installed rules from the endpoint rule store.
-3. If the store is absent or empty, load the built-in baseline rules embedded in the binary.
+3. Add every built-in baseline rule embedded in the binary whose id the store does not define. A store rule with a baseline rule's id replaces that one baseline rule; installing rules never switches the rest of the baseline off. With the store absent or empty, the baseline runs alone.
 
 The per-user store is under the endpoint base directory, commonly `~/.beacon/endpoint/rules`. System-mode installs use the system endpoint base directory.
 

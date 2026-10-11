@@ -48,6 +48,11 @@ func Baseline() ([]*threatrules.Rule, error) {
 	return rulestore.Baseline()
 }
 
+// IsBaselineID reports whether id names a rule in the embedded baseline.
+func IsBaselineID(id string) bool {
+	return rulestore.IsBaselineID(id)
+}
+
 // LoadActive resolves the active rule set for the given mode. See rulestore.LoadActive.
 func LoadActive(userMode bool, rulesDir string) ([]LoadedRule, error) {
 	return rulestore.LoadActive(StoreDir(userMode), rulesDir)

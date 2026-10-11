@@ -32,8 +32,9 @@ var scanCmd = &cobra.Command{
 	Long: `Scans the local Beacon runtime telemetry log with the active threat-detection
 rules and reports findings.
 
-Rules come from the local store (~/.beacon/endpoint/rules) when present, otherwise from
-the built-in baseline. Use --rules to scan with an explicit rule directory, and
+Rules come from the local store (~/.beacon/endpoint/rules) plus every built-in baseline
+rule the store does not replace by id. Use --rules to scan with only an explicit rule
+directory, and
 'beacon rules add' / 'beacon rules pull' to manage the store.
 
 Scanning is read-only and never touches the network.`,
@@ -209,7 +210,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanOpts.userMode, "user", true, "Use per-user endpoint paths")
 	scanCmd.Flags().BoolVar(&scanOpts.systemMode, "system", false, "Use system endpoint paths")
 	scanCmd.Flags().StringVar(&scanOpts.logPath, "log-path", "", "Runtime JSONL log path (default: resolved from config)")
-	scanCmd.Flags().StringVar(&scanOpts.rulesDir, "rules", "", "Rule directory to scan with (default: store, else baseline)")
+	scanCmd.Flags().StringVar(&scanOpts.rulesDir, "rules", "", "Rule directory to scan with, instead of the store and baseline")
 	scanCmd.Flags().BoolVar(&scanOpts.jsonOutput, "json", false, "Output findings as JSON")
 	scanCmd.Flags().StringVar(&scanOpts.minSeverity, "min-severity", "", "Only report findings at or above this severity")
 	scanCmd.Flags().StringVar(&scanOpts.session, "session", "", "Only scan events for this session id")

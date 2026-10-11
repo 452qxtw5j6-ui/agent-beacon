@@ -18,8 +18,8 @@ Scanning is read-only. It loads local telemetry from the resolved runtime JSONL 
 Beacon chooses rules in this order:
 
 1. Rules in the local rule store.
-2. The built-in baseline rules when no store is installed.
-3. The directory passed with `--rules`, when you want an explicit rule pack for one scan.
+2. The built-in baseline rules, except any whose id a store rule already defines (the store copy wins). With no store installed, the baseline runs alone.
+3. The directory passed with `--rules`, when you want an explicit rule pack for one scan. It replaces both of the above.
 
 ```bash title="Scan with an explicit rule directory"
 beacon scan --rules ./rules
