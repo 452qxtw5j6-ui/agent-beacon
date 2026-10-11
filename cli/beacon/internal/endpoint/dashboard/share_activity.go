@@ -201,8 +201,11 @@ func isAssistantOutput(event schema.Event) bool {
 // them in append order without holding their content.
 func shareRelevantRecord(record EventRecord) EventRecord {
 	e := record.Event
+	// Timestamp, Sequence and the record's ID are what SortRecordsAppendOrder reads, so the slim
+	// records sort exactly as ReadSessionDetail sorts the full ones.
 	slim := schema.Event{
 		Timestamp: e.Timestamp,
+		Sequence:  e.Sequence,
 		Event:     e.Event,
 		Harness:   e.Harness,
 		Session:   e.Session,

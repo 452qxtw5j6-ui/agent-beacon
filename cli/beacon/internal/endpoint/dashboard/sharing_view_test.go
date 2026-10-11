@@ -433,3 +433,26 @@ func TestSharingBuffersOnlySharedSessions(t *testing.T) {
 		t.Fatalf("buffered %d records, want only the shared sessions' %d", buffered, shared)
 	}
 }
+
+// Events with one timestamp are ordered by their writer's sequence, not by their place in the file,
+// in the session list as on the session page: the slim records the list folds keep the sequence.
+// Here the share call, its record and the agent's reply share a timestamp but were written in the
+// reverse order; by sequence the reply follows the record and is the share's own, so the session is
+// shared, not stale, in both views.
+func TestSessionSharingOrdersTiesBySequenceInBothViews(t *testing.T) {
+	path := newTestLog(t, sharingLines(
+		`{"timestamp":"2026-06-11T10:00:00Z","event":{"id":"q1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"seq1"},"prompt":{"text":"share this session"}}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","sequence":3,"event":{"id":"q4","action":"agent.message","category":"agent"},"harness":{"name":"claude_code"},"session":{"id":"seq1"},"message":"Shared: https://beacon.sh/s/seq1"}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","sequence":2,"event":{"id":"q3","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"seq1"},"raw":{"shared_url":"https://beacon.sh/s/seq1","visibility":"direct","shared_at":"2026-06-11T10:00:09Z","last_refreshed_at":"2026-06-11T10:00:09Z","shared_through":"2026-06-11T10:00:05Z"}}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","sequence":1,"event":{"id":"q2","action":"tool.invoked","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"seq1"},"tool":{"name":"Bash","command":"beacon share --current"},"gen_ai":{"tool":{"call":{"id":"call-seq"}}}}`,
+	))
+	withoutHistory(t)
+	listed := sessionSharing(t, path, EventQuery{})["seq1"]
+	detail, ok, err := ReadSessionDetail(path, "seq1")
+	if err != nil || !ok {
+		t.Fatalf("detail: ok=%v err=%v", ok, err)
+	}
+	if listed == nil || detail.Session.Sharing == nil || listed.State != detail.Session.Sharing.State || listed.State != "shared" {
+		t.Fatalf("list sharing = %+v, page sharing = %+v, want both shared", listed, detail.Session.Sharing)
+	}
+}
