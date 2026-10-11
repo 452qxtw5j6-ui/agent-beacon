@@ -3,7 +3,9 @@ package writer
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -117,20 +119,24 @@ func AppendEvent(event schema.Event, opts Options) (string, error) {
 	return opts.Path, nil
 }
 
-// EnsureSystemLogWritable makes a machine-wide log directory writable by the people whose agent
-// sessions this endpoint captures.
+// EnsureSystemLogWritable prepares a machine-wide runtime log so the people whose agent sessions
+// this endpoint captures can append to it, and nobody else can redirect what the privileged
+// writers do there.
 //
-// A no-op on POSIX, where the file mode carries the same guarantee. On Windows it is the step
-// without which a system-mode install produces a healthy collector that records nothing the agent
-// did: %ProgramData% denies ordinary users write access, hooks run as the console user, and
-// nothing reports an error because status and doctor both describe the collector rather than the
-// hooks exporting to it.
+// path is the runtime log itself, not its directory: on Windows the log and its lock are created
+// here, and the files of its family (archives, lock) are reset, so the base name matters.
+//
+// On POSIX this makes the directory 0755 and leaves the 0666 file mode to openRuntimeFile. On
+// Windows it is the step without which a system-mode install produces a healthy collector that
+// records nothing the agent did -- and the step that keeps the grant from being more than hooks
+// need; see secureSystemLog.
 //
 // Creates the directory first. Install calls this before anything has written a log there, so on a
-// fresh system-mode install the directory does not exist yet -- and granting access to a path that
-// is not there fails, taking the whole install down before the service is ever registered. Ensure
-// means ensure.
-func EnsureSystemLogWritable(dir string) error {
+// fresh system-mode install the directory does not exist yet -- and securing a path that is not
+// there fails, taking the whole install down before the service is ever registered. Ensure means
+// ensure.
+func EnsureSystemLogWritable(path string) error {
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create the log directory %s: %w", dir, err)
 	}
@@ -149,12 +155,25 @@ func EnsureSystemLogWritable(dir string) error {
 	if err := os.Chmod(dir, 0755); err != nil {
 		return fmt.Errorf("make the log directory %s traversable: %w", dir, err)
 	}
-	return grantInteractiveUsersWrite(dir)
+	if err := secureSystemLog(path); err != nil {
+		return fmt.Errorf("secure the log directory %s: %w", dir, err)
+	}
+	return nil
 }
 
-// SystemLogWritableByUsers reports whether that grant is in place, for doctor.
-func SystemLogWritableByUsers(dir string) (bool, error) {
-	return interactiveUsersCanWrite(dir)
+// LogACLState is what doctor reports about a system log's access control.
+type LogACLState struct {
+	// HooksCanAppend is true when a hook running as the interactive user can open the log for
+	// append and its lock for read-write.
+	HooksCanAppend bool
+	// Problems lists grants or owners that would let an ordinary user delete, rename or redirect
+	// the files a SYSTEM process writes. Empty when the ACL is the one install applies.
+	Problems []string
+}
+
+// CheckSystemLogACL reports the state EnsureSystemLogWritable establishes, for doctor.
+func CheckSystemLogACL(path string) (LogACLState, error) {
+	return inspectSystemLog(path)
 }
 
 // EnsureRuntimeFile creates the shared runtime log with the shared writable
@@ -232,7 +251,7 @@ func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int
 			}
 		}
 	}
-	if err := rotateIfNeeded(path, rotateBytes, rotateArchives, int64(len(line))); err != nil {
+	if err := rotateIfNeeded(path, rotateBytes, rotateArchives, int64(len(line))); err != nil && !rotationRefused(err) {
 		return err
 	}
 	f, err := openRuntimeFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)
@@ -301,6 +320,18 @@ func rotateIfNeeded(path string, maxSize int64, archives int, nextWriteBytes int
 	}
 	rotated := path + ".1"
 	return os.Rename(path, rotated)
+}
+
+// rotationRefused reports whether a rotation failed because this process may not rename or delete
+// in the log directory, which is the expected outcome for an unprivileged writer of a system log.
+//
+// Rotation belongs to the privileged writers there: on POSIX the directory is root-owned 0755, and
+// on Windows its ACL gives ordinary users no right to add, rename or delete entries -- which is the
+// point, since those are the rights that let a user redirect a SYSTEM write. The first step of a
+// rotation is therefore the one refused, nothing has moved, and the event is better appended past
+// the size limit than lost; the collector rotates the log at its next write.
+func rotationRefused(err error) bool {
+	return errors.Is(err, fs.ErrPermission)
 }
 
 // needsRotation reports whether appending nextWriteBytes to path would take it past maxSize, which

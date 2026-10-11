@@ -19,10 +19,11 @@ import (
 // directory has to exist either way, and keeping that guarantee in the shared function is what
 // stops the next platform from reintroducing it.
 func TestEnsureSystemLogWritableCreatesTheDirectoryItIsAskedAbout(t *testing.T) {
+	requireSystemACLRights(t)
 	// Nested, so this fails if the implementation only creates a leaf under an existing parent.
 	dir := filepath.Join(t.TempDir(), "Beacon", "Endpoint", "logs")
 
-	if err := EnsureSystemLogWritable(dir); err != nil {
+	if err := EnsureSystemLogWritable(filepath.Join(dir, "runtime.jsonl")); err != nil {
 		t.Fatalf("EnsureSystemLogWritable on a directory that does not exist yet: %v", err)
 	}
 
@@ -38,9 +39,10 @@ func TestEnsureSystemLogWritableCreatesTheDirectoryItIsAskedAbout(t *testing.T) 
 func TestEnsureSystemLogWritableIsRepeatable(t *testing.T) {
 	// Repair and reinstall both call this over a live endpoint, so a second call must not fail on
 	// the directory it created the first time.
-	dir := filepath.Join(t.TempDir(), "logs")
+	requireSystemACLRights(t)
+	path := filepath.Join(t.TempDir(), "logs", "runtime.jsonl")
 	for i := 0; i < 2; i++ {
-		if err := EnsureSystemLogWritable(dir); err != nil {
+		if err := EnsureSystemLogWritable(path); err != nil {
 			t.Fatalf("EnsureSystemLogWritable call %d: %v", i+1, err)
 		}
 	}

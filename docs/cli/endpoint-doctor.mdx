@@ -64,7 +64,7 @@ This is a warning, not a failure. The sandbox mode is the operator's choice in `
 
 ## Fix mode
 
-`beacon endpoint doctor --fix` plans and applies safe remediations for supported findings. It can create a missing runtime log, and recreate managed collector configuration and the service definition (a launchd plist or a systemd unit) when the endpoint configuration is valid.
+`beacon endpoint doctor --fix` plans and applies safe remediations for supported findings. It can create a missing runtime log, and recreate managed collector configuration and the service definition (a launchd plist or a systemd unit) when the endpoint configuration is valid. On a Windows system install it also resets the log directory ACL, from an elevated shell, when interactive users cannot append to the runtime log or when they hold more than append (an older install's Modify grant): the same ACL a fresh install applies, described in [Windows](/platforms/windows#what-the-install-does).
 
 Fix mode deliberately skips cases that need operator intent, such as invalid endpoint configuration, missing harness setup, missing observed runtime events, unsafe runtime log permissions, or service repair on a host with no service manager to repair. If a collector service repair fails, Beacon rolls back the files and service state it changed where possible, then refreshes doctor results so the printed checks reflect any partial fixes that succeeded.
 

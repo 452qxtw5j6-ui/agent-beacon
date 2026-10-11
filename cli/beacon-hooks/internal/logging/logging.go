@@ -2,8 +2,10 @@ package logging
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	osuser "os/user"
 	"path/filepath"
@@ -660,7 +662,13 @@ func appendEndpointJSONL(path string, line []byte, rotateBytes int64, rotateArch
 	if asymptoteobserve.IsDuplicateEndpointEvent(path, line, asymptoteobserve.EndpointDuplicateWindow) {
 		return nil
 	}
-	if err := rotateEndpointLogIfNeeded(path, rotateBytes, rotateArchives, int64(len(line))); err != nil {
+	// A hook usually runs as the person at the keyboard, and on a system-mode log it may not rename
+	// or delete anything in the directory: the directory is root-owned 0755 on POSIX, and on Windows
+	// its ACL gives ordinary users no right to add, rename or delete entries -- the rights that would
+	// let one redirect a SYSTEM write. Rotation is the privileged writers' job there. The refusal
+	// comes at the first step, so nothing has moved, and the event is appended past the size limit
+	// rather than lost; the collector rotates at its next write.
+	if err := rotateEndpointLogIfNeeded(path, rotateBytes, rotateArchives, int64(len(line))); err != nil && !errors.Is(err, fs.ErrPermission) {
 		return err
 	}
 	f, err := openEndpointRuntimeFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY)

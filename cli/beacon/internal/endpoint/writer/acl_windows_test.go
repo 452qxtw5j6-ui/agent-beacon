@@ -3,216 +3,106 @@
 package writer
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
 
-func TestClassifyACEReadsTheEntryShapesThatDecideAccess(t *testing.T) {
-	const (
-		writeData  = uint32(windows.FILE_WRITE_DATA)
-		appendData = uint32(windows.FILE_APPEND_DATA)
-		readData   = uint32(windows.FILE_READ_DATA)
-	)
-
-	cases := []struct {
-		name       string
-		aceType    uint8
-		aceFlags   uint8
-		mask       uint32
-		matchesSID bool
-		want       aceVerdict
-	}{
-		{
-			name:       "the grant install writes",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			mask:       writeData | appendData,
-			matchesSID: true,
-			want:       aceAllowsWrite,
-		},
-		{
-			// The whole reason this is not a substring search for a rendered name.
-			name:       "another principal's full control says nothing about INTERACTIVE",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			mask:       writeData | appendData,
-			matchesSID: false,
-			want:       aceIrrelevant,
-		},
-		{
-			// A hook that cannot create the log fails as surely as one that cannot append to it,
-			// so half the mask is not half a pass.
-			name:       "append without write cannot create the log",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			mask:       appendData,
-			matchesSID: true,
-			want:       aceIrrelevant,
-		},
-		{
-			name:       "write without append cannot extend the log",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			mask:       writeData,
-			matchesSID: true,
-			want:       aceIrrelevant,
-		},
-		{
-			name:       "read access is not write access",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			mask:       readData,
-			matchesSID: true,
-			want:       aceIrrelevant,
-		},
-		{
-			name:       "generic write subsumes both bits",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			mask:       windows.GENERIC_WRITE,
-			matchesSID: true,
-			want:       aceAllowsWrite,
-		},
-		{
-			// The directory itself must be writable: a hook creates the log when it is missing.
-			name:       "an inherit-only grant does not make this directory writable",
-			aceType:    windows.ACCESS_ALLOWED_ACE_TYPE,
-			aceFlags:   inheritOnlyACE,
-			mask:       writeData | appendData,
-			matchesSID: true,
-			want:       aceIrrelevant,
-		},
-		{
-			name:       "a deny of either bit is a deny",
-			aceType:    windows.ACCESS_DENIED_ACE_TYPE,
-			mask:       appendData,
-			matchesSID: true,
-			want:       aceDeniesWrite,
-		},
-		{
-			name:       "a deny of unrelated rights is not a deny of write",
-			aceType:    windows.ACCESS_DENIED_ACE_TYPE,
-			mask:       readData,
-			matchesSID: true,
-			want:       aceIrrelevant,
-		},
-		{
-			name:       "an inherit-only deny does not apply to this directory",
-			aceType:    windows.ACCESS_DENIED_ACE_TYPE,
-			aceFlags:   inheritOnlyACE,
-			mask:       writeData | appendData,
-			matchesSID: true,
-			want:       aceIrrelevant,
-		},
+// requireSystemACLRights skips a test that applies the system log ACL when this process cannot.
+//
+// Setting Administrators as the owner needs an elevated token, which the endpoint install already
+// requires and the Windows CI runner has. Skipped rather than failed elsewhere: a contributor
+// running the suite unelevated should not see a red suite for a step their shell cannot perform.
+func requireSystemACLRights(t *testing.T) {
+	t.Helper()
+	token, err := windows.OpenCurrentProcessToken()
+	if err != nil {
+		t.Skipf("open the process token: %v", err)
 	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := classifyACE(tc.aceType, tc.aceFlags, tc.mask, tc.matchesSID)
-			if got != tc.want {
-				t.Fatalf("classifyACE = %v, want %v", got, tc.want)
-			}
-		})
+	defer token.Close()
+	if !token.IsElevated() {
+		t.Skip("applying the system log ACL needs an elevated shell")
 	}
 }
 
-// TestGrantAndReadBackAgree exercises the halves against each other on a real directory.
-//
-// They are written against different interfaces -- the grant shells out to icacls, the read walks
-// the DACL through the security APIs -- so nothing but a test like this catches them drifting
-// apart. A reader that silently answered "no" to a directory the granter had just fixed would make
-// doctor report a working endpoint as broken, and it would do so only on machines nobody develops
-// on.
-//
-// Every step here needs administrator rights, which the endpoint install already requires and the
-// Windows CI runner already has. Skipped rather than failed elsewhere: a contributor running the
-// suite unelevated should not see a red suite for a check their shell cannot perform.
-func TestGrantAndReadBackAgree(t *testing.T) {
-	dir := t.TempDir()
+// TestEnsureSystemLogWritableAndDoctorAgree exercises the halves against each other on a real
+// directory: what install applies must read back as healthy, and the grant this replaced must read
+// back as the problem it is.
+func TestEnsureSystemLogWritableAndDoctorAgree(t *testing.T) {
+	requireSystemACLRights(t)
+	dir := filepath.Join(t.TempDir(), "logs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "runtime.jsonl")
 
-	// Strip inheritance so the starting state is known: administrators only, no INTERACTIVE. This
-	// is what makes the negative half real -- without it the answer could be "true" before the
-	// grant, and a reader hardcoded to return true would pass.
-	if out, err := exec.Command("icacls", dir, "/inheritance:r", "/grant", `*S-1-5-32-544:(OI)(CI)(F)`).CombinedOutput(); err != nil {
-		t.Skipf("could not take ownership of the ACL on %s (needs an elevated shell): %v: %s",
-			dir, err, strings.TrimSpace(string(out)))
+	// The grant every endpoint installed before this change carries: Modify for INTERACTIVE on
+	// the directory, recursively, over a log and an archive a hook created.
+	for _, name := range []string{"runtime.jsonl", "runtime.jsonl.1"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}\n"), 0o666); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if out, err := exec.Command("icacls", dir, "/grant", `*S-1-5-4:(OI)(CI)(M)`, "/T").CombinedOutput(); err != nil {
+		t.Fatalf("apply the legacy grant: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	before, err := CheckSystemLogACL(path)
+	if err != nil {
+		t.Fatalf("read the legacy ACL: %v", err)
+	}
+	if len(before.Problems) == 0 {
+		t.Fatal("doctor reads Modify for INTERACTIVE on the log directory as healthy; that grant " +
+			"lets any logged-on user delete the log and plant links a SYSTEM write follows")
 	}
 
-	if writable, err := interactiveUsersCanWrite(dir); err != nil {
-		t.Fatalf("read the ACL before granting: %v", err)
-	} else if writable {
-		t.Fatal("a directory granting only administrators reported interactive users can write; " +
-			"the reader cannot distinguish a granted directory from an ungranted one")
+	if err := EnsureSystemLogWritable(path); err != nil {
+		t.Fatalf("EnsureSystemLogWritable: %v", err)
 	}
-
-	if err := grantInteractiveUsersWrite(dir); err != nil {
-		t.Fatalf("grant interactive write access: %v", err)
+	after, err := CheckSystemLogACL(path)
+	if err != nil {
+		t.Fatalf("read the ACL after securing: %v", err)
 	}
-
-	if writable, err := interactiveUsersCanWrite(dir); err != nil {
-		t.Fatalf("read the ACL after granting: %v", err)
-	} else if !writable {
-		t.Fatal("the directory the granter just fixed reads as not writable by interactive users; " +
+	if len(after.Problems) > 0 {
+		t.Fatalf("the ACL install applies reads back with problems: %v", after.Problems)
+	}
+	if !after.HooksCanAppend {
+		t.Fatal("the ACL install applies reads back as not appendable by interactive users; " +
 			"doctor would report a healthy endpoint as broken")
 	}
+	for _, target := range []string{path, path + ".lock"} {
+		if _, err := os.Stat(target); err != nil {
+			t.Fatalf("%s was not created; users cannot create files in the log directory, so "+
+				"install has to: %v", target, err)
+		}
+	}
 
-	// A deny entry outranks the grant, and doctor must say so: hooks would fail here despite the
+	// A deny entry outranks the grant, and doctor must say so: hooks would fail despite the
 	// allow entry still being present.
-	if out, err := exec.Command("icacls", dir, "/deny", `*S-1-5-4:(WD)`).CombinedOutput(); err != nil {
+	if out, err := exec.Command("icacls", path, "/deny", `*S-1-5-4:(AD)`).CombinedOutput(); err != nil {
 		t.Fatalf("add a deny entry: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	if writable, err := interactiveUsersCanWrite(dir); err != nil {
+	denied, err := CheckSystemLogACL(path)
+	if err != nil {
 		t.Fatalf("read the ACL after denying: %v", err)
-	} else if writable {
-		t.Fatal("an explicit deny of write access reported as writable; " +
-			"the grant was read without the deny that overrides it")
+	}
+	if denied.HooksCanAppend {
+		t.Fatal("an explicit deny of append on the log reads as appendable")
 	}
 }
 
-// TestGrantCommandHintQuotesThePathItPrints covers the half of the grant an operator runs by hand.
-//
-// doctor prints this when the grant is missing, and the default log directory lives under
-// %ProgramData%. A hint that breaks at the first space would be pasted, would fail, and would send
-// the operator looking for a problem in the diagnosis instead of the advice.
-func TestGrantCommandHintQuotesThePathItPrints(t *testing.T) {
-	hint := GrantCommandHint(`C:\Program Files\Beacon\logs`)
-	if !strings.Contains(hint, `"C:\Program Files\Beacon\logs"`) {
-		t.Fatalf("GrantCommandHint left a path containing a space unquoted: %s", hint)
+// TestGrantCommandHintIsTheRepairCommand covers the half of the repair an operator runs by hand.
+// The ACL is several entries, an owner and a reset of the log's files, so the advice is the command
+// that runs the same code install does rather than a hand-written equivalent that could drift.
+func TestGrantCommandHintIsTheRepairCommand(t *testing.T) {
+	hint := GrantCommandHint(`C:\ProgramData\Beacon\Endpoint\logs`)
+	if !strings.Contains(hint, "doctor") || !strings.Contains(hint, "--fix") || !strings.Contains(hint, "--system") {
+		t.Fatalf("GrantCommandHint = %q, want the elevated doctor --system --fix repair", hint)
 	}
-	// The rights string carries parentheses, which PowerShell reads as grouping rather than as
-	// part of an argument. Unquoted, the hint is a command that fails the moment it is pasted.
-	if !strings.Contains(hint, `"*S-1-5-4:(OI)(CI)(M)"`) {
-		t.Fatalf("GrantCommandHint left the rights string unquoted: %s; "+
-			"PowerShell would try to evaluate the parentheses", hint)
-	}
-	// Same definition as the applied grant, so the advice cannot drift from the implementation.
-	for _, arg := range grantArgs(`C:\Program Files\Beacon\logs`)[1:] {
-		if !strings.Contains(hint, arg) {
-			t.Fatalf("GrantCommandHint omits %q from the grant it claims to describe: %s", arg, hint)
-		}
-	}
-	// Plain flags stay readable: quoting everything would work but makes the line harder to scan,
-	// and this is read before it is run.
-	if !strings.Contains(hint, " /grant ") || !strings.HasSuffix(hint, " /T") {
-		t.Fatalf("GrantCommandHint quoted arguments that needed no quoting: %s", hint)
-	}
-}
-
-func TestQuoteForShellPasteCoversWhatBothWindowsShellsTreatSpecially(t *testing.T) {
-	// Safe in cmd.exe and PowerShell alike, so left alone.
-	for _, arg := range []string{`/T`, `/grant`, `C:\ProgramData\Beacon\logs`, `icacls`, `S-1-5-4`} {
-		if got := quoteForShellPaste(arg); got != arg {
-			t.Fatalf("quoteForShellPaste(%q) = %q, want it unchanged", arg, got)
-		}
-	}
-	// Each of these is special to at least one of the two shells.
-	for _, arg := range []string{
-		`*S-1-5-4:(OI)(CI)(M)`,
-		`C:\Program Files\Beacon`,
-		`C:\logs&more`,
-		`C:\logs;more`,
-		`C:\logs$more`,
-		`C:\logs'more`,
-	} {
-		if got := quoteForShellPaste(arg); got != `"`+arg+`"` {
-			t.Fatalf("quoteForShellPaste(%q) = %q, want it quoted", arg, got)
-		}
+	if strings.Contains(hint, "icacls") {
+		t.Fatalf("GrantCommandHint = %q still prints an icacls grant", hint)
 	}
 }

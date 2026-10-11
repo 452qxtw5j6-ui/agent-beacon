@@ -523,6 +523,7 @@ jobs:
             ./internal/endpoint/service/... `
             ./internal/endpoint/siempack/... `
             ./internal/endpoint/sumo/... `
+            ./internal/endpoint/sysacl/... `
             ./internal/endpoint/traceview/... `
             ./internal/endpoint/wazuh/... `
             ./internal/endpoint/writer/... `

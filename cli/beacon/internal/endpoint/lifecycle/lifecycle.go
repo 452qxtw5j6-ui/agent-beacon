@@ -18,6 +18,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/selfupdate"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/sysacl"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
@@ -429,8 +430,19 @@ func Install(opts InstallOptions) (InstallResult, error) {
 	// Only for system mode: a user-mode log lives in that user's own profile, which they can
 	// already write, and widening its ACL would hand their prompt text to every interactive
 	// account on the machine.
+	//
+	// Before that, the machine-wide directory itself. On Windows %ProgramData%\Beacon is created --
+	// or, when it already exists, reset -- with Administrators as owner and a protected ACL that
+	// gives ordinary users read and execute only. It holds the config the SYSTEM collector reads and
+	// the hooks binary every user's agent runs, and %ProgramData% lets any user create a
+	// subdirectory, so a directory found here may have been made by someone else before Beacon was
+	// installed. A no-op elsewhere, where root ownership carries the same guarantee.
 	if !cfg.UserMode {
-		if err := writer.EnsureSystemLogWritable(filepath.Dir(cfg.LogPath)); err != nil {
+		root := sysacl.SystemRoot(endpointconfig.SystemBaseDir())
+		if err := sysacl.SecureSystemTree(root, filepath.Dir(cfg.LogPath)); err != nil {
+			return InstallResult{}, fmt.Errorf("secure %s: %w", root, err)
+		}
+		if err := writer.EnsureSystemLogWritable(cfg.LogPath); err != nil {
 			return InstallResult{}, fmt.Errorf("prepare the log directory: %w", err)
 		}
 	}
