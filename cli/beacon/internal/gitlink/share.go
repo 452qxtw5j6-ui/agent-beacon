@@ -315,8 +315,9 @@ func SetShareSessions(ctx context.Context, repo Repo, enabled bool, visibility s
 // PushedCommits lists the commits a pre-push hook's stdin says are being pushed: for each
 // `<local-ref> <local-sha> <remote-ref> <remote-sha>` line, the commits reachable from the local
 // sha and not from the remote sha (or, for a new remote branch or a remote sha this clone does not
-// have, from any of the remote's tracking branches when remote is a configured remote). Deletions
-// push nothing. At most limit commits, newest first.
+// have, from any of the remote's tracking branches when remote is a configured remote; pushed to a
+// URL, such a line counts no commits, since nothing would bound it). Deletions push nothing. At
+// most limit commits, newest first.
 func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, limit int) ([]string, error) {
 	if limit <= 0 {
 		limit = 100
@@ -337,6 +338,10 @@ func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, 
 			// A new remote branch, or a force push over commits this clone never fetched: the
 			// remote's tip is not here to exclude, so exclude everything already on the remote.
 			args = append(args, "--remotes="+remote)
+		default:
+			// A push to a URL with nothing here to exclude: every ancestor would count as pushed,
+			// including commits the remote has had for years. Count none rather than guess.
+			continue
 		}
 		list, err := repo.Git.Run(ctx, nil, args...)
 		if err != nil {
@@ -353,22 +358,6 @@ func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, 
 		}
 	}
 	return out, nil
-}
-
-// HeadPushLine stands in for a pre-push hook's stdin when Beacon was not given it: one line pushing
-// HEAD to a new branch, so PushedCommits returns the commits on HEAD that none of the remote's
-// tracking branches has. It is "" when remote is not a configured remote (there would be nothing
-// to exclude) or HEAD has no commit.
-func HeadPushLine(ctx context.Context, repo Repo, remote string) string {
-	if !isRemote(ctx, repo, remote) {
-		return ""
-	}
-	head, err := repo.Git.Run(ctx, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
-	head = strings.TrimSpace(head)
-	if err != nil || !isSHA(head) {
-		return ""
-	}
-	return "HEAD " + head + " HEAD " + strings.Repeat("0", len(head))
 }
 
 // hasCommit reports whether sha names a commit present in this repository.

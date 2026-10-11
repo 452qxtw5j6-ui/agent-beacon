@@ -384,3 +384,28 @@ func TestPushedCommitsForcePushOverUnfetchedRemoteTip(t *testing.T) {
 		t.Fatalf("pushed %v, want [%s]", got, mine)
 	}
 }
+
+// A push to a URL (not a configured remote) with nothing here to exclude counts no commits,
+// rather than every ancestor of the pushed sha.
+func TestPushedCommitsToAURLWithoutABoundCountsNothing(t *testing.T) {
+	tm := newTeam(t)
+	ctx := context.Background()
+	tm.alice.write("f", "2")
+	second := tm.alice.commitAt("second", t0.Add(time.Minute))
+	alice := tm.alice.open()
+	zero := strings.Repeat("0", len(second))
+	got, err := PushedCommits(ctx, alice, tm.remote, "HEAD "+second+" refs/heads/new "+zero+"\n", 0)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("new branch pushed to a URL: %v %v, want none", got, err)
+	}
+	missing := strings.Repeat("ab", len(second)/2)
+	got, err = PushedCommits(ctx, alice, tm.remote, "HEAD "+second+" refs/heads/main "+missing+"\n", 0)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("force push to a URL over an unknown tip: %v %v, want none", got, err)
+	}
+	// A known remote sha still bounds a push to a URL.
+	got, err = PushedCommits(ctx, alice, tm.remote, "HEAD "+second+" refs/heads/main "+tm.first+"\n", 0)
+	if err != nil || !reflect.DeepEqual(got, []string{second}) {
+		t.Fatalf("push to a URL over a known tip: %v %v", got, err)
+	}
+}

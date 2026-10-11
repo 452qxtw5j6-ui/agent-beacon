@@ -63,6 +63,7 @@ func TestGitHookPostCommitWritesAKnownShareURL(t *testing.T) {
 }
 
 func TestGitPrePushSharesLinkedSessions(t *testing.T) {
+	t.Setenv(gitlink.HookStdinEnv, "1") // as Beacon's hook block runs it
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t)
 	srv := newFakeShareServer(t)
@@ -118,6 +119,7 @@ func TestGitPrePushSharesLinkedSessions(t *testing.T) {
 }
 
 func TestGitPrePushWithoutCredentialsSharesNothingQuietly(t *testing.T) {
+	t.Setenv(gitlink.HookStdinEnv, "1") // as Beacon's hook block runs it
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t) // signed out, and any request fails the test
 	prevOpts := shareOpts
@@ -168,9 +170,10 @@ func TestGitSetupShareSessionsRules(t *testing.T) {
 }
 
 // Called straight from a hook manager (gitlink.HookCall), without Beacon's block to copy and
-// replay stdin, the pre-push hook must leave stdin to the steps after it (`git lfs pre-push`),
-// and still finds the pushed commits from HEAD and the remote's tracking branches.
-func TestGitPrePushWithoutTheBlockLeavesStdinAlone(t *testing.T) {
+// replay stdin, the pre-push hook must leave stdin to the steps after it (`git lfs pre-push`).
+// Without the refs it cannot know what is being pushed (another branch, --tags, --delete), so it
+// shares no sessions, says so once, and still pushes the commit links.
+func TestGitPrePushWithoutTheBlockLeavesStdinAloneAndSharesNothing(t *testing.T) {
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t)
 	srv := newFakeShareServer(t)
@@ -192,15 +195,21 @@ func TestGitPrePushWithoutTheBlockLeavesStdinAlone(t *testing.T) {
 	rootCmd.SetIn(reader)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 	var stderr bytes.Buffer
-	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil || stderr.Len() != 0 {
-		t.Fatalf("pre-push: %v %q", err, stderr.String())
+	before := len(srv.requests)
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil {
+		t.Fatalf("pre-push: %v", err)
 	}
 	if reader.Len() != len(stdin) {
 		t.Fatalf("the hook read %d bytes of stdin that the next step needs", len(stdin)-reader.Len())
 	}
-	want := "beacon:claude_code/" + shareTestSession + " https://beacon.sh/s/k3xabc"
-	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
-		t.Fatalf("remote note %q, want the session shared from HEAD", note)
+	if len(srv.requests) != before {
+		t.Fatalf("shared sessions without knowing the pushed refs: %v", srv.requests[before:])
+	}
+	if !strings.Contains(stderr.String(), "commit links only") {
+		t.Fatalf("stderr %q, want the hint", stderr.String())
+	}
+	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != "beacon:claude_code/"+shareTestSession {
+		t.Fatalf("remote note %q, want the bare link pushed and nothing shared", note)
 	}
 }
 

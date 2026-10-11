@@ -131,14 +131,15 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 	repo.Git = repo.Git.WithExtraEnv("GIT_TERMINAL_PROMPT=0")
 	// git's stdin (the refs being pushed) is read only when sessions are shared, and only when
 	// Beacon's hook block passed a copy in (it replays the original to the rest of the hook).
-	// Called any other way, stdin belongs to whatever runs after Beacon, so the pushed commits are
-	// worked out from HEAD and the remote's tracking branches instead.
+	// Called any other way, stdin belongs to whatever runs after Beacon, and without it Beacon
+	// cannot know which refs are being pushed (another branch, --tags, --delete), so it shares no
+	// sessions at all rather than guess: only the notes ref is pushed.
 	if enabled, visibility := gitlink.ShareSessionsConfig(ctx, repo); enabled {
 		stdin := ""
 		if os.Getenv(gitlink.HookStdinEnv) == "1" {
 			stdin = readHookStdin(cmd.InOrStdin())
 		} else {
-			stdin = gitlink.HeadPushLine(ctx, repo, args[0])
+			fmt.Fprintln(cmd.ErrOrStderr(), "beacon: sessions are shared on push only through the hook `beacon git setup` installs; this push shares commit links only")
 		}
 		if stdin != "" {
 			// Sharing sessions gets the budget less what pushing the notes ref needs, so the links
