@@ -627,3 +627,58 @@ func TestSharePayloadRelatesAHandoff(t *testing.T) {
 		t.Fatalf("relation = %q %q", payload.Trace.RelatedTo, payload.Trace.RelationshipType)
 	}
 }
+
+// shareFixtureInLog writes the fixture session to the runtime log as hook events.
+func shareFixtureInLog(t *testing.T, env *shareEnv) {
+	t.Helper()
+	for _, event := range shareFixtureEvents(env.projectDir) {
+		event.Harness.CollectionMethod = schema.CollectionMethodHook
+		if _, err := writer.AppendEvent(event, writer.Options{Path: env.logPath, UserMode: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestShareReadsTheLogWhenTheStoreCannotBeRead(t *testing.T) {
+	env := newShareEnv(t)
+	denied := fmt.Errorf("open store: %w", os.ErrPermission)
+	// The store cannot even list its sessions; the log has the session.
+	stubHandoffSources(t, stubHandoffSource{harness: handoff.HarnessClaude, err: denied, eventsErr: denied})
+	shareFixtureInLog(t, env)
+	for _, args := range [][]string{
+		{"--cwd", env.projectDir},
+		{"--session", shareTestSession},
+		{"refresh", shareTestSession},
+	} {
+		stdout, _, err := runShareCommand(t, append(args, "--print", "--log-path", env.logPath)...)
+		if err != nil {
+			t.Fatalf("share %v: %v", args, err)
+		}
+		var payload sharePayload
+		if err := json.Unmarshal([]byte(stdout), &payload); err != nil || len(payload.Events) != 4 {
+			t.Fatalf("share %v: payload = %s (err %v)", args, stdout, err)
+		}
+	}
+
+	// The store lists the session but cannot read it: the log copy is shared.
+	stubHandoffSources(t, stubHandoffSource{
+		harness:   handoff.HarnessClaude,
+		sessions:  []handoff.Session{{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()}},
+		eventsErr: denied,
+	})
+	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", env.logPath); err != nil {
+		t.Fatalf("listed but unreadable: %v", err)
+	}
+
+	// With nothing in the log either, the store's error is the one reported.
+	empty := filepath.Join(env.home, "empty.jsonl")
+	_, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", empty)
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Fatalf("err = %v, want the store's permission error", err)
+	}
+	stubHandoffSources(t, stubHandoffSource{harness: handoff.HarnessClaude, err: denied, eventsErr: denied})
+	_, _, err = runShareCommand(t, "--session", shareTestSession, "--print", "--log-path", empty)
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Fatalf("--session err = %v, want the store's permission error", err)
+	}
+}

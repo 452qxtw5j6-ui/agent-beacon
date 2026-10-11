@@ -462,16 +462,21 @@ func resolveShareSubject(harness, id string) (shareSubject, error) {
 		if findErr == nil {
 			return shareSubject{session: session}, nil
 		}
+		// Not in any store, or a store could not be read: the runtime log may have the session.
 		var notFound *handoff.NotFoundError
-		if !errors.As(findErr, &notFound) {
-			return shareSubject{}, findErr
-		}
+		isNotFound := errors.As(findErr, &notFound)
 		logPath := shareLogPath()
 		session, events, found, err := handoff.LogSession(logPath, id, harness)
 		if err != nil {
+			if !isNotFound {
+				return shareSubject{}, findErr
+			}
 			return shareSubject{}, fmt.Errorf("read runtime log %s: %w", logPath, err)
 		}
 		if !found || (harness != "" && session.Harness != harness) {
+			if !isNotFound {
+				return shareSubject{}, findErr
+			}
 			return shareSubject{}, fmt.Errorf("%w; not in the runtime log %s either (`beacon share --list` shows what is available)", notFound, logPath)
 		}
 		return shareSubject{session: session, fromLog: true, logEvents: events}, nil
@@ -482,20 +487,21 @@ func resolveShareSubject(harness, id string) (shareSubject, error) {
 		if err != nil {
 			return shareSubject{}, err
 		}
-		candidates, err := shareCandidates(sources, harness, dir, 1)
+		candidates, err := shareCandidateList(sources, harness, dir, 1)
 		if err != nil {
 			return shareSubject{}, err
 		}
 		if len(candidates) == 0 {
 			return shareSubject{}, fmt.Errorf("no agent session found in %s; pass --session, or --cwd for another directory (`beacon share --list --cwd DIR`)", dir)
 		}
-		// A session of a runtime whose store Beacon reads is read from that store; one the store has
-		// lost since falls back to the log when its events are read (shareEvents).
-		session := candidates[0]
-		if handoff.ReadsStore(session.Harness) {
-			return shareSubject{session: session}, nil
+		// A session listed by its runtime's store is read from that store; one the store has lost
+		// or cannot read since falls back to the log when its events are read (shareEvents). A
+		// session only the log listed is read from the log: its store may be unreadable.
+		candidate := candidates[0]
+		if !candidate.fromLog && handoff.ReadsStore(candidate.session.Harness) {
+			return shareSubject{session: candidate.session}, nil
 		}
-		return resolveShareLog(session)
+		return resolveShareLog(candidate.session)
 	}
 }
 
@@ -547,23 +553,43 @@ func evalSymlinks(path string) string {
 // sessions only Beacon's runtime log has. A store that cannot be read is skipped; the log still
 // answers for it.
 func shareCandidates(sources []handoff.Source, harness, dir string, limit int) ([]handoff.Session, error) {
+	candidates, err := shareCandidateList(sources, harness, dir, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handoff.Session, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, c.session)
+	}
+	return out, nil
+}
+
+// shareCandidate is a listed session and whether only the runtime log listed it.
+type shareCandidate struct {
+	session handoff.Session
+	fromLog bool
+}
+
+// shareCandidateList is shareCandidates with each session's origin, so a session only the log has
+// (its store lost it, or cannot be read) is read from the log rather than sent back to the store.
+func shareCandidateList(sources []handoff.Source, harness, dir string, limit int) ([]shareCandidate, error) {
 	stored, _ := handoff.List(sources, handoff.Filter{Harness: harness, Directory: dir})
 	logged, logErr := handoff.LogSessions(shareLogPath(), handoff.Filter{Harness: harness, Directory: dir})
 	if logErr != nil && !errors.Is(logErr, os.ErrNotExist) && len(stored) == 0 {
 		return nil, fmt.Errorf("read runtime log: %w", logErr)
 	}
 	seen := map[string]bool{}
-	var out []handoff.Session
+	var out []shareCandidate
 	for _, s := range stored {
 		seen[s.Harness+"\x00"+s.ID] = true
-		out = append(out, s)
+		out = append(out, shareCandidate{session: s})
 	}
 	for _, s := range logged {
 		if !seen[s.Harness+"\x00"+s.ID] {
-			out = append(out, s)
+			out = append(out, shareCandidate{session: s, fromLog: true})
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].session.UpdatedAt.After(out[j].session.UpdatedAt) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -608,12 +634,14 @@ func shareEvents(subject shareSubject) (shareSubject, []schema.Event, error) {
 	if err == nil {
 		return subject, events, nil
 	}
-	if !errors.Is(err, handoff.ErrNotFound) {
-		return subject, nil, fmt.Errorf("read %s session %s: %w", subject.session.Harness, subject.session.ID, err)
-	}
+	// The store lost the session, or cannot be read (locked, corrupt, no permission): the runtime
+	// log may still have it.
 	logSubject, logErr := resolveShareLog(subject.session)
 	if logErr != nil {
-		return subject, nil, logErr
+		if errors.Is(err, handoff.ErrNotFound) {
+			return subject, nil, logErr
+		}
+		return subject, nil, fmt.Errorf("read %s session %s: %w (and the runtime log: %v)", subject.session.Harness, subject.session.ID, err, logErr)
 	}
 	return logSubject, logSubject.logEvents, nil
 }
