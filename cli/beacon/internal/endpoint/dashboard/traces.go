@@ -71,6 +71,8 @@ type traceAggregate struct {
 	// its timestamp); a shared trace whose session has activity after that is stale.
 	lastActivity    string
 	lastShareRecord string
+	// share tells the share's own events (a share made from inside the session) from activity.
+	share shareActivity
 }
 
 // shareBookkeeping is an event Beacon writes into a session's timeline about the session, rather
@@ -386,12 +388,12 @@ func (a *traceAggregate) update(event schema.Event, traceEvent TraceEventV1) {
 	}
 	updateContentSummary(&a.summary.Content, event.Content)
 	a.updateRawMetadata(event.Raw)
-	switch {
-	case event.Event.Action == "session.shared":
+	if event.Event.Action == "session.shared" {
 		// What the upload covered (shared_through, when the session was read for it), or the
 		// record's own time for a record from before that field.
 		a.lastShareRecord = laterTimestamp(a.lastShareRecord, firstNonEmpty(rawString(event.Raw, "shared_through"), event.Timestamp))
-	case !shareBookkeeping(event.Event.Action):
+	}
+	if a.share.counts(event) {
 		a.lastActivity = laterTimestamp(a.lastActivity, event.Timestamp)
 	}
 }

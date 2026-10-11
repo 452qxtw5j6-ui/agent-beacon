@@ -163,3 +163,45 @@ func mustTime(t *testing.T, s string) time.Time {
 	}
 	return v
 }
+
+// A share made from inside the session is followed by the runtime's events for the `beacon share`
+// command and the agent's reply about it; those do not make it stale. A later unrelated tool call
+// does.
+func TestShareFromInsideTheSessionIsNotStale(t *testing.T) {
+	inside := []string{
+		`{"timestamp":"2026-06-11T10:00:00Z","event":{"id":"e1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1","text":"share this session"}}`,
+		`{"timestamp":"2026-06-11T10:00:05Z","event":{"id":"e2","action":"tool.invoked","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"tool":{"name":"Bash","command":"beacon share --current"},"gen_ai":{"tool":{"call":{"id":"call-share"}}}}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","event":{"id":"e3","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"raw":{"shared_url":"https://beacon.sh/s/in1","visibility":"direct","shared_at":"2026-06-11T10:00:09Z","last_refreshed_at":"2026-06-11T10:00:09Z","shared_through":"2026-06-11T10:00:06Z"}}`,
+		`{"timestamp":"2026-06-11T10:00:10Z","event":{"id":"e4","action":"tool.completed","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"tool":{"name":"Bash"},"gen_ai":{"tool":{"call":{"id":"call-share"}}}}`,
+		`{"timestamp":"2026-06-11T10:00:11Z","event":{"id":"e5","action":"command.executed","category":"command"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"command":{"command":"beacon share --current"}}`,
+		`{"timestamp":"2026-06-11T10:00:15Z","event":{"id":"e6","action":"agent.message","category":"agent"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"message":"Shared: https://beacon.sh/s/in1"}`,
+	}
+	check := func(t *testing.T, lines []string, want string) {
+		t.Helper()
+		path := newTestLog(t, sharingLines(lines...))
+		withoutHistory(t)
+		if s := sessionSharing(t, path, EventQuery{})["in1"]; s == nil || s.State != want {
+			t.Fatalf("session sharing = %+v, want %s", s, want)
+		}
+		list, err := ReadTraceList(path, TraceQuery{Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, trace := range list.Traces {
+			if trace.ID == "session:claude_code:in1" && trace.Sharing.State != want {
+				t.Fatalf("trace sharing = %+v, want %s", trace.Sharing, want)
+			}
+		}
+	}
+	t.Run("share and its reply", func(t *testing.T) { check(t, inside, "shared") })
+	t.Run("later tool call", func(t *testing.T) {
+		check(t, append(append([]string{}, inside...),
+			`{"timestamp":"2026-06-11T10:05:00Z","event":{"id":"e7","action":"tool.invoked","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"tool":{"name":"Edit","path":"main.go"},"gen_ai":{"tool":{"call":{"id":"call-edit"}}}}`,
+		), "stale")
+	})
+	t.Run("reply after later work", func(t *testing.T) {
+		check(t, append(append([]string{}, inside...),
+			`{"timestamp":"2026-06-11T10:05:00Z","event":{"id":"e8","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p2","text":"now fix the bug"}}`,
+		), "stale")
+	})
+}

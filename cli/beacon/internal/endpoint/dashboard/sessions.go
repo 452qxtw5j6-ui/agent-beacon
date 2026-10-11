@@ -185,12 +185,14 @@ type sessionAccumulator struct {
 	// lastActivity and lastShared drive SessionSharing.State: see traceAggregate.
 	lastActivity time.Time
 	lastShared   time.Time
+	share        shareActivity
 }
 
 // noteSharing reads a session.shared record, and otherwise notes when the session last did
 // something of its own.
 func (acc *sessionAccumulator) noteSharing(record EventRecord) {
 	event := record.Event
+	counts := acc.share.counts(event)
 	if event.Event.Action == "session.shared" {
 		url := rawString(event.Raw, "shared_url")
 		if url == "" {
@@ -221,7 +223,7 @@ func (acc *sessionAccumulator) noteSharing(record EventRecord) {
 		}
 		return
 	}
-	if !shareBookkeeping(event.Event.Action) && record.Parsed.After(acc.lastActivity) {
+	if counts && record.Parsed.After(acc.lastActivity) {
 		acc.lastActivity = record.Parsed
 	}
 }

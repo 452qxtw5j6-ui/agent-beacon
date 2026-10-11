@@ -805,6 +805,7 @@ type traceAggregateState struct {
 	TitlePriority   int            `json:"title_priority"`
 	LastActivity    string         `json:"last_activity,omitempty"`
 	LastShareRecord string         `json:"last_share_record,omitempty"`
+	Share           shareActivity  `json:"share,omitempty"`
 }
 
 func (a *traceAggregate) state() traceAggregateState {
@@ -815,6 +816,7 @@ func (a *traceAggregate) state() traceAggregateState {
 		TitlePriority:   a.titlePriority,
 		LastActivity:    a.lastActivity,
 		LastShareRecord: a.lastShareRecord,
+		Share:           a.share,
 	}
 }
 
@@ -831,6 +833,7 @@ func decodeTraceAggregate(raw string) (*traceAggregate, error) {
 		titlePriority:   state.TitlePriority,
 		lastActivity:    state.LastActivity,
 		lastShareRecord: state.LastShareRecord,
+		share:           state.Share,
 	}
 	for _, model := range state.Models {
 		agg.models[model] = true
