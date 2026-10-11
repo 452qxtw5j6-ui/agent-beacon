@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/handoff"
@@ -72,13 +73,58 @@ func TestShareCurrentPrefersTheSessionEnvironment(t *testing.T) {
 
 	// An env id that cannot be found is an error, never some other session.
 	shareGetenv = func(key string) string {
-		if key == shareSessionEnv {
+		switch key {
+		case shareSessionEnv:
 			return "missing-session"
+		case shareHarnessEnv:
+			return "gemini_cli"
 		}
 		return ""
 	}
 	if _, _, err := runShareCommand(t, "--current", "--print", "--log-path", env.logPath); err == nil || !strings.Contains(err.Error(), "BEACON_SESSION_ID=missing-session") {
 		t.Fatalf("missing env session: err = %v", err)
+	}
+}
+
+func TestShareCurrentRefusesAnUnusableHarnessVariable(t *testing.T) {
+	env := shareCurrentEnv(t)
+	t.Chdir(env.projectDir)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	for _, tc := range []struct{ harness, want string }{
+		{"kimi_kode", `BEACON_HARNESS="kimi_kode"`},
+		{"", "BEACON_HARNESS is not"},
+	} {
+		shareGetenv = func(key string) string {
+			switch key {
+			case shareSessionEnv:
+				return "gem-session-1"
+			case shareHarnessEnv:
+				return tc.harness
+			}
+			return ""
+		}
+		_, _, err := runShareCommand(t, "--log-path", env.logPath)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("BEACON_HARNESS=%q: err = %v, want %q", tc.harness, err, tc.want)
+		}
+	}
+	if len(srv.requests) != 0 {
+		t.Fatalf("requests = %v", srv.requests)
+	}
+	// --harness naming another valid runtime passes over the variables on purpose.
+	shareGetenv = func(key string) string {
+		switch key {
+		case shareSessionEnv:
+			return "gem-session-1"
+		case shareHarnessEnv:
+			return "gemini_cli"
+		}
+		return ""
+	}
+	stdout, _, err := runShareCommand(t, "--harness", "claude", "--print", "--log-path", env.logPath)
+	if err != nil || sharePrintedExternalID(t, stdout) != "claude_code:"+shareTestSession {
+		t.Fatalf("--harness claude: err = %v\n%s", err, stdout)
 	}
 }
 

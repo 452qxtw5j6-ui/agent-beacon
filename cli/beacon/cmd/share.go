@@ -535,7 +535,8 @@ func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject,
 //  1. BEACON_SESSION_ID (with BEACON_HARNESS), which the Claude Code hook exports to the agent's
 //     shell. Skipped under --cwd, which names another directory, and when --harness names another
 //     runtime (a Codex started from a Claude Code shell inherits Claude's variables). An id that is
-//     set but cannot be found is an error rather than a reason to share some other session.
+//     set but cannot be found, or set with a missing or unknown BEACON_HARNESS, is an error rather
+//     than a reason to share some other session.
 //  2. The session a Beacon hook last saw in the directory, from the active-session record.
 //  3. The most recent session in the directory.
 func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject, error) {
@@ -545,11 +546,18 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 	}
 	if strings.TrimSpace(shareOpts.cwd) == "" {
 		if id := strings.TrimSpace(shareGetenv(shareSessionEnv)); id != "" {
-			envHarness, herr := handoff.ParseHarness(shareGetenv(shareHarnessEnv))
-			if herr == nil && (harness == "" || envHarness == "" || envHarness == harness) {
-				if envHarness == "" {
-					envHarness = harness
-				}
+			// The two variables name one session together. A runtime name that is missing or
+			// unknown is an error, never a reason to share some other session; only --harness naming
+			// a different runtime passes over them on purpose.
+			rawHarness := strings.TrimSpace(shareGetenv(shareHarnessEnv))
+			if rawHarness == "" {
+				return shareSubject{}, fmt.Errorf("%s=%s is set but %s is not; set both, or name the session with --session", shareSessionEnv, id, shareHarnessEnv)
+			}
+			envHarness, herr := handoff.ParseHarness(rawHarness)
+			if herr != nil {
+				return shareSubject{}, fmt.Errorf("%s=%q: %w", shareHarnessEnv, rawHarness, herr)
+			}
+			if harness == "" || envHarness == harness {
 				subject, err := resolveShareID(sources, envHarness, id)
 				if err != nil {
 					return shareSubject{}, fmt.Errorf("%s=%s names this session, but it cannot be read yet: %w", shareSessionEnv, id, err)
