@@ -1,0 +1,197 @@
+name: Dependabot Autofix
+
+# Opens a PR for each new Dependabot alert: Claude bumps the vulnerable package to a patched
+# release, runs the affected module's checks, and opens "Fix Dependabot alert #N: <package>".
+# GitHub Actions has no Dependabot-alert trigger, so this polls hourly; a repository_dispatch
+# of type dependabot_alert (for example from a dependabot_alert webhook) runs it at once.
+#
+# Setup: the ANTHROPIC_API_KEY secret, and the Claude GitHub App installed on this repo so the
+# PRs it opens run CI (PRs opened with the workflow token do not). Without the app, put a token
+# that can push and open PRs here in a DEPENDABOT_AUTOFIX_TOKEN secret.
+# To retry an alert after its PR was closed, delete its claude/dependabot-alert-<n> branch.
+
+on:
+  schedule:
+    - cron: '23 * * * *'
+  workflow_dispatch:
+    inputs:
+      alert:
+        description: Only fix this Dependabot alert number (blank for every alert that needs a PR)
+        required: false
+        default: ''
+  repository_dispatch:
+    types: [dependabot_alert]
+
+concurrency:
+  group: dependabot-autofix
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      vulnerability-alerts: read
+      contents: read
+      pull-requests: read
+      actions: read # skip markers in the Actions cache
+    outputs:
+      groups: ${{ steps.find.outputs.groups }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+
+      - name: Find alerts that need a fix PR
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.DEPENDABOT_AUTOFIX_TOKEN || github.token }}
+          MAX_GROUPS: '3'
+          # A dispatch can name one alert: the raw dependabot_alert payload as client_payload
+          # (client_payload.alert.number) or {"alert_number": N}.
+          ONLY_ALERT: >-
+            ${{ inputs.alert || github.event.client_payload.alert.number ||
+            github.event.client_payload.alert_number || '' }}
+          MANUAL_RUN: ${{ github.event_name == 'workflow_dispatch' }}
+        run: bash .github/scripts/dependabot-autofix-find.sh
+
+  fix:
+    needs: find
+    if: needs.find.outputs.groups != '' && needs.find.outputs.groups != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write # Claude GitHub App token, so the PR runs CI
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        group: ${{ fromJSON(needs.find.outputs.groups) }}
+    env:
+      BRANCH: claude/dependabot-alert-${{ matrix.group.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create fix branch
+        run: |
+          git switch -c "$BRANCH"
+          mkdir -p .dependabot-autofix
+          echo '.dependabot-autofix/' >> .git/info/exclude
+
+      - uses: ./.github/actions/setup-go
+        with:
+          modules: |
+            cli/beacon
+            cli/beacon-hooks
+            collector-builder/exporter/beaconjsonexporter
+            pkg/asymptoteobserve
+            beacon-sandbox
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Empty unless the secret is set; the action then uses the Claude GitHub App token.
+          github_token: ${{ secrets.DEPENDABOT_AUTOFIX_TOKEN }}
+          # A dependabot_alert dispatch may come from a GitHub App. The prompt is built only from
+          # this repo's Dependabot alerts, never from the dispatch payload.
+          allowed_bots: '*'
+          prompt: |
+            REPO: ${{ github.repository }}
+            BRANCH: ${{ env.BRANCH }} (already created from main and checked out)
+
+            Fix these open Dependabot alerts. They all concern the ${{ matrix.group.ecosystem }}
+            package `${{ matrix.group.package }}`:
+
+            ```json
+            ${{ toJSON(matrix.group.alerts) }}
+            ```
+
+            Read CLAUDE.md first. This repo has five Go modules (cli/beacon, cli/beacon-hooks,
+            collector-builder/exporter/beaconjsonexporter, pkg/asymptoteobserve, beacon-sandbox)
+            and npm projects (packages/asymptote-sdk-js, browser-extension,
+            cli/beacon/internal/endpoint/dashboard/testdata/lens-e2e).
+
+            1. In every manifest listed, move the package to its `first_patched` version or the
+               lowest later release that fixes every alert above. Prefer the smallest patch or
+               minor bump. Use the ecosystem's own tooling so lockfiles stay consistent:
+               - Go: `go get <module>@v<version>` then `go mod tidy` in that module's directory.
+                 The four modules that `replace` pkg/asymptoteobserve need `go mod tidy` too when
+                 it changes. If the module is pinned in collector-builder/builder.yaml, keep that
+                 pin in step.
+               - npm: `npm install <package>@<version>` for a direct dependency. For a transitive
+                 one, first try `npm update <package>` or bumping the direct dependency that pulls
+                 it in; add an `overrides` entry only when no release of the parent allows the fix.
+            2. Run the checks for every project you changed:
+               - cli/beacon: `make build-hooks-current && go test ./...`
+               - other Go modules: `go vet ./... && go test ./...`
+               - packages/asymptote-sdk-js: `npm ci && npm test && npm run check && npm run build`
+               - browser-extension: `npm ci && npm run check && npm run test:unit && npm run build`
+               - lens-e2e: `npm ci`
+               If a failure also happens on main without your change, say so in the PR body.
+            3. Do not open a PR when there is no safe fix: the fix needs a new major version of a
+               direct dependency, a newer Go or Node toolchain than the repo already uses
+               elsewhere, or a change to this repo's own code beyond a small API update; or your
+               change makes checks fail. Instead write the reason, and what a person would need to
+               do, to `.dependabot-autofix/result.md`, and stop without committing.
+            4. Otherwise commit only the dependency change (message
+               "Fix Dependabot alert #${{ matrix.group.id }}: ${{ matrix.group.package }}"), run
+               `git push -u origin ${{ env.BRANCH }}`, write the PR body to
+               `.dependabot-autofix/pr-body.md` and run
+               `gh pr create --base main --head ${{ env.BRANCH }} --title "Fix Dependabot alert #${{ matrix.group.id }}: ${{ matrix.group.package }}" --body-file .dependabot-autofix/pr-body.md`.
+               The body links each alert (its url) with GHSA/CVE id and severity, lists old -> new
+               version per manifest, lists every check you ran with its result, and notes anything
+               a reviewer should look at (for example a transitive bump that pulled other packages).
+               Then copy the body to `.dependabot-autofix/result.md`.
+
+            Never disable, skip or delete tests; never add ignore rules, suppressions or
+            `overrides` that pin a vulnerable version; never downgrade; never edit .github/; and
+            change nothing unrelated to this bump.
+          claude_args: |
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(go:*),Bash(make build-hooks-current),Bash(npm:*),Bash(bun:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin ${{ env.BRANCH }}),Bash(gh pr create:*)"
+
+      - name: Report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEY: ${{ matrix.group.key }}
+          PKG: ${{ matrix.group.package }}
+        run: |
+          pr="$(gh api "repos/$GITHUB_REPOSITORY/pulls?state=open&head=$GITHUB_REPOSITORY_OWNER:$BRANCH" --jq '.[0].html_url // empty')"
+          {
+            echo "### Alerts #${KEY//_/, #} (\`$PKG\`)"
+            echo
+            if [ -n "$pr" ]; then
+              echo "PR: $pr"
+            elif gh api "repos/$GITHUB_REPOSITORY/branches/$BRANCH" --silent 2>/dev/null; then
+              echo "No PR opened, but $BRANCH was pushed. Open a PR from it or delete it."
+            else
+              echo "No PR opened."
+            fi
+            echo
+            cat .dependabot-autofix/result.md 2>/dev/null || echo "Claude left no result; see the step log."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$pr" ]; then
+            # Remember this attempt so hourly runs don't retry it for a week (manual runs do).
+            echo "$GITHUB_RUN_ID" > .dependabot-autofix/attempted
+            echo "skip_key=dependabot-autofix-skip-$KEY-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          fi
+
+      - name: Remember failed attempt
+        if: always() && env.skip_key != ''
+        uses: actions/cache/save@v4
+        with:
+          path: .dependabot-autofix/attempted
+          key: ${{ env.skip_key }}
