@@ -1,6 +1,7 @@
 package handoff
 
 import (
+	"sort"
 	"strings"
 	"time"
 
@@ -84,4 +85,74 @@ func logSessionForPrefix(logPath, prefix, harness string) (string, error) {
 		candidates = append(candidates, Session{ID: id, Harness: matches[id]})
 	}
 	return "", &AmbiguousError{ID: prefix, Candidates: candidates}
+}
+
+// beaconBookkeeping reports whether action is a record Beacon writes into a session's timeline
+// after the fact (sharing it, linking it to a commit). Those are stamped when Beacon wrote them, so
+// counting them would move an old session to the top of "most recent" the moment it is shared.
+func beaconBookkeeping(action string) bool {
+	return action == "session.shared" || action == "session.commit_linked"
+}
+
+// LogSessions lists the sessions in Beacon's runtime log, newest first, narrowed by filter the way
+// List narrows a store listing: a runtime, a directory the session ran in or below, and a limit. It
+// is how a runtime whose store Beacon does not read, or a session its store no longer has, is found
+// by directory. Title is the session's first prompt, cut to one line.
+func LogSessions(logPath string, filter Filter) ([]Session, error) {
+	within := directoryMatcher(filter.Directory)
+	byKey := map[string]*Session{}
+	var order []string
+	err := dashboard.StreamEvents(logPath, func(event schema.Event) error {
+		if event.Session == nil || strings.TrimSpace(event.Session.ID) == "" || beaconBookkeeping(event.Event.Action) {
+			return nil
+		}
+		name := canonicalHarness(asymptoteobserve.NormalizeHarnessName(event.Harness.Name))
+		if name == "" || (filter.Harness != "" && name != filter.Harness) {
+			return nil
+		}
+		key := name + "\x00" + event.Session.ID
+		session := byKey[key]
+		if session == nil {
+			session = &Session{Harness: name, ID: event.Session.ID}
+			byKey[key] = session
+			order = append(order, key)
+		}
+		if session.Directory == "" {
+			session.Directory = strings.TrimSpace(event.Session.WorkingDirectory)
+		}
+		if session.Branch == "" {
+			session.Branch = strings.TrimSpace(event.Branch)
+		}
+		if session.Title == "" && event.Prompt != nil && strings.TrimSpace(event.Prompt.Text) != "" {
+			session.Title = oneLine(event.Prompt.Text)
+		}
+		if ts, err := asymptoteobserve.ParseTimestamp(event.Timestamp); err == nil && ts.After(session.UpdatedAt) {
+			session.UpdatedAt = ts.UTC()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	var sessions []Session
+	for _, key := range order {
+		session := byKey[key]
+		if filter.Directory != "" && (session.Directory == "" || !within(session.Directory)) {
+			continue
+		}
+		sessions = append(sessions, *session)
+	}
+	sort.SliceStable(sessions, func(i, j int) bool {
+		if !sessions[i].UpdatedAt.Equal(sessions[j].UpdatedAt) {
+			return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+		}
+		if sessions[i].Harness != sessions[j].Harness {
+			return sessions[i].Harness < sessions[j].Harness
+		}
+		return sessions[i].ID < sessions[j].ID
+	})
+	if filter.Limit > 0 && len(sessions) > filter.Limit {
+		sessions = sessions[:filter.Limit]
+	}
+	return sessions, nil
 }
