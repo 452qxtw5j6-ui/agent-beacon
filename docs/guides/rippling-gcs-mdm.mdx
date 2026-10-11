@@ -538,7 +538,7 @@ runs Beacon's cleanup helper.
 
     ```bash
     sudo launchctl print system/com.beacon.endpoint.gcs-forwarder
-    sudo tail -n 100 /tmp/com.beacon.endpoint.gcs-forwarder.err
+    sudo tail -n 100 /Library/Logs/Beacon/com.beacon.endpoint.gcs-forwarder.err
     sudo sh -c '
       . "/Library/Application Support/Beacon/Forwarders/gcs-vector.env"
       exec /opt/beacon/bin/vector validate --skip-healthchecks \

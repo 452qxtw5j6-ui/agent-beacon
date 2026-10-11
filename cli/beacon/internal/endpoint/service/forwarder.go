@@ -116,7 +116,14 @@ func (m ForwarderManager) WriteUnit(vectorBin, configPath string) (string, error
 	if m.resolvedKind() == KindSystemd {
 		content = forwarderUnitFile(vectorBin, configPath, m.UserMode)
 	} else {
-		content = forwarderPlist(ForwarderLabel, vectorBin, configPath)
+		if err := ensureLaunchdLogDir(m.UserMode, ForwarderLabel); err != nil {
+			return "", err
+		}
+		stdout, stderr, err := launchdLogPaths(m.UserMode, ForwarderLabel)
+		if err != nil {
+			return "", err
+		}
+		content = forwarderPlist(ForwarderLabel, vectorBin, configPath, stdout, stderr)
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return "", err
@@ -255,7 +262,7 @@ func forwarderUnitFile(vectorBin, configPath string, userMode bool) string {
 }
 
 // forwarderPlist renders the launchd job: resident, restarted by launchd, started at load.
-func forwarderPlist(label, vectorBin, configPath string) string {
+func forwarderPlist(label, vectorBin, configPath, stdoutPath, stderrPath string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -275,12 +282,12 @@ func forwarderPlist(label, vectorBin, configPath string) string {
   <key>ThrottleInterval</key>
   <integer>10</integer>
   <key>StandardOutPath</key>
-  <string>/tmp/%s.out</string>
+  <string>%s</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/%s.err</string>
+  <string>%s</string>
 </dict>
 </plist>
-`, xmlEscape(label), xmlEscape(vectorBin), xmlEscape(configPath), xmlEscape(label), xmlEscape(label))
+`, xmlEscape(label), xmlEscape(vectorBin), xmlEscape(configPath), xmlEscape(stdoutPath), xmlEscape(stderrPath))
 }
 
 func xmlEscape(s string) string {

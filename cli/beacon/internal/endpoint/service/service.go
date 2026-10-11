@@ -328,7 +328,11 @@ type CollectorLog struct {
 func (m Manager) CollectorLog() CollectorLog {
 	switch b := m.backend().(type) {
 	case launchdBackend:
-		return CollectorLog{Path: launchdStderrPath(b.label(m.UserMode))}
+		_, stderr, err := launchdLogPaths(m.UserMode, b.label(m.UserMode))
+		if err != nil {
+			return CollectorLog{}
+		}
+		return CollectorLog{Path: stderr}
 	case supervisedBackend:
 		return CollectorLog{Path: supervisedLogPath(m.UserMode)}
 	case systemdBackend:

@@ -59,7 +59,7 @@ func newVolumeFixture(t *testing.T) volumeFixture {
 func (f volumeFixture) externalPlist(t *testing.T, label string) string {
 	t.Helper()
 	path := filepath.Join(f.external, "Library", "LaunchAgents", label+".plist")
-	if err := os.WriteFile(path, []byte(plist(label, "/opt/homebrew/bin/beacon-otelcol", "/x/otelcol.yaml")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(plist(label, "/opt/homebrew/bin/beacon-otelcol", "/x/otelcol.yaml", "/x/out", "/x/err")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -68,7 +68,7 @@ func (f volumeFixture) externalPlist(t *testing.T, label string) string {
 func (f volumeFixture) bootPlist(t *testing.T, label string) string {
 	t.Helper()
 	path := filepath.Join(f.boot, "Users", "test", "Library", "LaunchAgents", label+".plist")
-	if err := os.WriteFile(path, []byte(plist(label, "/opt/homebrew/bin/beacon-otelcol", "/x/otelcol.yaml")), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(plist(label, "/opt/homebrew/bin/beacon-otelcol", "/x/otelcol.yaml", "/x/out", "/x/err")), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return path

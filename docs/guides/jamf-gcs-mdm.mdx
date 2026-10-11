@@ -281,7 +281,7 @@ Check launchd and Vector stderr:
 
 ```bash
 sudo launchctl print system/com.beacon.endpoint.gcs-forwarder
-sudo tail -n 100 /tmp/com.beacon.endpoint.gcs-forwarder.err
+sudo tail -n 100 /Library/Logs/Beacon/com.beacon.endpoint.gcs-forwarder.err
 sudo /opt/beacon/jamf/claude/gcs/run-forwarder.sh
 ```
 

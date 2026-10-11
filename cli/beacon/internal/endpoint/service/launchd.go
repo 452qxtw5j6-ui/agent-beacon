@@ -103,7 +103,15 @@ func (b launchdBackend) writeUnit(userMode bool, program, configPath string) (st
 	if err := ensureDir(path); err != nil {
 		return "", err
 	}
-	content := plist(b.label(userMode), program, configPath)
+	label := b.label(userMode)
+	if err := ensureLaunchdLogDir(userMode, label); err != nil {
+		return "", err
+	}
+	stdout, stderr, err := launchdLogPaths(userMode, label)
+	if err != nil {
+		return "", err
+	}
+	content := plist(label, program, configPath, stdout, stderr)
 	return path, os.WriteFile(path, []byte(content), 0o644)
 }
 
@@ -261,13 +269,9 @@ func serviceDomain(userMode bool) string {
 	return "system"
 }
 
-// launchdStderrPath is the collector job's StandardErrorPath, kept beside the plist template that
-// writes it so the two cannot drift.
-func launchdStderrPath(label string) string {
-	return "/tmp/" + label + ".err"
-}
-
-func plist(label, program, configPath string) string {
+// plist renders the collector job. Every interpolated value is XML-escaped, as the forwarder,
+// updater and inventory plists are, so a path containing &, < or > cannot break the document.
+func plist(label, program, configPath, stdoutPath, stderrPath string) string {
 	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -285,10 +289,10 @@ func plist(label, program, configPath string) string {
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/%s.out</string>
+  <string>%s</string>
   <key>StandardErrorPath</key>
   <string>%s</string>
 </dict>
 </plist>
-`, label, program, configPath, label, launchdStderrPath(label))
+`, xmlEscape(label), xmlEscape(program), xmlEscape(configPath), xmlEscape(stdoutPath), xmlEscape(stderrPath))
 }
