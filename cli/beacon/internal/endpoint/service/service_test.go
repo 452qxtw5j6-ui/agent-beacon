@@ -13,7 +13,7 @@ import (
 )
 
 func TestPlistContainsLaunchdContract(t *testing.T) {
-	content := plist(UserLabel, "/tmp/otelcol", "/tmp/otelcol.yaml")
+	content := plist(UserLabel, "/tmp/otelcol", "/tmp/otelcol.yaml", "/Users/me/Library/Logs/Beacon/"+UserLabel+".out", "/Users/me/Library/Logs/Beacon/"+UserLabel+".err")
 
 	for _, want := range []string{
 		"<string>" + UserLabel + "</string>",
@@ -22,8 +22,8 @@ func TestPlistContainsLaunchdContract(t *testing.T) {
 		"<string>/tmp/otelcol.yaml</string>",
 		"<key>RunAtLoad</key>",
 		"<key>KeepAlive</key>",
-		"<string>/tmp/" + UserLabel + ".out</string>",
-		"<string>/tmp/" + UserLabel + ".err</string>",
+		"<key>StandardOutPath</key>\n  <string>/Users/me/Library/Logs/Beacon/" + UserLabel + ".out</string>",
+		"<key>StandardErrorPath</key>\n  <string>/Users/me/Library/Logs/Beacon/" + UserLabel + ".err</string>",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("plist missing %q:\n%s", want, content)

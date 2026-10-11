@@ -8,7 +8,11 @@ import (
 )
 
 func TestUpdaterPlistContent(t *testing.T) {
-	out := updaterPlist(UpdaterLabel, "/opt/beacon/bin/beacon")
+	stdout, stderr, err := launchdLogPaths(false, UpdaterLabel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := updaterPlist(UpdaterLabel, "/opt/beacon/bin/beacon", stdout, stderr)
 	for _, want := range []string{
 		"<string>com.beacon.endpoint.updater</string>",
 		"<string>/opt/beacon/bin/beacon</string>",
@@ -17,6 +21,8 @@ func TestUpdaterPlistContent(t *testing.T) {
 		"<array>",
 		"<key>Minute</key>",
 		"<integer>0</integer>",
+		"<key>StandardOutPath</key>\n  <string>/Library/Logs/Beacon/com.beacon.endpoint.updater.out</string>",
+		"<key>StandardErrorPath</key>\n  <string>/Library/Logs/Beacon/com.beacon.endpoint.updater.err</string>",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("plist missing %q", want)
@@ -36,6 +42,15 @@ func TestUpdaterPlistContent(t *testing.T) {
 	}
 	if !strings.Contains(out, "<key>RunAtLoad</key>\n  <false/>") {
 		t.Errorf("updater plist should set RunAtLoad false")
+	}
+	if strings.Contains(out, "/tmp/") {
+		t.Errorf("updater LaunchDaemon must not log to world-writable /tmp:\n%s", out)
+	}
+	escaped := updaterPlist("l&", "/opt/<b>/beacon", `/x/"o".out`, "/x/e.err")
+	for _, want := range []string{"<string>l&amp;</string>", "/opt/&lt;b&gt;/beacon", "/x/&quot;o&quot;.out"} {
+		if !strings.Contains(escaped, want) {
+			t.Errorf("updater plist must XML-escape %q:\n%s", want, escaped)
+		}
 	}
 }
 

@@ -451,7 +451,7 @@ When you remove Beacon everywhere, also delete the IAM access key and the two Fl
 
     ```bash
     sudo launchctl print system/com.beacon.endpoint.s3-forwarder | grep -E 'state =|last exit code'
-    sudo tail -n 50 /tmp/com.beacon.endpoint.s3-forwarder.err
+    sudo tail -n 50 /Library/Logs/Beacon/com.beacon.endpoint.s3-forwarder.err
     ```
 
     If `launchctl` can't find the service, run `beacon-configure-s3-forwarding.sh` again. To confirm the credentials file exists without printing the keys:
@@ -464,7 +464,7 @@ When you remove Beacon everywhere, also delete the IAM access key and the two Fl
     If uploads arrive anyway, the IAM user is missing `s3:ListBucket`, which only the startup check uses. Add it or ignore the error; see [step 2](#2-prepare-s3). If nothing arrives, check the key, the region, and any bucket policy that requires encryption headers.
   </Accordion>
   <Accordion title="An update failed with &quot;could not restore existing forwarder&quot;">
-    The new package installed, but the S3 forwarder didn't stay running afterwards. Check `/tmp/com.beacon.endpoint.s3-forwarder.err` on the Mac, fix the cause, and run `beacon-configure-s3-forwarding.sh` again.
+    The new package installed, but the S3 forwarder didn't stay running afterwards. Check `/Library/Logs/Beacon/com.beacon.endpoint.s3-forwarder.err` on the Mac, fix the cause, and run `beacon-configure-s3-forwarding.sh` again.
   </Accordion>
   <Accordion title="Self-updates aren't running">
     ```bash
