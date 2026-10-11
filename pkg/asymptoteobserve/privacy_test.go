@@ -179,6 +179,8 @@ func TestRedactStringKeepsLabelsAndOrdinaryText(t *testing.T) {
 		"deploy with ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789": "deploy with ghp_[REDACTED]",
 		"upload with AKIAIOSFODNN7EXAMPLE":                     "upload with AKIA[REDACTED]",
 		"Authorization: Bearer abc.def.ghi":                    "Authorization: Bearer [REDACTED]",
+		"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig":   "Authorization: Bearer eyJ[REDACTED]",
+		"curl -H 'Authorization: bearer eyJhbGciOiJ9.x.y'":     "curl -H 'Authorization: bearer eyJ[REDACTED]'",
 		`{"authorization": "Basic dXNlcjpwYXNz"}`:              `{"authorization": "Basic [REDACTED]"}`,
 	} {
 		if got := RedactString(input); got != want {

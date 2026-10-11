@@ -87,6 +87,12 @@ func isAuthScheme(value string) bool {
 	return false
 }
 
+// isRedactedJWTPrefix keeps the `eyJ` the header rule left in `Bearer eyJ[REDACTED]`, which the
+// bearer rule would otherwise take for a token of its own.
+func isRedactedJWTPrefix(value string) bool {
+	return value == "eyJ"
+}
+
 // isLiteralOrAuthScheme is isAuthScheme, plus the JSON literals that carry no secret.
 func isLiteralOrAuthScheme(value string) bool {
 	switch value {
@@ -102,9 +108,12 @@ var redactionRules = []redactionRule{
 	// block was cut) the rest of the text goes.
 	{regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:\s|\\[rn]|(?:Proc-Type|DEK-Info|Comment|Version):[^\n\\]*)*` +
 		`[A-Za-z0-9+/=]{16,}[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|$)`), redactedValue, nil},
-	// An Authorization header's credential after its scheme: Bearer, Basic, Token, Digest.
-	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+)([^"'\s,]+)()`), "${1}" + redactedValue, nil},
-	{regexp.MustCompile(`(?i)(\bbearer\s+)([a-z0-9._~+/=-]+)()`), "${1}" + redactedValue, nil},
+	// An Authorization header's credential after its scheme: Bearer, Basic, Token, Digest. A JWT
+	// keeps its public `eyJ` prefix, as the shape rules below keep theirs, so `Bearer eyJ[REDACTED]`
+	// still says a token was there where `Bearer [REDACTED]` may only have been the word "token" or
+	// a `$VARIABLE`.
+	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+(?-i:eyJ)?)([^"'\s,]+)()`), "${1}" + redactedValue, nil},
+	{regexp.MustCompile(`(?i)(\bbearer\s+(?-i:eyJ)?)(?P<value>[a-z0-9._~+/=-]+)`), "${1}" + redactedValue, isRedactedJWTPrefix},
 	// A labeled assignment in prose, shell, env files, YAML, TOML or JSON: `token=x`,
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
@@ -144,7 +153,11 @@ func (rule redactionRule) apply(value string) string {
 	if rule.keep == nil {
 		return rule.pattern.ReplaceAllString(value, rule.replacement)
 	}
-	group := 2 * rule.pattern.SubexpIndex("value")
+	index := rule.pattern.SubexpIndex("value")
+	if index < 0 {
+		index = 2
+	}
+	group := 2 * index
 	var out []byte
 	last := 0
 	for _, match := range rule.pattern.FindAllStringSubmatchIndex(value, -1) {
