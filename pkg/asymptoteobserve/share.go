@@ -573,7 +573,10 @@ func isShareInvocation(event Event) bool {
 	switch strings.ToLower(strings.TrimSpace(event.Event.Action)) {
 	case "tool.invoked", "tool.started", "tool.call", "tool.execute.before", "tool.execution_start",
 		"command.invoked", "command.execute.before", "mcp.tool_call":
-		return true
+		// The hook adapter also labels a post-tool event tool.invoked for tools it has no more
+		// specific action for (WebFetch, Task, Grep, ...). That event carries the finished call's
+		// result, and is a completion.
+		return !hasShareCompletionEvidence(event)
 	}
 	return false
 }
@@ -585,13 +588,20 @@ func isShareCompletion(event Event) bool {
 	case "tool.completed", "tool.failed", "tool.execute.after", "tool.execution_complete", "tool.result":
 		return true
 	}
+	if event.File != nil && event.File.Diff != "" {
+		return true
+	}
+	return hasShareCompletionEvidence(event)
+}
+
+// hasShareCompletionEvidence reports an event that carries what only a finished call has: a
+// result, command output or exit code, or an error. A diff is not evidence on its own, because an
+// edit's invocation can carry the patch it is about to apply.
+func hasShareCompletionEvidence(event Event) bool {
 	if event.GenAI != nil && event.GenAI.Tool != nil && event.GenAI.Tool.Call != nil && event.GenAI.Tool.Call.Result != nil {
 		return true
 	}
 	if event.Command != nil && (event.Command.Output != "" || event.Command.ExitCode != nil || event.Command.DurationMS > 0) {
-		return true
-	}
-	if event.File != nil && event.File.Diff != "" {
 		return true
 	}
 	return event.Error != nil && event.Error.Type != ""
