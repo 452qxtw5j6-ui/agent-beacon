@@ -170,6 +170,27 @@ func MarkShareRequested(path, harness, session string, now time.Time) (bool, err
 	return first, nil
 }
 
+// UnmarkShareRequested takes back the mark MarkShareRequested made at markedAt, when the request it
+// stood for could not be written, so the next hook of the session tries again. It runs under the
+// same lock, and removes the mark only while it is still the one made at markedAt: a mark another
+// hook has made since is left alone.
+func UnmarkShareRequested(path, harness, session string, markedAt time.Time) error {
+	harness, session = strings.TrimSpace(harness), strings.TrimSpace(session)
+	if path == "" || harness == "" || session == "" {
+		return nil
+	}
+	markedAt = markedAt.UTC()
+	return update(path, markedAt, func(doc *document) bool {
+		for i, r := range doc.ShareRequested {
+			if r.Harness == harness && r.SessionID == session && r.At.Equal(markedAt) {
+				doc.ShareRequested = append(doc.ShareRequested[:i], doc.ShareRequested[i+1:]...)
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func load(path string) (document, error) {
 	doc := document{SchemaVersion: schemaVersion}
 	if path == "" {
