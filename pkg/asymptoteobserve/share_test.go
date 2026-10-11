@@ -557,3 +557,25 @@ func TestBuildShareMessagesTreatsAPostToolInvokedEventAsTheResult(t *testing.T) 
 		t.Fatalf("result = %+v", result)
 	}
 }
+
+func TestBuildShareMessagesWritesAPromptCapturedTwiceOnce(t *testing.T) {
+	// Claude Code logs each prompt from the UserPromptSubmit hook and from the OTLP export, with
+	// different event ids and the same prompt.id. The export copy may carry no text.
+	otlp := shareEventAt("2026-10-01T10:00:00Z", "claude_code", CollectionMethodOTLP, "prompt.submitted", "prompt")
+	otlp.Event.ID = "p-otlp"
+	otlp.Prompt = &PromptInfo{ID: "prompt-1"}
+	hook := shareEventAt("2026-10-01T10:00:00.5Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	hook.Event.ID = "p-hook"
+	hook.Prompt = &PromptInfo{ID: "prompt-1", Text: "fix the test"}
+	next := shareEventAt("2026-10-01T10:01:00Z", "claude_code", CollectionMethodHook, "prompt.submitted", "prompt")
+	next.Event.ID = "p-next"
+	next.Prompt = &PromptInfo{ID: "prompt-2", Text: "fix the test"}
+
+	messages := BuildShareMessagesWithOptions([]Event{otlp, hook, next}, shareTestOpts)
+	if len(messages) != 2 {
+		t.Fatalf("messages = %d, want 2: %+v", len(messages), messages)
+	}
+	if messages[0].Text != "fix the test" || messages[0].ID != "p-otlp" {
+		t.Fatalf("first prompt = %+v", messages[0])
+	}
+}

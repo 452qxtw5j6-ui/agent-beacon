@@ -429,6 +429,7 @@ func BuildShareMessagesWithOptions(events []Event, opts ShareOptions) []ShareMes
 		calls:       map[string]*ShareToolCallContent{},
 		results:     map[string]*ShareToolResultContent{},
 		callMessage: map[string]*ShareMessageV1{},
+		prompts:     map[string]*ShareMessageV1{},
 	}
 	for _, item := range orderShareEvents(events) {
 		b.add(item)
@@ -519,6 +520,9 @@ type shareBuilder struct {
 	// pending holds call ids of invocations that named no runtime call id, newest last, waiting for
 	// a completion to pair with by tool name.
 	pending []string
+	// prompts holds user messages by harness, session and prompt.id, so one prompt captured by two
+	// paths (a hook and the OTLP export) is written once.
+	prompts map[string]*ShareMessageV1
 }
 
 type shareEventClass int
@@ -620,10 +624,24 @@ func (b *shareBuilder) add(item shareEvent) {
 	switch class {
 	case sharePrompt:
 		text := sharePromptText(event)
+		key := sharePromptKey(event)
+		if existing := b.prompts[key]; key != "" && existing != nil {
+			// The same prompt from a second capture path: fill in the text if the first copy
+			// had none, and write nothing new.
+			if existing.Text == sharePromptNotRetained && text != "" {
+				text = b.scrub.text(text)
+				existing.Text = text
+				existing.Parts = []SharePartV1{{Type: SharePartText, Order: 1, Content: ShareTextContent{Text: text}}}
+			}
+			return
+		}
 		if text == "" {
-			text = "(prompt text not retained)"
+			text = sharePromptNotRetained
 		}
 		b.appendText(item, ShareRoleUser, SharePartText, text)
+		if key != "" {
+			b.prompts[key] = b.messages[len(b.messages)-1]
+		}
 	case shareAgentText:
 		text := shareAssistantText(event, GenAIPartTypeText)
 		if text == "" {
@@ -646,6 +664,21 @@ func (b *shareBuilder) add(item shareEvent) {
 	default:
 		b.addSystem(item)
 	}
+}
+
+const sharePromptNotRetained = "(prompt text not retained)"
+
+// sharePromptKey names one user prompt across capture paths: prompt.id is the runtime's own id for
+// the turn, which a hook and the OTLP export both carry.
+func sharePromptKey(event Event) string {
+	if event.Prompt == nil || strings.TrimSpace(event.Prompt.ID) == "" {
+		return ""
+	}
+	session := ""
+	if event.Session != nil {
+		session = event.Session.ID
+	}
+	return NormalizeHarnessName(event.Harness.Name) + "\x00" + session + "\x00" + strings.TrimSpace(event.Prompt.ID)
 }
 
 func (b *shareBuilder) newMessage(item shareEvent, id, role, text string, parts ...SharePartV1) *ShareMessageV1 {
