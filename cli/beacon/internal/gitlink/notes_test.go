@@ -181,17 +181,17 @@ func TestAddLinksCreatesMergesAndIsIdempotent(t *testing.T) {
 	if note, err := ReadNote(ctx, g, sha); err != nil || note != "" {
 		t.Fatalf("fresh repo note %q, %v", note, err)
 	}
-	changed, err := AddLinks(ctx, g, sha, []Link{{"codex", "s1"}})
+	changed, err := AddLinks(ctx, g, sha, []Link{{Harness: "codex", SessionID: "s1"}})
 	if err != nil || !changed {
 		t.Fatalf("first add: %v %v", changed, err)
 	}
 	// A person's own note line on the same commit survives Beacon's update.
 	r.git("notes", "--ref="+NotesRef, "append", "-m", "Reviewed-by: someone", sha)
-	changed, err = AddLinks(ctx, g, sha, []Link{{"codex", "s1"}, {"claude_code", "s2"}})
+	changed, err = AddLinks(ctx, g, sha, []Link{{Harness: "codex", SessionID: "s1"}, {Harness: "claude_code", SessionID: "s2"}})
 	if err != nil || !changed {
 		t.Fatalf("second add: %v %v", changed, err)
 	}
-	changed, err = AddLinks(ctx, g, sha, []Link{{"claude_code", "s2"}})
+	changed, err = AddLinks(ctx, g, sha, []Link{{Harness: "claude_code", SessionID: "s2"}})
 	if err != nil || changed {
 		t.Fatalf("repeat add changed=%v err=%v", changed, err)
 	}
@@ -203,7 +203,7 @@ func TestAddLinksCreatesMergesAndIsIdempotent(t *testing.T) {
 	if refs := r.git("for-each-ref", "--format=%(refname)", "refs/notes/"); refs != NotesRef {
 		t.Fatalf("leftover refs:\n%s", refs)
 	}
-	if changed, err := AddLinks(ctx, g, sha, []Link{{"Bad Harness", "x"}}); err != nil || changed {
+	if changed, err := AddLinks(ctx, g, sha, []Link{{Harness: "Bad Harness", SessionID: "x"}}); err != nil || changed {
 		t.Fatalf("invalid links must be ignored: %v %v", changed, err)
 	}
 }
@@ -228,7 +228,7 @@ func TestAddLinksConcurrentWritersLoseNothing(t *testing.T) {
 				// Retries are bounded, so a writer may legitimately give up under this much
 				// contention; it must then say so rather than drop the link silently.
 				for attempt := 0; attempt < 10; attempt++ {
-					_, err := AddLinks(ctx, g, sha, []Link{{"codex", fmt.Sprint("w", w)}})
+					_, err := AddLinks(ctx, g, sha, []Link{{Harness: "codex", SessionID: fmt.Sprint("w", w)}})
 					if err == nil {
 						return
 					}
@@ -279,10 +279,10 @@ func TestListLinked(t *testing.T) {
 	r.commitAt("second (unlinked)", t0.Add(time.Minute))
 	r.write("a", "3")
 	third := r.commitAt("third", t0.Add(2*time.Minute))
-	if _, err := AddLinks(ctx, g, first, []Link{{"cursor", "c1"}}); err != nil {
+	if _, err := AddLinks(ctx, g, first, []Link{{Harness: "cursor", SessionID: "c1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AddLinks(ctx, g, third, []Link{{"codex", "x"}, {"claude_code", "y"}}); err != nil {
+	if _, err := AddLinks(ctx, g, third, []Link{{Harness: "codex", SessionID: "x"}, {Harness: "claude_code", SessionID: "y"}}); err != nil {
 		t.Fatal(err)
 	}
 	// A note on the ref that is not Beacon's is not a linked commit.

@@ -62,6 +62,9 @@ Hooks live in the repository's shared hooks directory, so one `setup` covers eve
 |------|-------------|
 | `--hooks-path` | Install into the `core.hooksPath` directory when one is set (see below) |
 | `--share-notes` | Share links with remotes (see [Sharing links with a team](#sharing-links-with-a-team)). `--share-notes=false` turns sharing off; without the flag, `setup` leaves it as it is |
+| `--share-sessions` | Also share the sessions linked to pushed commits to beacon.sh during each push (see [Sharing sessions on push](#sharing-sessions-on-push)). Implies `--share-notes`; `--share-sessions=false`, `--share-notes=false` and `remove` turn it off |
+| `--share-visibility <level>` | With `--share-sessions`, the visibility of new traces: `direct` (default), `private` or `public` |
+| `--yes` | With `--share-visibility public`, set it up without asking |
 | `-C`, `--cwd <dir>` | Repository to operate on |
 | `--json` | Print what was installed as JSON |
 
@@ -107,7 +110,34 @@ beacon git notes push            # the branch's remote, or origin
 beacon git notes fetch upstream  # read another remote's links
 ```
 
-A note holds only `beacon:<harness>/<session-id>` lines, so sharing a link shares that a session produced the commit, not what happened in it. The session itself stays in the runtime log of the machine that ran it.
+A note holds only `beacon:<harness>/<session-id>` lines, optionally followed by the session's share URL, so sharing a link shares that a session produced the commit (and, when the session was shared, where its trace is), not what happened in it. The session itself stays in the runtime log of the machine that ran it.
+
+## Share URLs in notes
+
+When a linked session has been shared with [`beacon share`](/cli/share), its note line carries the trace's link after the session:
+
+```text
+beacon:claude_code/5f0c1d2e-aaaa-4bbb-8ccc-000000000001 https://beacon.sh/s/k3x7q9m2a8c4d1e5f6g7h8j9
+```
+
+The post-commit hook and `beacon git link` take the URL from the `session.shared` event `beacon share` writes in the runtime log, so they still never touch the network. Only an `https` URL on `beacon.sh`, or on the Beacon service the CLI is configured for (`BEACON_AUTH_URL`, or the service you signed in to), is written or shown: a note can come from anyone who pushes to the remote, so a URL on any other host is ignored and the link is shown without it. `beacon git notes` prints the URL after the session, and `--json` includes it as `url`.
+
+## Sharing sessions on push
+
+```bash
+beacon git setup --share-sessions                         # new traces are direct (link only)
+beacon git setup --share-sessions --share-visibility private
+```
+
+With `--share-sessions`, the pre-push hook also shares the sessions linked to the commits being pushed (the one hook that uploads session content, and only because you opted in; it uses the same credential as `beacon share`, never copied anywhere) that have no share URL in their note yet, then writes their URLs into the notes before pushing `refs/notes/beacon`. A session already shared from this machine only gets its URL written. A session this machine does not have (a teammate's) is skipped. It is the same upload as [`beacon share`](/cli/share#what-is-uploaded), with the same redaction, and an existing trace keeps its visibility. Which commits are being pushed comes from the refs git hands the hook on stdin. Beacon's hook block copies them for Beacon and replays them to the rest of the repository's hook, so `git lfs pre-push` and similar steps still see them. Called through the `beacon git hook pre-push "$@" || true` line added to a hook manager or a hook in another language, Beacon leaves stdin alone and shares no sessions (it cannot tell which refs are being pushed); it still shares the commit links and prints a one-line note.
+
+- It runs only during a push you started, and reads at most 100 pushed commits and shares at most 10 sessions per push.
+- It uses your `beacon login` sign-in (with `traces:write`) or `BEACON_API_KEY`. Without either it shares nothing and prints nothing.
+- It shares within the hook's ten seconds, held to the clock: uploads get six seconds, after which the hook writes the URLs of the uploads that finished into the notes and pushes the notes ref with the time that is left (at least one and three seconds), leaving anything still running behind. It never fails the push; a failure prints one line.
+- `public` lists every session linked to a pushed commit in Discover, so `setup` asks first, and without a terminal needs `--yes`.
+- The choice is stored in the repository's own config (`beacon.shareSessions`, `beacon.shareVisibility`), so it applies to this clone only. `BEACON_GIT_HOOKS=0 git push` skips it for one push.
+
+A `pre-push` hook installed by an older Beacon does not pass git's list of pushed refs to Beacon; run `beacon git setup` again to refresh it.
 
 ## `beacon git remove`
 
@@ -153,7 +183,7 @@ beacon git notes origin/main --json
 |------|-------------|
 | `--limit <n>` | Number of commits to walk (default 20); commits without links are skipped. Links fetched from remotes are included |
 | `-C`, `--cwd <dir>` | Repository to operate on |
-| `--json` | Print commits and their links as JSON |
+| `--json` | Print commits and their links (with `url` when a link carries a share URL) as JSON |
 
 ## Runtime log events
 
@@ -194,10 +224,10 @@ match: >
 Links live under `refs/notes/beacon`, one per line:
 
 ```text
-beacon:<harness>/<session-id>
+beacon:<harness>/<session-id> [<share-url>]
 ```
 
-`<harness>` is Beacon's canonical harness name (`claude_code`, `codex_cli`, `cursor`, …). A session id has no whitespace, no control or non-ASCII characters, and at most 256 characters. Readers ignore anything after whitespace on a link line, which is reserved for later fields, and ignore lines that do not start with `beacon:`.
+`<harness>` is Beacon's canonical harness name (`claude_code`, `codex_cli`, `cursor`, …). A session id has no whitespace, no control or non-ASCII characters, and at most 256 characters. The first field after whitespace is the session's [share URL](#share-urls-in-notes) when it is an allowed `https` URL (at most 512 characters); anything else after whitespace is reserved for later fields and ignored. Lines that do not start with `beacon:` are ignored. When the same link appears with and without a URL (two people's notes merged), the line with the URL is kept.
 
 Beacon updates the note with a compare-and-swap on the notes ref, so two commits made at the same moment in two worktrees of one repository never lose each other's links.
 

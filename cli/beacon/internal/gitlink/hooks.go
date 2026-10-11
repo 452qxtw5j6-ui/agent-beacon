@@ -20,6 +20,11 @@ const (
 	// DisableEnv, set to 0, turns every installed Beacon git hook into a no-op for one command:
 	// BEACON_GIT_HOOKS=0 git commit ...
 	DisableEnv = "BEACON_GIT_HOOKS"
+	// HookStdinEnv is set to 1 by Beacon's hook block when it hands Beacon a copy of the hook's
+	// stdin and replays the original to the rest of the hook. Without it, `beacon git hook
+	// pre-push` leaves stdin alone: called straight from a hook manager or a hook in another
+	// language (HookCall), reading it would take the refs from the steps after it.
+	HookStdinEnv = "BEACON_HOOK_STDIN"
 )
 
 // ManagedHooks are the git hooks Beacon installs. post-commit links a new commit; post-rewrite
@@ -213,7 +218,7 @@ func installHook(dir, hook, beaconPath string) (HookReport, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return report, err
 	}
-	block := hookBlock(scriptName)
+	block := hookBlock(hook)
 	var next string
 	switch {
 	case os.IsNotExist(err) || strings.TrimSpace(string(existing)) == "":
@@ -291,12 +296,64 @@ func checkHookEditable(path string) error {
 	return nil
 }
 
-func hookBlock(scriptName string) string {
+func hookBlock(hook string) string {
+	scriptName := HookScriptPrefix + hook
+	if !hookReadsStdin(hook) {
+		return hookBlockStart + "\n" +
+			`if [ -x "$(git rev-parse --git-path hooks)/` + scriptName + `" ]; then` + "\n" +
+			`  "$(git rev-parse --git-path hooks)/` + scriptName + `" "$@"` + "\n" +
+			"fi\n" +
+			hookBlockEnd + "\n"
+	}
+	// git writes this hook's input to stdin once, and the rest of the hook (`git lfs pre-push`, a
+	// hook manager) needs it as much as Beacon does. The block copies it to a temporary file, gives
+	// Beacon the copy, and points the hook's own stdin at the file before the rest runs. The file
+	// is unlinked once it is open; the descriptor keeps it readable. When it cannot be copied,
+	// Beacon gets nothing and stdin is left alone.
+	feed := `    ` + HookStdinEnv + `=1 "$beacon_hook" "$@" <"$beacon_stdin"` + "\n"
+	if hook == ShareHook {
+		// The refs being pushed matter to Beacon only when it shares sessions on push.
+		feed = `    if [ "$(git config --local --get ` + ShareSessionsKey + ` 2>/dev/null)" = "true" ]; then` + "\n" +
+			`      ` + HookStdinEnv + `=1 "$beacon_hook" "$@" <"$beacon_stdin"` + "\n" +
+			"    else\n" +
+			`      "$beacon_hook" "$@" </dev/null` + "\n" +
+			"    fi\n"
+	}
 	return hookBlockStart + "\n" +
-		`if [ -x "$(git rev-parse --git-path hooks)/` + scriptName + `" ]; then` + "\n" +
-		`  "$(git rev-parse --git-path hooks)/` + scriptName + `" "$@"` + "\n" +
+		`beacon_hook="$(git rev-parse --git-path hooks)/` + scriptName + `"` + "\n" +
+		`if [ -x "$beacon_hook" ]; then` + "\n" +
+		`  beacon_stdin="$(mktemp "${TMPDIR:-/tmp}/beacon-hook.XXXXXX" 2>/dev/null)" || beacon_stdin=""` + "\n" +
+		`  if [ -n "$beacon_stdin" ]; then` + "\n" +
+		`    trap 'rm -f "$beacon_stdin"' EXIT` + "\n" +
+		`    cat >"$beacon_stdin" || :` + "\n" +
+		feed +
+		`    exec 0<"$beacon_stdin"` + "\n" +
+		`    rm -f "$beacon_stdin"` + "\n" +
+		"    trap - EXIT\n" +
+		"  else\n" +
+		`    "$beacon_hook" "$@" </dev/null` + "\n" +
+		"  fi\n" +
 		"fi\n" +
+		"unset beacon_hook beacon_stdin\n" +
 		hookBlockEnd + "\n"
+}
+
+// hookReadsStdin is true for the hooks git gives input on stdin: post-rewrite (the rewritten
+// commits) and pre-push (the refs being pushed).
+func hookReadsStdin(hook string) bool { return hook == "post-rewrite" || hook == ShareHook }
+
+// blockOutdated is true when script carries a Beacon block other than the one this version
+// writes, which `beacon git setup` refreshes.
+func blockOutdated(script, hook string) bool {
+	start := strings.Index(script, hookBlockStart)
+	if start < 0 {
+		return false
+	}
+	end := strings.Index(script[start:], hookBlockEnd)
+	if end < 0 {
+		return true
+	}
+	return script[start:start+end+len(hookBlockEnd)]+"\n" != hookBlock(hook)
 }
 
 // HookCall is the line to put in a hook Beacon cannot edit (a hook manager's, or one written in
@@ -312,18 +369,19 @@ func HookCall(hook string) string {
 var hookPurpose = map[string]string{
 	"post-commit":  "links the new commit to the agent sessions that wrote it.",
 	"post-rewrite": "tidies the Beacon note on commits an amend or rebase rewrote.",
-	"pre-push":     "shares refs/notes/beacon with the remote being pushed to.",
+	"pre-push":     "shares refs/notes/beacon with the remote being pushed to (and, with --share-sessions, the linked sessions).",
 }
 
 func hookScript(hook, beaconPath string) string {
-	// post-rewrite reads the rewritten commits from stdin; the others get nothing to read.
-	// pre-push needs the remote git passes, and keeps stderr so a failure to share says so.
+	// post-rewrite reads the rewritten commits from stdin; post-commit gets nothing to read.
+	// pre-push needs the remote git passes and the refs being pushed (stdin, which
+	// --share-sessions reads), and keeps stderr so a failure to share says so.
 	stdin, args, output := " </dev/null", "", " >/dev/null 2>&1"
 	switch hook {
 	case "post-rewrite":
 		stdin, args = "", ` "$@"`
 	case ShareHook:
-		args, output = ` "$@"`, " >/dev/null"
+		stdin, args, output = "", ` "$@"`, " >/dev/null"
 	}
 	return `#!/bin/sh
 # Beacon ` + hook + ` hook: ` + hookPurpose[hook] + `
@@ -339,7 +397,7 @@ exit 0
 
 func hookScope(hook string) string {
 	if hook == ShareHook {
-		return "Pushes only Beacon's notes ref, only to this push's remote, and never fails the push."
+		return "Pushes only Beacon's notes ref, only to this push's remote, and never fails the push. With --share-sessions it also shares the linked sessions to beacon.sh."
 	}
 	return "Reads the local runtime log and writes a git note; never touches the network or fails the commit."
 }
@@ -370,6 +428,8 @@ type RemoveResult struct {
 	Reports           []HookReport  `json:"reports"`
 	RewriteRefRemoved bool          `json:"rewrite_ref_removed"`
 	FetchRemoved      []string      `json:"fetch_removed,omitempty"`
+	// ShareSessionsRemoved is true when pushes had been sharing linked sessions.
+	ShareSessionsRemoved bool `json:"share_sessions_removed,omitempty"`
 }
 
 func removeHook(dir, hook string) (HookReport, error) {
@@ -418,6 +478,12 @@ func RemoveHooks(ctx context.Context, repo Repo) (RemoveResult, error) {
 	if result.FetchRemoved, err = UnconfigureFetch(ctx, repo); err != nil {
 		return result, err
 	}
+	if enabled, _ := ShareSessionsConfig(ctx, repo); enabled {
+		if err := SetShareSessions(ctx, repo, false, ""); err != nil {
+			return result, err
+		}
+		result.ShareSessionsRemoved = true
+	}
 	removed, err := removeRewriteRef(ctx, repo)
 	if err != nil {
 		return result, err
@@ -443,6 +509,8 @@ type HookState struct {
 	Installed    bool `json:"installed"`
 	BlockPresent bool `json:"block_present"`
 	ScriptExists bool `json:"script_exists"`
+	// Outdated is true when the hook carries a block an earlier Beacon wrote; setup refreshes it.
+	Outdated bool `json:"outdated,omitempty"`
 }
 
 // Status is the state of Beacon's git integration in one repository.
@@ -454,6 +522,10 @@ type Status struct {
 	// fetches bring their links along.
 	Sharing      bool     `json:"sharing"`
 	FetchRemotes []string `json:"fetch_remotes,omitempty"`
+	// ShareSessions is true when pushes also share linked sessions to beacon.sh, with
+	// ShareVisibility for new traces ("" for the server default, direct).
+	ShareSessions   bool   `json:"share_sessions"`
+	ShareVisibility string `json:"share_visibility,omitempty"`
 }
 
 // Installed is true when every managed hook is installed. Sharing is optional and not counted.
@@ -482,6 +554,7 @@ func HookStatus(ctx context.Context, repo Repo) (Status, error) {
 		st := HookState{Hook: hook}
 		if data, err := os.ReadFile(filepath.Join(loc.Dir, hook)); err == nil {
 			st.BlockPresent = strings.Contains(string(data), hookBlockStart)
+			st.Outdated = blockOutdated(string(data), hook)
 		}
 		if _, err := os.Stat(filepath.Join(loc.Dir, HookScriptPrefix+hook)); err == nil {
 			st.ScriptExists = true
@@ -502,6 +575,7 @@ func HookStatus(ctx context.Context, repo Repo) (Status, error) {
 			}
 		}
 	}
+	status.ShareSessions, status.ShareVisibility = ShareSessionsConfig(ctx, repo)
 	status.RewriteRef, err = hasRewriteRef(ctx, repo)
 	return status, err
 }

@@ -30,7 +30,7 @@ beacon share --current --harness claude_code --json
 beacon share --print
 ```
 
-Sharing is always something you ask for. Hooks, plugins and background jobs never upload a session, and nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint. [Auto-share](#auto-share), which you turn on, asks Beacon Cloud to publish sessions from the events forwarding already sends.
+Sharing is always something you ask for. Hooks, plugins and background jobs never upload a session, with one exception you turn on yourself: after [`beacon git setup --share-sessions`](/cli/git#sharing-sessions-on-push), the git pre-push hook shares the sessions linked to the commits you push, during that push, within the hook's time budget and never failing it. Nothing else in Beacon uploads session content to beacon.sh except [Beacon Cloud forwarding](/cli/endpoint-connect) when you connect an endpoint. [Auto-share](#auto-share), which you turn on, asks Beacon Cloud to publish sessions from the events forwarding already sends.
 
 ## Choosing the session
 

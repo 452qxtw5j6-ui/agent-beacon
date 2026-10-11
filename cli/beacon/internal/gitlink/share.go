@@ -265,3 +265,117 @@ func TrackingRefs(ctx context.Context, g Git) ([]string, error) {
 	}
 	return refs, nil
 }
+
+// Git config keys recording `beacon git setup --share-sessions`. They live in the repository's own
+// config (--local), so the choice is per clone and never travels with a push.
+const (
+	ShareSessionsKey   = "beacon.shareSessions"
+	ShareVisibilityKey = "beacon.shareVisibility"
+)
+
+// ShareSessionsConfig reports whether pushes share the sessions linked to the pushed commits, and
+// with which visibility new traces are created.
+func ShareSessionsConfig(ctx context.Context, repo Repo) (enabled bool, visibility string) {
+	value, err := repo.Git.Run(ctx, nil, "config", "--local", "--type=bool", "--get", ShareSessionsKey)
+	if err != nil || strings.TrimSpace(value) != "true" {
+		return false, ""
+	}
+	visibility, _ = repo.Git.Run(ctx, nil, "config", "--local", "--get", ShareVisibilityKey)
+	return true, strings.TrimSpace(visibility)
+}
+
+// SetShareSessions records (or, with enabled false, removes) the --share-sessions choice.
+func SetShareSessions(ctx context.Context, repo Repo, enabled bool, visibility string) error {
+	if !enabled {
+		for _, key := range []string{ShareSessionsKey, ShareVisibilityKey} {
+			if _, err := repo.Git.Run(ctx, nil, "config", "--local", "--unset-all", key); err != nil {
+				var gitErr *GitError
+				if !errors.As(err, &gitErr) {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if _, err := repo.Git.Run(ctx, nil, "config", "--local", ShareSessionsKey, "true"); err != nil {
+		return err
+	}
+	if visibility == "" {
+		_, err := repo.Git.Run(ctx, nil, "config", "--local", "--unset-all", ShareVisibilityKey)
+		var gitErr *GitError
+		if err != nil && !errors.As(err, &gitErr) {
+			return err
+		}
+		return nil
+	}
+	_, err := repo.Git.Run(ctx, nil, "config", "--local", ShareVisibilityKey, visibility)
+	return err
+}
+
+// PushedCommits lists the commits a pre-push hook's stdin says are being pushed: for each
+// `<local-ref> <local-sha> <remote-ref> <remote-sha>` line, the commits reachable from the local
+// sha and not from the remote sha (or, for a new remote branch or a remote sha this clone does not
+// have, from any of the remote's tracking branches when remote is a configured remote; pushed to a
+// URL, such a line counts no commits, since nothing would bound it). Deletions push nothing. At
+// most limit commits, newest first.
+func PushedCommits(ctx context.Context, repo Repo, remote string, stdin string, limit int) ([]string, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	named := isRemote(ctx, repo, remote)
+	seen := map[string]bool{}
+	var out []string
+	for _, line := range strings.Split(stdin, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 4 || !isSHA(fields[1]) || !isSHA(fields[3]) || isZeroSHA(fields[1]) {
+			continue
+		}
+		args := []string{"rev-list", "--max-count=" + strconv.Itoa(limit), fields[1], "--not"}
+		switch {
+		case !isZeroSHA(fields[3]) && hasCommit(ctx, repo, fields[3]):
+			args = append(args, fields[3])
+		case named:
+			// A new remote branch, or a force push over commits this clone never fetched: the
+			// remote's tip is not here to exclude, so exclude everything already on the remote.
+			args = append(args, "--remotes="+remote)
+		default:
+			// A push to a URL with nothing here to exclude: every ancestor would count as pushed,
+			// including commits the remote has had for years. Count none rather than guess.
+			continue
+		}
+		list, err := repo.Git.Run(ctx, nil, args...)
+		if err != nil {
+			return out, err
+		}
+		for _, sha := range strings.Fields(list) {
+			if !seen[sha] {
+				seen[sha] = true
+				out = append(out, sha)
+				if len(out) >= limit {
+					return out, nil
+				}
+			}
+		}
+	}
+	return out, nil
+}
+
+// hasCommit reports whether sha names a commit present in this repository.
+func hasCommit(ctx context.Context, repo Repo, sha string) bool {
+	_, err := repo.Git.Run(ctx, nil, "cat-file", "-e", sha+"^{commit}")
+	return err == nil
+}
+
+func isSHA(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func isZeroSHA(s string) bool { return strings.Trim(s, "0") == "" }

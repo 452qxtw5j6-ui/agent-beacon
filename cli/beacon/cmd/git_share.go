@@ -16,6 +16,9 @@ import (
 // push had hung.
 var gitShareBudget = 10 * time.Second
 
+// gitPushNotes is gitlink.PushNotes; tests replace it to see the deadline the hook gives it.
+var gitPushNotes = gitlink.PushNotes
+
 var gitNotesPushCmd = &cobra.Command{
 	Use:   "push [<remote>]",
 	Short: "Share this repository's commit links with a remote (default the branch's remote, or origin)",
@@ -129,7 +132,32 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 	// A hook has no terminal to ask for credentials on; git's own push has already authenticated,
 	// and a credential helper answers the same way for this one.
 	repo.Git = repo.Git.WithExtraEnv("GIT_TERMINAL_PROMPT=0")
-	if _, err := gitlink.PushNotes(ctx, repo, args[0]); err != nil {
+	// git's stdin (the refs being pushed) is read only when sessions are shared, and only when
+	// Beacon's hook block passed a copy in (it replays the original to the rest of the hook).
+	// Called any other way, stdin belongs to whatever runs after Beacon, and without it Beacon
+	// cannot know which refs are being pushed (another branch, --tags, --delete), so it shares no
+	// sessions at all rather than guess: only the notes ref is pushed.
+	if enabled, visibility := gitlink.ShareSessionsConfig(ctx, repo); enabled {
+		stdin := ""
+		if os.Getenv(gitlink.HookStdinEnv) == "1" {
+			stdin = readHookStdin(cmd.InOrStdin())
+		} else {
+			fmt.Fprintln(cmd.ErrOrStderr(), "beacon: sessions are shared on push only through the hook `beacon git setup` installs; this push shares commit links only")
+		}
+		if stdin != "" {
+			// Sharing sessions is held to the clock (uploads, then writing their URLs into the
+			// notes), and the notes ref is then pushed with what is left of the hook's budget, never
+			// less than gitShareNotesReserve, so the links, with whatever URLs were recorded, still
+			// reach the remote in time.
+			if _, err := gitShareSessionsOnPush(ctx, repo, args[0], stdin, visibility); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "beacon: linked sessions were not all shared: %s\n", gitlink.ErrorSummary(err))
+			}
+			pushCtx, cancelPush := gitShareAfterContext(ctx, 0, gitShareNotesReserve)
+			defer cancelPush()
+			ctx = pushCtx
+		}
+	}
+	if _, err := gitPushNotes(ctx, repo, args[0]); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "beacon: commit links were not shared with %s: %s\n", args[0], gitlink.ErrorSummary(err))
 	}
 	return nil

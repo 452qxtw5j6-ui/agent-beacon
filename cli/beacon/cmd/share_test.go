@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -605,6 +606,64 @@ func TestShareAlignSwitchesFromTheLogToTheStore(t *testing.T) {
 	if subject.fromLog || !hasShareEvent(payload.Events, state.LastEventID) {
 		t.Fatalf("did not switch to the store copy: fromLog=%v", subject.fromLog)
 	}
+}
+
+// The session.shared record says what the upload covered: shared_through is when the session was
+// read, which precedes the record's own timestamp (taken after the upload). Share, refresh and the
+// non-interactive upload path all write it.
+func TestShareRecordCarriesSharedThrough(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	calls := 0
+	shareNow = func() time.Time { calls++; return base.Add(time.Duration(calls) * time.Minute) }
+	t.Cleanup(func() { shareNow = time.Now })
+
+	check := func(what string) {
+		t.Helper()
+		data, err := os.ReadFile(env.logPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+		var event schema.Event
+		if err := json.Unmarshal([]byte(lines[len(lines)-1]), &event); err != nil {
+			t.Fatal(err)
+		}
+		through, _ := event.Raw["shared_through"].(string)
+		readAt, err := time.Parse(time.RFC3339Nano, through)
+		if err != nil {
+			t.Fatalf("%s: shared_through %q: %v", what, through, err)
+		}
+		recorded, err := time.Parse(time.RFC3339Nano, event.Timestamp)
+		if err != nil || !readAt.Before(recorded) {
+			t.Fatalf("%s: shared_through %s, record at %s: want the read before the record", what, through, event.Timestamp)
+		}
+	}
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	check("share")
+	if _, _, err := runShareCommand(t, "refresh", "claude_code:"+shareTestSession, "--log-path", env.logPath); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	check("refresh")
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	subject, err := resolveShareSubject(handoff.HarnessClaude, shareTestSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := newShareClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := shareUpload(context.Background(), client, subject, shareUploadOptions{Record: true}); err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	check("upload")
 }
 
 func TestSharePayloadRelatesAHandoff(t *testing.T) {
