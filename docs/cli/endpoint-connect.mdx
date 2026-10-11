@@ -77,7 +77,7 @@ The onboarding wizard records one of two modes. `connect` uses that choice unles
 | Mode | Forwarded data |
 |------|----------------|
 | `standard` | The complete locally sanitized event, including retained prompts, responses, reasoning, tool arguments/results, command output, and diffs. Existing local redaction and size limits still apply. |
-| `metadata-only` | Omits prompts, responses, reasoning, tool arguments/results, command output, raw event fields, diffs, inventory file contents, and MCP definitions. Stable ids, hashes, byte counts, actions, timestamps, harness/session/trace identity, the `prompt.id` that groups a turn, token usage, commands, file paths, and other structured metadata remain. |
+| `metadata-only` | Omits prompts, responses, reasoning, tool arguments/results, command output, raw event fields, diffs, inventory file contents, and MCP definitions. It also removes tool descriptions and definitions (`gen_ai.tool.description`, `gen_ai.tool.definitions`), retrieval queries and documents (`gen_ai.retrieval`), evaluation explanations, agent descriptions, request stop sequences, and the free-text reason on approvals and policy decisions (`approval.reason`, `policy.reason`), which can hold an operator's typed feedback; the decision itself remains. Stable ids, hashes, byte counts, actions, timestamps, harness/session/trace identity, the `prompt.id` that groups a turn, token usage, commands, file paths, and other structured metadata remain. |
 
 The transform runs locally in Vector before batching, buffering, or HTTPS upload.
 Changing modes requires rerunning `beacon endpoint connect`; the rendered config and
