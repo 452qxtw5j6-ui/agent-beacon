@@ -468,3 +468,32 @@ func TestShareMetadataLeavesOutDetachedHeadAndTheHomeDirectoryName(t *testing.T)
 		t.Fatalf("project = %q", meta.ProjectName)
 	}
 }
+
+func TestPathScrubberReplacesWholePathsOnly(t *testing.T) {
+	s := newPathScrubber("/src/proj", "/home/al")
+	cases := map[string]string{
+		"/src/proj":                     ".",
+		"/src/proj/main.go":             "./main.go",
+		"cd /src/proj && go test":       "cd . && go test",
+		`"/src/proj/a.go"`:              `"./a.go"`,
+		"/src/proj-old/main.go":         "/src/proj-old/main.go",
+		"/src/project/main.go":          "/src/project/main.go",
+		"/home/al/notes.txt":            "~/notes.txt",
+		"/home/alex/notes.txt":          "/home/alex/notes.txt",
+		"/srv/home/al/x":                "/srv/home/al/x",
+		"open /home/al, then /home/al.": "open ~, then ~.",
+		"/home/al/src/proj/x":           "~/src/proj/x",
+	}
+	for in, want := range cases {
+		if got := s.text(in); got != want {
+			t.Errorf("text(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := s.path("/src/proj-old/main.go"); got != "/src/proj-old/main.go" {
+		t.Errorf("path of a sibling directory = %q", got)
+	}
+	win := newPathScrubber(`C:\work\proj`, `C:\Users\al`)
+	if got := win.text(`C:\work\proj\a.go and C:\Users\alex\b`); got != `.\a.go and C:\Users\alex\b` {
+		t.Errorf("windows text = %q", got)
+	}
+}
