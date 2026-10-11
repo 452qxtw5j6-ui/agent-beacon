@@ -138,6 +138,13 @@ the steps in both orders still fires once. A single event never satisfies two st
 - Regular expressions use RE2 via CEL `.matches(re)` (the same engine as Go `regexp`).
   RE2 runs in time linear in its input and has no backtracking, so a pattern cannot be
   made to run super-linearly (no ReDoS); cost is bounded by the size of the text matched.
+- Evaluation is bounded. Macros (`.all`, `.exists`, `.map`, `.filter`) can nest, so an
+  expression can do work exponential in its own length. An engine SHOULD cap the work one
+  evaluation of one expression against one event may do, and MUST report an evaluation it
+  stops as an error for that rule, never as a `match` or `no_match`. The reference engine
+  uses cel-go's runtime cost limit at 5,000,000 (`threatrules.MaxEvalCost`); every rule in
+  the open corpus spends under 4,000 on its fixtures. A rule should stay orders of
+  magnitude below the limit on any event the writer can produce (at most 64 KiB).
 - Derived fields. `e.gen_ai.tool.call.result_text` is not on the wire: an engine MUST
   compute it from the event before evaluation, and MUST ignore any value an input
   claims for it. It is `gen_ai.tool.call.result` as text (a string as is; for an object
