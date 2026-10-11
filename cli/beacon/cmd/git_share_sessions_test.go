@@ -96,8 +96,8 @@ func TestGitPrePushSharesLinkedSessions(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr %q", stderr.String())
 	}
-	if len(srv.messages) != 4 {
-		t.Fatalf("server messages = %d", len(srv.messages))
+	if len(srv.events) != 4 {
+		t.Fatalf("server events = %d", len(srv.events))
 	}
 	want := "beacon:claude_code/" + shareTestSession + " https://beacon.sh/s/k3xabc\nbeacon:cursor/someone-else"
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
@@ -308,7 +308,8 @@ func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
 }
 
 // The per-push cap counts only sessions this machine has: links to teammates' or pruned sessions
-// ahead of one's own do not use up its slots.
+// ahead of one's own do not use up its slots. Each runtime's store is listed once per push and the
+// runtime log read once, however many links there are.
 func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 	root, _ := gitCommandTeam(t)
 	env := newShareEnv(t)
@@ -324,6 +325,13 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 		return prevLogSessions(logPath)
 	}
 	t.Cleanup(func() { gitShareLogSessions = prevLogSessions })
+	storeListings := 0
+	prevListStore := gitShareListStore
+	gitShareListStore = func(sources []handoff.Source, harness string) ([]handoff.Session, error) {
+		storeListings++
+		return prevListStore(sources, harness)
+	}
+	t.Cleanup(func() { gitShareListStore = prevListStore })
 	var uploaded []string
 	prevUpload := gitShareUpload
 	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
@@ -353,6 +361,9 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 	}
 	if logReads != 1 {
 		t.Fatalf("runtime log read %d times for the teammates' links, want once", logReads)
+	}
+	if storeListings != 1 {
+		t.Fatalf("the Claude Code store was listed %d times for %d links, want once per push", storeListings, len(lines))
 	}
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); !strings.Contains(note, "beacon:claude_code/"+shareTestSession+" https://beacon.sh/s/mine01") {
 		t.Fatalf("note %q lacks the URL", note)

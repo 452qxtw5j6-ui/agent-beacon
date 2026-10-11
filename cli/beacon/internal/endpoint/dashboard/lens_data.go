@@ -78,20 +78,18 @@ func BuildSessionLensData(logPath, session string, opts LensDataOptions) (LensDa
 	if harness == "" {
 		harness = strings.TrimSpace(first.Harness.Name)
 	}
-	agg := newTraceAggregate("session:"+harness+":"+session, first)
+	builder := asymptoteobserve.NewTraceBuilder("session:"+harness+":"+session, first)
 	raw := make([]schema.Event, 0, len(records))
 	for _, record := range records {
-		te := traceEventFromRecord(record, len(agg.events)+1)
-		agg.events = append(agg.events, te)
-		agg.update(record.Event, te)
+		builder.Add(record.Event, traceEventFromRecord(record, 0))
 		raw = append(raw, record.Event)
 	}
-	agg.finish()
-	total := len(agg.events)
+	events := builder.Events()
+	total := len(events)
 	show := TraceShowResultV1{
-		Trace:  agg.summary,
-		Events: agg.events,
-		Spans:  spansFromEvents(agg.events),
+		Trace:  builder.Summary(),
+		Events: events,
+		Spans:  asymptoteobserve.TraceSpans(events),
 		Range:  TraceRangeV1{TotalEvents: total, ReturnedEvents: total, Offset: 1, Limit: total},
 	}
 	return lensDataFromShow(show, raw, opts), true, nil

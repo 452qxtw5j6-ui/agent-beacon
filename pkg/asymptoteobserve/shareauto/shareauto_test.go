@@ -103,3 +103,55 @@ func TestResolveMatchesEquivalentPaths(t *testing.T) {
 		t.Fatalf("rooted path: %+v", d)
 	}
 }
+
+// The user-wide off switch overrides every project; on or unset leaves project entries deciding.
+func TestGlobalOffIsAKillSwitch(t *testing.T) {
+	repo := t.TempDir()
+	s := Settings{Projects: []Project{{Path: repo, Enabled: true, Visibility: "direct"}}}
+	if d := Resolve(s, repo); !d.Enabled || d.Source != "project" {
+		t.Fatalf("unset = %+v", d)
+	}
+	s.SetGlobal(GlobalOff)
+	if d := Resolve(s, repo); d.Enabled || d.Source != "user" || d.Overridden != repo {
+		t.Fatalf("off = %+v", d)
+	}
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := Save(path, s); err != nil {
+		t.Fatal(err)
+	}
+	if d := ForHook(path, repo); d.Enabled {
+		t.Fatalf("ForHook under the kill switch = %+v", d)
+	}
+	s.SetGlobal(GlobalOn)
+	off := Settings{Auto: s.Auto, Projects: []Project{{Path: repo, Enabled: false}}}
+	if d := Resolve(off, repo); d.Enabled || d.Source != "project" {
+		t.Fatalf("project off under global on = %+v", d)
+	}
+}
+
+// A file written before the switch had three states (enabled only) still reads.
+func TestLoadReadsTheOldFormat(t *testing.T) {
+	dir := t.TempDir()
+	repo := t.TempDir()
+	for _, tc := range []struct {
+		body string
+		want string
+	}{
+		{`{"schema_version":"beacon.share_settings.v1","auto":{"enabled":true,"visibility":"private"}}`, GlobalOn},
+		{`{"schema_version":"beacon.share_settings.v1","auto":{"enabled":false},"projects":[{"path":"` + filepath.ToSlash(repo) + `","enabled":true}]}`, GlobalUnset},
+	} {
+		path := filepath.Join(dir, FileName)
+		if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		s, err := Load(path)
+		if err != nil || s.Global() != tc.want {
+			t.Fatalf("%s: global = %q (err %v), want %q", tc.body, s.Global(), err, tc.want)
+		}
+		if tc.want == GlobalUnset {
+			if d := Resolve(s, repo); !d.Enabled || d.Source != "project" {
+				t.Fatalf("old project entry = %+v", d)
+			}
+		}
+	}
+}

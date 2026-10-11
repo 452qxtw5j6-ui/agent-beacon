@@ -147,3 +147,24 @@ func TestMarkShareRequestedOncePerSession(t *testing.T) {
 		t.Fatal("mark lost after a Record")
 	}
 }
+
+func TestUnmarkShareRequestedRemovesOnlyItsOwnMark(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	first := time.Date(2026, 10, 1, 10, 0, 0, 123456789, time.UTC)
+	if ok, err := MarkShareRequested(path, "claude_code", "s1", first); err != nil || !ok {
+		t.Fatalf("mark = %v %v", ok, err)
+	}
+	// Another mark time is not this one: left alone.
+	if err := UnmarkShareRequested(path, "claude_code", "s1", first.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := MarkShareRequested(path, "claude_code", "s1", first); ok {
+		t.Fatal("a different mark time removed the mark")
+	}
+	if err := UnmarkShareRequested(path, "claude_code", "s1", first); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := MarkShareRequested(path, "claude_code", "s1", first.Add(time.Minute)); err != nil || !ok {
+		t.Fatalf("after unmark, mark = %v %v", ok, err)
+	}
+}

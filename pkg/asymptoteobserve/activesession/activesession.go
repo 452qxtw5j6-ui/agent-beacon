@@ -170,6 +170,27 @@ func MarkShareRequested(path, harness, session string, now time.Time) (bool, err
 	return first, nil
 }
 
+// UnmarkShareRequested takes back the mark MarkShareRequested made at markedAt, when the request it
+// stood for could not be written, so the next hook of the session tries again. It runs under the
+// same lock, and removes the mark only while it is still the one made at markedAt: a mark another
+// hook has made since is left alone.
+func UnmarkShareRequested(path, harness, session string, markedAt time.Time) error {
+	harness, session = strings.TrimSpace(harness), strings.TrimSpace(session)
+	if path == "" || harness == "" || session == "" {
+		return nil
+	}
+	markedAt = markedAt.UTC()
+	return update(path, markedAt, func(doc *document) bool {
+		for i, r := range doc.ShareRequested {
+			if r.Harness == harness && r.SessionID == session && r.At.Equal(markedAt) {
+				doc.ShareRequested = append(doc.ShareRequested[:i], doc.ShareRequested[i+1:]...)
+				return true
+			}
+		}
+		return false
+	})
+}
+
 func load(path string) (document, error) {
 	doc := document{SchemaVersion: schemaVersion}
 	if path == "" {
@@ -194,7 +215,7 @@ func load(path string) (document, error) {
 	return doc, nil
 }
 
-func update(path string, now time.Time, mutate func(*document) bool) error {
+func update(path string, now time.Time, mutate func(*document) bool) (err error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -203,7 +224,13 @@ func update(path string, now time.Time, mutate func(*document) bool) error {
 	if err != nil {
 		return err
 	}
-	defer lockFile.Close()
+	// The lock file is never written, so closing it loses nothing; its error is reported only
+	// when nothing else went wrong.
+	defer func() {
+		if cerr := lockFile.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 	lock, err := filelock.Exclusive(lockFile)
 	if err != nil {
 		return err

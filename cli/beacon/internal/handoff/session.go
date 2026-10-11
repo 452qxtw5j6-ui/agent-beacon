@@ -220,6 +220,18 @@ func directoryMatcher(root string) func(dir string) bool {
 	}
 }
 
+// DirectoryWithin reports whether dir is root or below it, compared the way session listings
+// compare directories (directoryMatcher): as written, then with symlinks resolved.
+func DirectoryWithin(dir, root string) bool {
+	return root != "" && directoryMatcher(root)(dir)
+}
+
+// SameDirectory reports whether a and b name the same directory, compared as DirectoryWithin
+// compares them.
+func SameDirectory(a, b string) bool {
+	return DirectoryWithin(a, b) && DirectoryWithin(b, a)
+}
+
 // resolveExisting resolves the symlinks in path. A path that no longer exists (a deleted project
 // directory) resolves through its nearest existing ancestor, with the rest rejoined as written.
 func resolveExisting(path string) string {
