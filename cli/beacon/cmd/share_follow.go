@@ -16,7 +16,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/gitlink"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/handoff"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/shareauto"
 )
 
 // `beacon share --follow` keeps a shared trace current while its session runs: it re-reads the
@@ -200,14 +203,11 @@ func shareFollowState(subject shareSubject) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	ended := false
-	for _, e := range events {
-		if e.Event.Action == "session.ended" {
-			ended = true
-		}
-	}
+	// A resumed session keeps its old session.ended, so only an end that nothing but Beacon's own
+	// bookkeeping follows counts.
+	ended, latest := shareSessionEnd(events)
 	if !ended && !subject.fromLog {
-		ended = shareLogRecordsEnd(subject.session)
+		ended = shareLogRecordsEnd(subject.session, latest)
 	}
 	payload, err := buildSharePayload(subject)
 	if err != nil {
@@ -241,16 +241,33 @@ func printShareFollow(out, errOut io.Writer, result shareResult, first, final, e
 
 // shareLogRecordsEnd reports whether the runtime log records the end of session, which most store
 // mappers do not emit: the runtime's hooks write session.ended to the log, not to its own store.
-// A log that cannot be read says nothing.
-func shareLogRecordsEnd(session handoff.Session) bool {
+// The end counts only when it is the log's newest activity for the session and is no older than
+// storeLatest, the newest activity in the store (a resumed session has an old end in both). A log
+// that cannot be read says nothing.
+func shareLogRecordsEnd(session handoff.Session, storeLatest time.Time) bool {
 	found, events, ok, err := handoff.LogSession(shareLogPath(), session.ID, session.Harness)
 	if err != nil || !ok || found.ID != session.ID || found.Harness != session.Harness {
 		return false
 	}
+	ended, endAt := shareSessionEnd(events)
+	return ended && !endAt.Before(storeLatest)
+}
+
+// shareSessionEnd reports whether events, in order, end with session.ended followed by nothing but
+// Beacon's bookkeeping (session.shared, session.share_requested, session.commit_linked), and the
+// newest timestamp among the activity it considered (the end's, when it ended).
+func shareSessionEnd(events []schema.Event) (bool, time.Time) {
+	ended := false
+	var latest time.Time
 	for _, e := range events {
-		if e.Event.Action == "session.ended" {
-			return true
+		switch e.Event.Action {
+		case SessionSharedAction, shareauto.ActionShareRequested, gitlink.LinkAction:
+			continue
+		}
+		ended = e.Event.Action == "session.ended"
+		if ts, err := schema.ParseTimestamp(e.Timestamp); err == nil && ts.After(latest) {
+			latest = ts
 		}
 	}
-	return false
+	return ended, latest
 }
