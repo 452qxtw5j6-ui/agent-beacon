@@ -54,6 +54,15 @@ func TestResolveShareCredentialPrecedence(t *testing.T) {
 		{"expired login", ResolveShareCredentialOptions{Load: load(expired, nil)}, "", nil, "expired"},
 		{"nothing", ResolveShareCredentialOptions{Load: load(nil, ErrNotSignedIn)}, "", ErrNoShareCredential, ""},
 		{"bad key", ResolveShareCredentialOptions{Key: "sk-something", Load: load(good, nil)}, "", nil, "not a Beacon API key"},
+		{"login for the named service", ResolveShareCredentialOptions{BaseURL: "https://beacon.sh/", Load: load(good, nil)}, CredentialSourceLogin, nil, ""},
+		{"login for another service is not used", ResolveShareCredentialOptions{BaseURL: "https://staging.beacon.sh", Load: load(good, nil)}, "", nil, "signed in to https://beacon.sh, not https://staging.beacon.sh"},
+		{"env key for another service", ResolveShareCredentialOptions{BaseURL: "https://staging.beacon.sh", Load: load(good, nil), Getenv: env("bcn_api_env")}, CredentialSourceEnv, nil, ""},
+		{"service named by the environment", ResolveShareCredentialOptions{Load: load(good, nil), Getenv: func(name string) string {
+			if name == BaseURLEnv {
+				return "https://staging.beacon.sh"
+			}
+			return ""
+		}}, "", nil, "not https://staging.beacon.sh"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
