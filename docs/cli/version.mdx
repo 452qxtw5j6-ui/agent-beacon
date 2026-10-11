@@ -11,6 +11,12 @@ Display the version number, git commit, and build date of the Agent Beacon CLI, 
 beacon version
 ```
 
+Running `beacon` by itself in an interactive terminal also checks for a newer
+release. When one is available, an orange notice shows the installed and latest
+versions, links to the [CLI changelog](/changelog/cli), and prints the update
+command for the detected installation method. The notice is best-effort and is
+never shown in pipes, redirects, scripts, or other non-interactive commands.
+
 <Accordion title="Example output">
 ```bash title="Example output"
 $ beacon version

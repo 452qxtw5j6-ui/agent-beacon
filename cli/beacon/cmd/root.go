@@ -1,14 +1,18 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/cobra/doc"
 	"golang.org/x/term"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/selfupdate"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/updatecheck"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
 
@@ -20,13 +24,25 @@ local telemetry, and writes Wazuh-compatible JSON logs without requiring an
 Beacon-hosted backend.`,
 	Version: version.GetVersion(),
 	Run: func(cmd *cobra.Command, args []string) {
+		maybePrintRootUpdateNotice(cmd)
 		printRootSplash(cmd)
 	},
 }
 
 const (
 	beaconPurple = "\x1b[38;5;141m"
+	beaconOrange = "\x1b[38;5;208m"
 	resetColor   = "\x1b[0m"
+
+	beaconCLIChangelogURL = "https://docs.beacon.sh/changelog/cli"
+)
+
+var (
+	newRootVersionChecker = func(currentVersion string) versionChecker {
+		return updatecheck.DefaultChecker(currentVersion)
+	}
+	rootUpdateCheckTimeout = 2 * time.Second
+	rootDetectInstall      = selfupdate.DetectInstall
 )
 
 var beaconBanner = []string{
@@ -36,6 +52,47 @@ var beaconBanner = []string{
 	"██╔══██╗██╔══╝  ██╔══██║██║     ██║   ██║██║╚██╗██║",
 	"██████╔╝███████╗██║  ██║╚██████╗╚██████╔╝██║ ╚████║",
 	"╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝",
+}
+
+func maybePrintRootUpdateNotice(cmd *cobra.Command) {
+	in, inOK := cmd.InOrStdin().(*os.File)
+	out, outOK := cmd.OutOrStdout().(*os.File)
+	if !inOK || !outOK || !isTerminal(in) || !isTerminal(out) {
+		return
+	}
+
+	parent := cmd.Context()
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, rootUpdateCheckTimeout)
+	defer cancel()
+
+	result, err := newRootVersionChecker(version.GetVersion()).Check(ctx)
+	if err != nil || !result.UpdateAvailable {
+		return
+	}
+	printRootUpdateNotice(out, result, shouldUseColor(out), rootDetectInstall())
+}
+
+func printRootUpdateNotice(out io.Writer, result updatecheck.Result, color bool, install selfupdate.Install) {
+	if color {
+		fmt.Fprint(out, beaconOrange)
+	}
+	fmt.Fprintf(out, "Update available · %s → %s\n", result.CurrentVersion, result.LatestVersion)
+	if color {
+		fmt.Fprint(out, resetColor)
+	}
+	fmt.Fprintf(out, "Release notes: %s\n", beaconCLIChangelogURL)
+	switch install.Kind {
+	case selfupdate.InstallHomebrew:
+		fmt.Fprintln(out, "Update with: brew upgrade beacon")
+	case selfupdate.InstallSystemPkg:
+		fmt.Fprintln(out, "Update with: sudo beacon endpoint update --apply")
+	default:
+		fmt.Fprintln(out, "Update with: beacon endpoint update")
+	}
+	fmt.Fprintln(out)
 }
 
 func printRootSplash(cmd *cobra.Command) {
