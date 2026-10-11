@@ -38,6 +38,9 @@ import (
 // trace list and dashboard show the session as shared. That event is inferred bookkeeping: no
 // harness collected it.
 
+// errShareNothingYet is a session with no events to share yet. --follow waits for some.
+var errShareNothingYet = errors.New("has nothing to share yet")
+
 // SessionSharedAction is the runtime-log action recorded after a session is shared or refreshed.
 const SessionSharedAction = "session.shared"
 
@@ -76,6 +79,8 @@ type shareOptions struct {
 	key        string
 	authURL    string
 	jsonOutput bool
+	follow     bool
+	interval   time.Duration
 	current    bool
 	list       bool
 	print      bool
@@ -161,6 +166,8 @@ func init() {
 	f.BoolVar(&shareOpts.list, "list", false, "List the sessions that could be shared, newest first, and share nothing")
 	f.IntVar(&shareOpts.limit, "limit", 20, "With --list, the most sessions to show (0 for all)")
 	f.BoolVar(&shareOpts.yes, "yes", false, "Share publicly without asking")
+	f.BoolVar(&shareOpts.follow, "follow", false, "Keep uploading the session's new events until it ends or Ctrl+C")
+	f.DurationVar(&shareOpts.interval, "interval", shareFollowDefaultInterval, "With --follow, how often to check the session for new events")
 	shareCmd.MarkFlagsMutuallyExclusive("session", "source-path", "cwd", "current")
 }
 
@@ -223,7 +230,7 @@ func runShare(cmd *cobra.Command) error {
 	}
 	readAt := shareNow()
 	payload, err := buildSharePayload(subject)
-	if err != nil {
+	if err != nil && !(shareOpts.follow && errors.Is(err, errShareNothingYet)) {
 		return err
 	}
 	if cmd.Flags().Changed("visibility") {
@@ -241,6 +248,13 @@ func runShare(cmd *cobra.Command) error {
 	client, err := newShareClient()
 	if err != nil {
 		return err
+	}
+	if shareOpts.follow {
+		visibility := ""
+		if cmd.Flags().Changed("visibility") {
+			visibility = shareOpts.visibility
+		}
+		return runShareFollow(cmd, client, subject, visibility)
 	}
 	if !shareOpts.jsonOutput {
 		fmt.Fprintf(errOut, "Sharing %s session %s (%d events)%s.\n", subject.session.Harness, subject.session.ID, len(payload.Events), shareSourceNote(subject))
@@ -379,7 +393,12 @@ func validateShareFlags(cmd *cobra.Command) error {
 			return errors.New("--list shows candidates; combine it with --cwd or --harness, not --session, --source-path or --current")
 		case shareOpts.printOnly():
 			return errors.New("--list and --print cannot be combined")
+		case shareOpts.follow:
+			return errors.New("--list and --follow cannot be combined")
 		}
+	}
+	if shareOpts.follow && shareOpts.printOnly() {
+		return errors.New("--follow uploads; it cannot be combined with --print")
 	}
 	if shareOpts.limit < 0 {
 		return errors.New("--limit cannot be negative")
@@ -860,6 +879,11 @@ func shareEvents(subject shareSubject) (shareSubject, []schema.Event, error) {
 	// The store lost the session, or cannot be read (locked, corrupt, no permission): the runtime
 	// log may still have it.
 	logSubject, logErr := resolveShareLog(subject.session)
+	if logErr == nil && !errors.Is(err, handoff.ErrNotFound) && !shareHasProjectable(logSubject.logEvents) {
+		// The log holds nothing of the session but Beacon's own bookkeeping (a session.shared
+		// record from an earlier upload): it is no copy of the session, so the store's error stands.
+		logErr = fmt.Errorf("%s session %s is not in the runtime log %s", subject.session.Harness, subject.session.ID, shareLogPath())
+	}
 	if logErr != nil {
 		if errors.Is(err, handoff.ErrNotFound) {
 			return subject, nil, logErr
@@ -867,6 +891,16 @@ func shareEvents(subject shareSubject) (shareSubject, []schema.Event, error) {
 		return subject, nil, fmt.Errorf("read %s session %s: %w (and the runtime log: %v)", subject.session.Harness, subject.session.ID, err, logErr)
 	}
 	return logSubject, logSubject.logEvents, nil
+}
+
+// shareHasProjectable reports whether any of events would be carried by a shared trace.
+func shareHasProjectable(events []schema.Event) bool {
+	for _, event := range events {
+		if asymptoteobserve.ShareProjects(event) {
+			return true
+		}
+	}
+	return false
 }
 
 func buildSharePayload(subject shareSubject) (sharePayload, error) {
@@ -882,7 +916,7 @@ func buildSharePayload(subject shareSubject) (sharePayload, error) {
 		GeneratedAt:      shareNow(),
 	})
 	if len(bundle.Events) == 0 {
-		return sharePayload{}, fmt.Errorf("%s session %s has nothing to share yet", session.Harness, session.ID)
+		return sharePayload{}, fmt.Errorf("%s session %s %w", session.Harness, session.ID, errShareNothingYet)
 	}
 	// Visibility is set only when the person names one, so a re-share keeps the trace's own.
 	trace := asymptoteobserve.NewShareTrace(bundle, "")
