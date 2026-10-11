@@ -66,10 +66,10 @@ To see exactly what would be uploaded without uploading anything, run the same c
 On success the output is one JSON document:
 
 ```json
-{"ok":true,"data":{"shared_url":"https://beacon.sh/s/...","visibility":"direct","external_id":"claude_code:...","message_count":42,"uploaded":42,"selected_by":"env"}}
+{"ok":true,"data":{"shared_url":"https://beacon.sh/s/...","visibility":"direct","external_id":"claude_code:...","event_count":42,"uploaded":42,"selected_by":"env"}}
 ```
 
-Reply with `shared_url` and its visibility, and say how many messages it holds. If
+Reply with `shared_url` and its visibility, and say how many events it holds. If
 `selected_by` is `recent`, mention which session was shared (the `external_id`), since Beacon
 picked the newest session in the directory rather than one it knew was this one.
 
