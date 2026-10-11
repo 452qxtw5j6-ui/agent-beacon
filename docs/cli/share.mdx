@@ -255,7 +255,7 @@ agent:
 
 ## Local record
 
-After an upload, `beacon share` writes one `session.shared` event to the runtime log, in the session's own timeline. It carries the link, the visibility and when the session was shared (and refreshed), so [`beacon endpoint traces list --state shared`](/cli/endpoint-traces) and the local dashboard show the session as shared. The event is marked `event.fidelity=inferred` and has no collection method, because no runtime reported it. It is not itself uploaded with the trace.
+After an upload, `beacon share` writes one `session.shared` event to the runtime log, in the session's own timeline. It carries the link, the visibility and when the session was shared (and refreshed), so [`beacon endpoint traces list --state shared`](/cli/endpoint-traces) and the local dashboard show the session as shared. A shared session with newer local activity shows as stale; `--state shared` still lists it, and `--state stale` lists only those. The event is marked `event.fidelity=inferred` and has no collection method, because no runtime reported it. It is not itself uploaded with the trace.
 
 ## Output
 

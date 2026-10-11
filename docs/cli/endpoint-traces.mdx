@@ -86,7 +86,7 @@ All commands accept:
 |------|-------------|
 | `--query <text>`, `-q <text>` | Filter traces by text |
 | `--page <n>` | Page number for trace listing. Defaults to `1` |
-| `--state <state>` | Filter by sharing state: `local_only`, `shared` for sessions published with [`beacon share`](/cli/share), or `stale` for shared sessions with newer local activity |
+| `--state <state>` | Filter by sharing state: `local_only`, `shared` for sessions published with [`beacon share`](/cli/share) (including stale ones), or `stale` for only the shared sessions with newer local activity |
 | `--visibility <visibility>` | Filter by sharing visibility: `private` for local-only traces, or the `public`, `direct` or `private` a shared trace was given |
 
 `search` also accepts:

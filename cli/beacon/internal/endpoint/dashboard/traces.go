@@ -875,10 +875,20 @@ func updateContentSummary(summary *TraceContentSummaryV1, info *schema.ContentIn
 	}
 }
 
+// sharingStateMatches is the --state filter. "stale" is a kind of "shared" (published, with newer
+// local activity), so asking for shared sessions includes stale ones and "stale" narrows to them.
+// The history query (sharingCondition) applies the same rule.
+func sharingStateMatches(state, want string) bool {
+	if strings.EqualFold(want, "shared") {
+		return strings.EqualFold(state, "shared") || strings.EqualFold(state, "stale")
+	}
+	return strings.EqualFold(state, want)
+}
+
 func filterTraceSummaries(traces map[string]*traceAggregate, query TraceQuery) []TraceSummaryV1 {
 	out := make([]TraceSummaryV1, 0, len(traces))
 	for _, agg := range traces {
-		if query.State != "" && !strings.EqualFold(agg.summary.Sharing.State, query.State) {
+		if query.State != "" && !sharingStateMatches(agg.summary.Sharing.State, query.State) {
 			continue
 		}
 		if query.Visibility != "" && !strings.EqualFold(agg.summary.Sharing.Visibility, query.Visibility) {

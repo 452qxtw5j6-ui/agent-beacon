@@ -292,3 +292,42 @@ func TestSharingStateAcrossARotatedLog(t *testing.T) {
 		t.Fatal("trace list missed rot1")
 	}
 }
+
+// "stale" is a kind of "shared": --state shared lists a shared session with newer activity, and
+// --state stale narrows to it, on the JSONL scan and on the history alike.
+func TestStateSharedIncludesStale(t *testing.T) {
+	path := newTestLog(t, parityFixture())
+	ids := func(state string) map[string]bool {
+		t.Helper()
+		list, err := ReadTraceList(path, TraceQuery{State: state, Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]bool{}
+		for _, trace := range list.Traces {
+			got[trace.ID] = true
+		}
+		return got
+	}
+	check := func(name string) {
+		t.Helper()
+		shared, stale, upper := ids("shared"), ids("stale"), ids("SHARED")
+		if !shared["session:claude_code:s7"] || !shared["session:claude_code:s8"] {
+			t.Fatalf("%s: --state shared = %v, want the stale s7 and the current s8", name, shared)
+		}
+		if !stale["session:claude_code:s7"] || stale["session:claude_code:s8"] {
+			t.Fatalf("%s: --state stale = %v, want only s7", name, stale)
+		}
+		if len(upper) != len(shared) {
+			t.Fatalf("%s: --state SHARED = %v, want the same as shared", name, upper)
+		}
+		if local := ids("local_only"); local["session:claude_code:s7"] || local["session:claude_code:s8"] {
+			t.Fatalf("%s: --state local_only = %v", name, local)
+		}
+	}
+	withoutHistory(t)
+	check("jsonl")
+	withHistory(t)
+	optIn(t, path)
+	check("history")
+}
