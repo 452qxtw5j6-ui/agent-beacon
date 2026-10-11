@@ -153,14 +153,24 @@ func TestShareDryRunPrintsThePayloadWithoutNetwork(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 		t.Fatalf("payload is not JSON: %v\n%s", err, stdout)
 	}
-	if payload.ExternalID != "claude_code:"+shareTestSession || payload.Trace.AgentID != "claude_code" {
-		t.Fatalf("identity = %q %q", payload.ExternalID, payload.Trace.AgentID)
+	if payload.ExternalID != "claude_code:"+shareTestSession || payload.Trace.Summary.Harness.Name != "claude_code" {
+		t.Fatalf("identity = %q %q", payload.ExternalID, payload.Trace.Summary.Harness.Name)
 	}
-	if payload.Trace.Title != "Fix the login test" || payload.Trace.Visibility != "" || payload.Trace.ProjectName != "app" {
+	if payload.Trace.SchemaVersion != asymptoteobserve.TraceSchemaVersion || payload.Trace.Title != "Fix the login test" || payload.Trace.Visibility != "" ||
+		payload.Trace.Summary.Project == nil || payload.Trace.Summary.Project.Name != "app" {
 		t.Fatalf("trace = %+v", payload.Trace)
 	}
-	if len(payload.Messages) != 4 {
-		t.Fatalf("messages = %d: %s", len(payload.Messages), stdout)
+	if len(payload.Events) != 4 {
+		t.Fatalf("events = %d: %s", len(payload.Events), stdout)
+	}
+	for i, event := range payload.Events {
+		if event.Number != i+1 || event.ID == "" {
+			t.Fatalf("event %d = %+v", i, event)
+		}
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout), &raw); err != nil || raw["trace"] == nil || raw["events"] == nil {
+		t.Fatalf("payload keys = %v (err %v)", raw, err)
 	}
 	if strings.Contains(stdout, env.home) {
 		t.Fatalf("the payload names the local home directory:\n%s", stdout)
@@ -173,8 +183,16 @@ func TestShareDryRunPrintsThePayloadWithoutNetwork(t *testing.T) {
 	}
 	// --dry-run is the same, and --session takes a prefix.
 	again, _, err := runShareCommand(t, "--session", shareTestSession[:8], "--dry-run", "--log-path", env.logPath)
-	if err != nil || again != stdout {
-		t.Fatalf("--dry-run --session prefix differs (err %v)", err)
+	var second sharePayload
+	if err != nil || json.Unmarshal([]byte(again), &second) != nil {
+		t.Fatalf("--dry-run --session prefix: %v\n%s", err, again)
+	}
+	// Only the generation time differs between two runs.
+	payload.Trace.Provenance.GeneratedAt, second.Trace.Provenance.GeneratedAt = "", ""
+	first, _ := json.Marshal(payload)
+	repeat, _ := json.Marshal(second)
+	if string(first) != string(repeat) {
+		t.Fatalf("--dry-run --session prefix differs:\n%s\n%s", first, repeat)
 	}
 }
 
@@ -205,7 +223,7 @@ func TestShareResolvesSessionsBySourcePathAndFromTheLog(t *testing.T) {
 		t.Fatalf("--cwd from log: %v", err)
 	}
 	var payload sharePayload
-	if err := json.Unmarshal([]byte(stdout), &payload); err != nil || payload.ExternalID != "gemini_cli:gem-session-1" || len(payload.Messages) != 1 {
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil || payload.ExternalID != "gemini_cli:gem-session-1" || len(payload.Events) != 1 {
 		t.Fatalf("log payload = %+v (err %v)", payload, err)
 	}
 
@@ -234,7 +252,8 @@ type fakeShareServer struct {
 	mu       sync.Mutex
 	server   *httptest.Server
 	trace    *asymptoteobserve.ShareTraceV1
-	messages []asymptoteobserve.ShareMessageV1
+	events   []asymptoteobserve.TraceEventV1
+	created  string
 	requests []string
 	auth     map[string]bool
 }
@@ -261,41 +280,45 @@ func newFakeShareServer(t *testing.T) *fakeShareServer {
 			if trace.Visibility == "" {
 				trace.Visibility = "direct"
 			}
+			if created {
+				// beacon.sh stamps the trace when it creates it; the test clock stands in for it.
+				f.created = shareNow().UTC().Format(time.RFC3339)
+			}
 			f.trace = &trace
-			fmt.Fprintf(w, `{"id":"k3xabc","external_id":%q,"url":"https://beacon.sh/s/k3xabc","visibility":%q,"message_count":%d,"created":%v}`, id, trace.Visibility, len(f.messages), created)
-		case r.Method == http.MethodPost && strings.HasSuffix(id, "/messages/batch"):
+			fmt.Fprintf(w, `{"id":"k3xabc","external_id":%q,"url":"https://beacon.sh/s/k3xabc","visibility":%q,"event_count":%d,"created":%v}`, id, trace.Visibility, len(f.events), created)
+		case r.Method == http.MethodPost && strings.HasSuffix(id, "/events/batch"):
 			zr, err := gzip.NewReader(r.Body)
 			if err != nil {
 				http.Error(w, "want gzip", 400)
 				return
 			}
 			data, _ := io.ReadAll(zr)
-			var batch asymptoteobserve.ShareMessagesBatchV1
+			var batch asymptoteobserve.ShareEventsBatchV1
 			_ = json.Unmarshal(data, &batch)
-			for _, m := range batch.Messages {
+			for _, e := range batch.Events {
 				replaced := false
-				for i := range f.messages {
-					if f.messages[i].ID == m.ID {
-						f.messages[i], replaced = m, true
+				for i := range f.events {
+					if f.events[i].ID == e.ID {
+						f.events[i], replaced = e, true
 					}
 				}
 				if !replaced {
-					f.messages = append(f.messages, m)
+					f.events = append(f.events, e)
 				}
 			}
-			fmt.Fprintf(w, `{"accepted":%d,"message_count":%d}`, len(batch.Messages), len(f.messages))
+			fmt.Fprintf(w, `{"upserted":%d,"event_count":%d}`, len(batch.Events), len(f.events))
 		case r.Method == http.MethodGet:
 			if f.trace == nil {
 				http.NotFound(w, r)
 				return
 			}
-			last, maxOrder := "", 0
-			for _, m := range f.messages {
-				if m.Order > maxOrder {
-					last, maxOrder = m.ID, m.Order
+			last, maxNumber := "", 0
+			for _, e := range f.events {
+				if e.Number > maxNumber {
+					last, maxNumber = e.ID, e.Number
 				}
 			}
-			fmt.Fprintf(w, `{"id":"k3xabc","url":"https://beacon.sh/s/k3xabc","visibility":%q,"message_count":%d,"last_message_id":%q,"max_order":%d}`, f.trace.Visibility, len(f.messages), last, maxOrder)
+			fmt.Fprintf(w, `{"id":"k3xabc","url":"https://beacon.sh/s/k3xabc","visibility":%q,"event_count":%d,"last_event_id":%q,"max_number":%d,"created_at":%q}`, f.trace.Visibility, len(f.events), last, maxNumber, f.created)
 		default:
 			http.NotFound(w, r)
 		}
@@ -326,15 +349,15 @@ func TestShareUploadsAndRecordsTheShareLocally(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil || !result.OK {
 		t.Fatalf("output = %s (err %v)", stdout, err)
 	}
-	want := shareResult{TraceID: "k3xabc", ExternalID: "claude_code:" + shareTestSession, SharedURL: "https://beacon.sh/s/k3xabc", Visibility: "direct", AgentID: "claude_code", MessageCount: 4, Uploaded: 4, SelectedBy: "recent"}
+	want := shareResult{TraceID: "k3xabc", ExternalID: "claude_code:" + shareTestSession, SharedURL: "https://beacon.sh/s/k3xabc", Visibility: "direct", Harness: "claude_code", EventCount: 4, Uploaded: 4, SelectedBy: "recent"}
 	if result.Data != want {
 		t.Fatalf("result = %+v, want %+v", result.Data, want)
 	}
 	if strings.Contains(stdout+stderr, "bcn_cli_secret_token") {
 		t.Fatal("the account token reached the output")
 	}
-	if !srv.auth["Bearer bcn_cli_secret_token"] || len(srv.messages) != 4 || srv.trace.SchemaVersion != asymptoteobserve.ShareSchemaVersion {
-		t.Fatalf("server saw auth=%v messages=%d trace=%+v", srv.auth, len(srv.messages), srv.trace)
+	if !srv.auth["Bearer bcn_cli_secret_token"] || len(srv.events) != 4 || srv.trace.SchemaVersion != asymptoteobserve.TraceSchemaVersion {
+		t.Fatalf("server saw auth=%v events=%d trace=%+v", srv.auth, len(srv.events), srv.trace)
 	}
 	if srv.trace.Visibility != "" && srv.trace.Visibility != "direct" {
 		t.Fatalf("visibility sent = %q", srv.trace.Visibility)
@@ -364,20 +387,20 @@ func TestShareUploadsAndRecordsTheShareLocally(t *testing.T) {
 	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
 		t.Fatal(err)
 	}
-	if len(srv.messages) != 4 {
-		t.Fatalf("re-share duplicated messages: %d", len(srv.messages))
+	if len(srv.events) != 4 {
+		t.Fatalf("re-share duplicated events: %d", len(srv.events))
 	}
 
 	// A refresh sends what the server does not have, plus the call it holds without a result
 	// (the prompt and the Bash call are on the server; the call is re-sent with its result).
 	srv.mu.Lock()
-	srv.messages = srv.messages[:2]
+	srv.events = srv.events[:2]
 	srv.mu.Unlock()
 	stdout, _, err = runShareCommand(t, "refresh", "claude_code:"+shareTestSession, "--json", "--log-path", env.logPath)
 	if err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if err := json.Unmarshal([]byte(stdout), &result); err != nil || result.Data.Uploaded != 3 || result.Data.MessageCount != 4 {
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil || result.Data.Uploaded != 3 || result.Data.EventCount != 4 {
 		t.Fatalf("refresh result = %s (err %v)", stdout, err)
 	}
 }
@@ -461,27 +484,6 @@ func TestShareRefreshParsesExternalIDs(t *testing.T) {
 			t.Errorf("parseShareExternalID(%q) = %q %q %v, want %+v", in, h, s, ok, want)
 		}
 	}
-	if got := messagesAfter([]asymptoteobserve.ShareMessageV1{{ID: "a"}, {ID: "b"}, {ID: "c"}}, "b", 2); len(got) != 2 || got[0].ID != "b" {
-		t.Fatalf("messagesAfter should resend the last uploaded message: %+v", got)
-	}
-	// A call uploaded before its result arrived is re-sent so the completion's command and diff
-	// reach the server.
-	call := func(id, callID string) asymptoteobserve.ShareMessageV1 {
-		return asymptoteobserve.ShareMessageV1{ID: id, Parts: []asymptoteobserve.SharePartV1{{Type: asymptoteobserve.SharePartToolCall, Content: &asymptoteobserve.ShareToolCallContent{CallID: callID}}}}
-	}
-	result := func(id, callID string) asymptoteobserve.ShareMessageV1 {
-		return asymptoteobserve.ShareMessageV1{ID: id, Parts: []asymptoteobserve.SharePartV1{{Type: asymptoteobserve.SharePartToolResult, Content: &asymptoteobserve.ShareToolResultContent{CallID: callID}}}}
-	}
-	msgs := []asymptoteobserve.ShareMessageV1{call("c1", "t1"), result("r1", "t1"), call("c2", "t2"), {ID: "text"}, result("r2", "t2"), {ID: "later"}}
-	if got := messagesAfter(msgs, "text", 0); len(got) != 4 || got[0].ID != "c2" {
-		t.Fatalf("open call not re-sent: %+v", got)
-	}
-	if got := messagesAfter(msgs, "r2", 0); len(got) != 2 || got[0].ID != "r2" {
-		t.Fatalf("resolved calls should not be re-sent: %+v", got)
-	}
-	if got := messagesAfter([]asymptoteobserve.ShareMessageV1{{ID: "a"}, {ID: "b"}}, "zzz", 9); len(got) != 2 {
-		t.Fatalf("unknown last id should resend everything: %+v", got)
-	}
 }
 
 func TestShareLeavesALocalGitRemoteOut(t *testing.T) {
@@ -496,13 +498,13 @@ func TestShareLeavesALocalGitRemoteOut(t *testing.T) {
 		if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
 			t.Fatal(err)
 		}
-		if payload.Trace.GitRemoteURL != "" || strings.Contains(stdout, env.home) {
+		if payload.Trace.Summary.Repository != nil || strings.Contains(stdout, env.home) {
 			t.Fatalf("remote %q leaked into the payload: %+v", remote, payload.Trace)
 		}
 	}
 	shareGitRemote = func(string) string { return "https://tok@github.com/acme/app.git" }
 	stdout, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", env.logPath)
-	if err != nil || !strings.Contains(stdout, `"git_remote_url": "https://github.com/acme/app.git"`) {
+	if err != nil || !strings.Contains(stdout, `"remote_url": "https://github.com/acme/app.git"`) {
 		t.Fatalf("network remote: err=%v\n%s", err, stdout)
 	}
 }
@@ -531,11 +533,11 @@ func TestShareRefreshRefusesToDuplicateFromAnotherSource(t *testing.T) {
 		}
 	}
 	_, _, err := runShareCommand(t, "refresh", "claude_code:"+shareTestSession, "--log-path", env.logPath)
-	if err == nil || !strings.Contains(err.Error(), "duplicate every message") {
+	if err == nil || !strings.Contains(err.Error(), "duplicate every event") {
 		t.Fatalf("refresh err = %v", err)
 	}
-	if len(srv.messages) != 4 {
-		t.Fatalf("server holds %d messages after a refused refresh", len(srv.messages))
+	if len(srv.events) != 4 {
+		t.Fatalf("server holds %d events after a refused refresh", len(srv.events))
 	}
 }
 
@@ -595,12 +597,163 @@ func TestShareAlignSwitchesFromTheLogToTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := &asymptoteobserve.ShareTraceStateV1{LastMessageID: stored.Messages[len(stored.Messages)-1].ID}
+	state := &asymptoteobserve.ShareTraceStateV1{LastEventID: stored.Events[len(stored.Events)-1].ID}
 	subject, payload, err := alignShareSource(logSubject, logPayload, state)
 	if err != nil {
 		t.Fatalf("align: %v", err)
 	}
-	if subject.fromLog || !hasShareMessage(payload.Messages, state.LastMessageID) {
+	if subject.fromLog || !hasShareEvent(payload.Events, state.LastEventID) {
 		t.Fatalf("did not switch to the store copy: fromLog=%v", subject.fromLog)
+	}
+}
+
+func TestSharePayloadRelatesAHandoff(t *testing.T) {
+	env := newShareEnv(t)
+	events := shareFixtureEvents(env.projectDir)
+	handoffEvent := events[0]
+	handoffEvent.Event.Action = "session.handoff"
+	handoffEvent.Event.Category = "session"
+	handoffEvent.Prompt = nil
+	handoffEvent.Handoff = &schema.HandoffInfo{SourceHarness: "codex", SourceSessionID: "rollout-1"}
+	stubHandoffSources(t, stubHandoffSource{
+		harness:  handoff.HarnessClaude,
+		sessions: []handoff.Session{{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()}},
+		events:   append([]schema.Event{handoffEvent}, events...),
+	})
+	stdout, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", env.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload sharePayload
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Trace.RelatedTo != asymptoteobserve.ShareExternalID("codex", "rollout-1") || payload.Trace.RelationshipType != asymptoteobserve.ShareRelationshipHandoff {
+		t.Fatalf("relation = %q %q", payload.Trace.RelatedTo, payload.Trace.RelationshipType)
+	}
+}
+
+// shareFixtureInLog writes the fixture session to the runtime log as hook events.
+func shareFixtureInLog(t *testing.T, env *shareEnv) {
+	t.Helper()
+	for _, event := range shareFixtureEvents(env.projectDir) {
+		event.Harness.CollectionMethod = schema.CollectionMethodHook
+		if _, err := writer.AppendEvent(event, writer.Options{Path: env.logPath, UserMode: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestShareReadsTheLogWhenTheStoreCannotBeRead(t *testing.T) {
+	env := newShareEnv(t)
+	denied := fmt.Errorf("open store: %w", os.ErrPermission)
+	// The store cannot even list its sessions; the log has the session.
+	stubHandoffSources(t, stubHandoffSource{harness: handoff.HarnessClaude, err: denied, eventsErr: denied})
+	shareFixtureInLog(t, env)
+	for _, args := range [][]string{
+		{"--cwd", env.projectDir},
+		{"--session", shareTestSession},
+		{"refresh", shareTestSession},
+	} {
+		stdout, _, err := runShareCommand(t, append(args, "--print", "--log-path", env.logPath)...)
+		if err != nil {
+			t.Fatalf("share %v: %v", args, err)
+		}
+		var payload sharePayload
+		if err := json.Unmarshal([]byte(stdout), &payload); err != nil || len(payload.Events) != 4 {
+			t.Fatalf("share %v: payload = %s (err %v)", args, stdout, err)
+		}
+	}
+
+	// The store lists the session but cannot read it: the log copy is shared.
+	stubHandoffSources(t, stubHandoffSource{
+		harness:   handoff.HarnessClaude,
+		sessions:  []handoff.Session{{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()}},
+		eventsErr: denied,
+	})
+	if _, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", env.logPath); err != nil {
+		t.Fatalf("listed but unreadable: %v", err)
+	}
+
+	// With nothing in the log either, the store's error is the one reported.
+	empty := filepath.Join(env.home, "empty.jsonl")
+	_, _, err := runShareCommand(t, "--cwd", env.projectDir, "--print", "--log-path", empty)
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Fatalf("err = %v, want the store's permission error", err)
+	}
+	stubHandoffSources(t, stubHandoffSource{harness: handoff.HarnessClaude, err: denied, eventsErr: denied})
+	_, _, err = runShareCommand(t, "--session", shareTestSession, "--print", "--log-path", empty)
+	if err == nil || !strings.Contains(err.Error(), "permission") {
+		t.Fatalf("--session err = %v, want the store's permission error", err)
+	}
+}
+
+func TestShareRefusesAnAmbiguousPrefix(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	twin := shareTestSession[:8] + "-ffff-4fff-8fff-000000000002"
+	stubHandoffSources(t, stubHandoffSource{
+		harness: handoff.HarnessClaude,
+		sessions: []handoff.Session{
+			{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+			{Harness: handoff.HarnessClaude, ID: twin, Directory: env.projectDir, UpdatedAt: time.Now()},
+		},
+		events: shareFixtureEvents(env.projectDir),
+	})
+	// Only one of the two is in the runtime log.
+	shareFixtureInLog(t, env)
+	for _, args := range [][]string{
+		{"--session", shareTestSession[:8]},
+		{"refresh", shareTestSession[:8]},
+	} {
+		_, _, err := runShareCommand(t, append(args, "--log-path", env.logPath)...)
+		var ambiguous *handoff.AmbiguousError
+		if !errors.As(err, &ambiguous) {
+			t.Fatalf("share %v: err = %v, want the ambiguity", args, err)
+		}
+	}
+	if len(srv.requests) != 0 {
+		t.Fatalf("requests = %v", srv.requests)
+	}
+}
+
+func TestShareAgainKeepsTheShareDate(t *testing.T) {
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	first := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+	shareNow = func() time.Time { return first }
+	t.Cleanup(func() { shareNow = time.Now })
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	later := first.Add(3 * time.Hour)
+	shareNow = func() time.Time { return later }
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("share again: %v\n%s", err, stderr)
+	}
+	list, err := dashboard.ReadTraceList(env.logPath, dashboard.TraceQuery{State: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Traces) != 1 {
+		t.Fatalf("shared traces = %+v", list.Traces)
+	}
+	sharing := list.Traces[0].Sharing
+	if sharing.SharedAt != first.Format(time.RFC3339) || sharing.LastRefreshedAt != later.Format(time.RFC3339) {
+		t.Fatalf("sharing = %+v, want shared_at %s and last_refreshed_at %s", sharing, first.Format(time.RFC3339), later.Format(time.RFC3339))
+	}
+	data, err := os.ReadFile(env.logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var second schema.Event
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &second); err != nil {
+		t.Fatal(err)
+	}
+	if second.Raw["shared_at"] != first.Format(time.RFC3339) || !strings.Contains(second.Message, "refreshed") {
+		t.Fatalf("second record = %q %+v", second.Message, second.Raw)
 	}
 }

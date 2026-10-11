@@ -31,7 +31,8 @@ import (
 // only part of the CLI that uploads session content on request, so it is explicit about it: the
 // session it picked is named before anything is sent, --print shows the exact payload without a
 // network call, a public share asks first, and the content goes through the same sanitizer the
-// runtime log uses before it is projected into messages (asymptoteobserve.BuildShareMessages).
+// runtime log uses before it is projected into a beacon.trace.v1 trace
+// (asymptoteobserve.BuildShareBundle), the projection the local dashboard shows.
 //
 // After an upload it records one session.shared event in the session's own timeline, so the local
 // trace list and dashboard show the session as shared. That event is inferred bookkeeping: no
@@ -118,13 +119,14 @@ from the events it already receives.`,
 
 var shareRefreshCmd = &cobra.Command{
 	Use:   "refresh [external-id|session-id]",
-	Short: "Upload a shared session's new messages",
-	Long: `Upload the messages a session has gained since it was shared.
+	Short: "Upload a shared session's new events",
+	Long: `Upload the events a session has gained since it was shared.
 
 The argument is the trace's external id (<runtime>:<session-id>, as ` + "`beacon share --json`" + ` prints
 it) or a session id or unique prefix; without one, the session it runs inside, found the way
 ` + "`beacon share --current`" + ` finds it.
-beacon.sh reports the last message it has, and only the messages after it are sent. Re-sending is
+beacon.sh reports the last event it has, and only the events after it are sent (with that event and
+any tool call still waiting for its result). Re-sending is
 harmless, so a refresh that fails part way can simply be run again. The trace's visibility is not
 changed.`,
 	Args:         cobra.MaximumNArgs(1),
@@ -171,25 +173,31 @@ func shareJSONErrors(cmd *cobra.Command, err error) error {
 }
 
 type shareResult struct {
-	TraceID      string `json:"trace_id"`
-	ExternalID   string `json:"external_id"`
-	SharedURL    string `json:"shared_url"`
-	Visibility   string `json:"visibility"`
-	AgentID      string `json:"agent_id"`
-	MessageCount int    `json:"message_count"`
-	// Uploaded is how many messages this run sent; on a first share it equals the session's count.
+	TraceID    string `json:"trace_id"`
+	ExternalID string `json:"external_id"`
+	SharedURL  string `json:"shared_url"`
+	Visibility string `json:"visibility"`
+	Harness    string `json:"harness"`
+	EventCount int    `json:"event_count"`
+	// Uploaded is how many events this run sent; on a first share it equals the trace's count.
 	Uploaded int `json:"uploaded"`
 	// SelectedBy says how the session was chosen: session, source_path, env, active or recent.
 	SelectedBy string `json:"selected_by,omitempty"`
+	// sharedAt is when beacon.sh created the trace, for a refresh or re-share to record as the
+	// share date (empty when unknown).
+	sharedAt string
 }
 
-// sharePayload is what --print shows: the trace metadata of the PUT request and every message the
-// batch requests would carry, in order.
+// sharePayload is what --print shows: the external id the requests go to, the body of the PUT
+// request (trace) and every event the batch requests would carry (events), in order.
 type sharePayload struct {
-	ExternalID string                            `json:"external_id"`
-	Trace      asymptoteobserve.ShareTraceV1     `json:"trace"`
-	Messages   []asymptoteobserve.ShareMessageV1 `json:"messages"`
+	ExternalID string                          `json:"external_id"`
+	Trace      asymptoteobserve.ShareTraceV1   `json:"trace"`
+	Events     []asymptoteobserve.TraceEventV1 `json:"events"`
 }
+
+// harness is the normalized runtime name a trace's summary carries.
+func (p sharePayload) harness() string { return p.Trace.Summary.Harness.Name }
 
 func (o shareOptions) printOnly() bool { return o.print || o.dryRun }
 
@@ -220,7 +228,7 @@ func runShare(cmd *cobra.Command) error {
 		return writeIndentedJSON(cmd.OutOrStdout(), payload)
 	}
 	if payload.Trace.Visibility == asymptoteobserve.ShareVisibilityPublic && !shareOpts.yes {
-		if err := confirmPublicShare(errOut, subject.session, len(payload.Messages)); err != nil {
+		if err := confirmPublicShare(errOut, subject.session, len(payload.Events)); err != nil {
 			return err
 		}
 	}
@@ -229,12 +237,14 @@ func runShare(cmd *cobra.Command) error {
 		return err
 	}
 	if !shareOpts.jsonOutput {
-		fmt.Fprintf(errOut, "Sharing %s session %s (%d messages)%s.\n", subject.session.Harness, subject.session.ID, len(payload.Messages), shareSourceNote(subject))
+		fmt.Fprintf(errOut, "Sharing %s session %s (%d events)%s.\n", subject.session.Harness, subject.session.ID, len(payload.Events), shareSourceNote(subject))
 	}
 	ctx := commandContext(cmd)
-	if state, found, err := client.GetTrace(ctx, payload.ExternalID); err != nil {
+	state, found, err := client.GetTrace(ctx, payload.ExternalID)
+	if err != nil {
 		return err
-	} else if found {
+	}
+	if found {
 		if subject, payload, err = alignShareSource(subject, payload, state); err != nil {
 			return err
 		}
@@ -247,24 +257,28 @@ func runShare(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	uploaded, err := client.PutMessages(ctx, payload.ExternalID, payload.Messages)
+	uploaded, err := client.PostEvents(ctx, payload.ExternalID, asymptoteobserve.ShareEventsBatchV1{Events: payload.Events})
 	if err != nil {
-		return fmt.Errorf("the trace was created at %s, but uploading its messages failed (run the same command again to retry): %w", trace.URL, err)
+		return fmt.Errorf("the trace was created at %s, but uploading its events failed (run the same command again to retry): %w", trace.URL, err)
 	}
 	result := shareResult{
-		TraceID:      trace.ID,
-		ExternalID:   payload.ExternalID,
-		SharedURL:    trace.URL,
-		Visibility:   trace.Visibility,
-		AgentID:      payload.Trace.AgentID,
-		MessageCount: uploaded.MessageCount,
-		Uploaded:     len(payload.Messages),
-		SelectedBy:   subject.selectedBy,
+		TraceID:    trace.ID,
+		ExternalID: payload.ExternalID,
+		SharedURL:  trace.URL,
+		Visibility: trace.Visibility,
+		Harness:    payload.harness(),
+		EventCount: uploaded.EventCount,
+		Uploaded:   len(payload.Events),
+		SelectedBy: subject.selectedBy,
 	}
 	if uploaded.Batches == 0 {
-		result.MessageCount = trace.MessageCount
+		result.EventCount = trace.EventCount
 	}
-	if err := recordShareEvent(subject.session, result, false); err != nil {
+	// Sharing a trace that already exists updates it: the share date stays the trace's own.
+	if found {
+		result.sharedAt = state.CreatedAt
+	}
+	if err := recordShareEvent(subject.session, result, found); err != nil {
 		fmt.Fprintf(errOut, "warning: the session was shared, but the runtime log was not updated: %v\n", err)
 	}
 	return printShareResult(cmd, result)
@@ -317,80 +331,33 @@ func runShareRefresh(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	keepSharedTitle(cmd, &payload)
-	pending := messagesAfter(payload.Messages, state.LastMessageID, state.MaxOrder)
+	pending := asymptoteobserve.ShareEventsAfter(payload.Events, state.LastEventID, state.MaxNumber)
 	trace, err := client.PutTrace(ctx, payload.ExternalID, payload.Trace)
 	if err != nil {
 		return err
 	}
-	uploaded, err := client.PutMessages(ctx, payload.ExternalID, pending)
+	uploaded, err := client.PostEvents(ctx, payload.ExternalID, asymptoteobserve.ShareEventsBatchV1{Events: pending})
 	if err != nil {
 		return err
 	}
 	result := shareResult{
-		TraceID:      trace.ID,
-		ExternalID:   payload.ExternalID,
-		SharedURL:    trace.URL,
-		Visibility:   trace.Visibility,
-		AgentID:      payload.Trace.AgentID,
-		MessageCount: state.MessageCount,
-		Uploaded:     len(pending),
-		SelectedBy:   subject.selectedBy,
+		TraceID:    trace.ID,
+		ExternalID: payload.ExternalID,
+		SharedURL:  trace.URL,
+		Visibility: trace.Visibility,
+		Harness:    payload.harness(),
+		EventCount: state.EventCount,
+		Uploaded:   len(pending),
+		SelectedBy: subject.selectedBy,
 	}
 	if uploaded.Batches > 0 {
-		result.MessageCount = uploaded.MessageCount
+		result.EventCount = uploaded.EventCount
 	}
+	result.sharedAt = state.CreatedAt
 	if err := recordShareEvent(subject.session, result, true); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the trace was refreshed, but the runtime log was not updated: %v\n", err)
 	}
 	return printShareResult(cmd, result)
-}
-
-// messagesAfter returns the messages after the one beacon.sh reported last. With no last id it goes
-// by the order number. When the last id is not in this projection it returns everything; callers
-// run alignShareSource first, so that happens only for a projection from the same source whose
-// earlier messages changed, where an upsert by id changes nothing.
-func messagesAfter(messages []asymptoteobserve.ShareMessageV1, lastID string, maxOrder int) []asymptoteobserve.ShareMessageV1 {
-	end := -1
-	if lastID != "" {
-		for i, m := range messages {
-			if m.ID == lastID {
-				end = i
-				break
-			}
-		}
-		if end < 0 {
-			return messages
-		}
-	} else if maxOrder > 0 && maxOrder <= len(messages) {
-		end = maxOrder - 1
-	} else {
-		return messages
-	}
-	// A tool call gains its command, diff or path when its completion arrives, which updates the
-	// call message in place. Re-send from the earliest call the server holds without its result,
-	// and always the last message it holds; the server upserts by id, so a re-send is harmless.
-	return messages[firstOpenCall(messages[:end+1], end):]
-}
-
-// firstOpenCall is the index of the earliest tool_call in uploaded that has no tool_result among
-// them, or fallback when every call is resolved.
-func firstOpenCall(uploaded []asymptoteobserve.ShareMessageV1, fallback int) int {
-	resolved := map[string]bool{}
-	for _, m := range uploaded {
-		for _, part := range m.Parts {
-			if result, ok := part.Content.(*asymptoteobserve.ShareToolResultContent); ok && result.CallID != "" {
-				resolved[result.CallID] = true
-			}
-		}
-	}
-	for i, m := range uploaded {
-		for _, part := range m.Parts {
-			if call, ok := part.Content.(*asymptoteobserve.ShareToolCallContent); ok && call.CallID != "" && !resolved[call.CallID] {
-				return i
-			}
-		}
-	}
-	return fallback
 }
 
 func validateShareFlags(cmd *cobra.Command) error {
@@ -456,13 +423,13 @@ func shareDirectory() (string, error) {
 	return abs, nil
 }
 
-// alignShareSource keeps a re-share or refresh on the source the trace was first built from. Message
-// ids come from event ids, and the same session read from its runtime's store and from Beacon's
-// runtime log has different event ids, so uploading the other source would add a second copy of
-// every message. When the server's last message is not in this projection, the other source is
-// tried; when neither has it, the upload is refused rather than duplicated.
+// alignShareSource keeps a re-share or refresh on the source the trace was first built from. The
+// same session read from its runtime's store and from Beacon's runtime log has different event ids,
+// so uploading the other source would add a second copy of every event. When the server's last
+// event is not in this projection, the other source is tried; when neither has it, the upload is
+// refused rather than duplicated.
 func alignShareSource(subject shareSubject, payload sharePayload, state *asymptoteobserve.ShareTraceStateV1) (shareSubject, sharePayload, error) {
-	if state == nil || state.LastMessageID == "" || hasShareMessage(payload.Messages, state.LastMessageID) {
+	if state == nil || state.LastEventID == "" || hasShareEvent(payload.Events, state.LastEventID) {
 		return subject, payload, nil
 	}
 	var other shareSubject
@@ -478,11 +445,11 @@ func alignShareSource(subject shareSubject, payload sharePayload, state *asympto
 		other = logSubject
 	}
 	if other.session.ID != "" {
-		if otherPayload, err := buildSharePayload(other); err == nil && hasShareMessage(otherPayload.Messages, state.LastMessageID) {
+		if otherPayload, err := buildSharePayload(other); err == nil && hasShareEvent(otherPayload.Events, state.LastEventID) {
 			return other, otherPayload, nil
 		}
 	}
-	return subject, payload, fmt.Errorf("%s on beacon.sh was built from a different copy of this session than Beacon can read now (its store and the runtime log name messages differently), so uploading it would duplicate every message; delete the shared trace and share it again to start over", payload.ExternalID)
+	return subject, payload, fmt.Errorf("%s on beacon.sh was built from a different copy of this session than Beacon can read now (its store and the runtime log name events differently), so uploading it would duplicate every event; delete the shared trace and share it again to start over", payload.ExternalID)
 }
 
 // keepSharedTitle leaves an existing trace's title alone unless --title names a new one: the
@@ -494,9 +461,9 @@ func keepSharedTitle(cmd *cobra.Command, payload *sharePayload) {
 	}
 }
 
-func hasShareMessage(messages []asymptoteobserve.ShareMessageV1, id string) bool {
-	for _, m := range messages {
-		if m.ID == id {
+func hasShareEvent(events []asymptoteobserve.TraceEventV1, id string) bool {
+	for _, e := range events {
+		if e.ID == id {
 			return true
 		}
 	}
@@ -548,16 +515,27 @@ func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject,
 	if findErr == nil {
 		return shareSubject{session: session}, nil
 	}
-	var notFound *handoff.NotFoundError
-	if !errors.As(findErr, &notFound) {
+	// A prefix that names several sessions is the person's to narrow: falling back to the log
+	// would share whichever of them the log happens to hold.
+	var ambiguous *handoff.AmbiguousError
+	if errors.As(findErr, &ambiguous) {
 		return shareSubject{}, findErr
 	}
+	// Not in any store, or a store could not be read: the runtime log may have the session.
+	var notFound *handoff.NotFoundError
+	isNotFound := errors.As(findErr, &notFound)
 	logPath := shareLogPath()
 	session, events, found, err := handoff.LogSession(logPath, id, harness)
 	if err != nil {
+		if !isNotFound {
+			return shareSubject{}, findErr
+		}
 		return shareSubject{}, fmt.Errorf("read runtime log %s: %w", logPath, err)
 	}
 	if !found || (harness != "" && session.Harness != harness) {
+		if !isNotFound {
+			return shareSubject{}, findErr
+		}
 		return shareSubject{}, fmt.Errorf("%w; not in the runtime log %s either (`beacon share --list` shows what is available)", notFound, logPath)
 	}
 	return shareSubject{session: session, fromLog: true, logEvents: events}, nil
@@ -568,7 +546,8 @@ func resolveShareID(sources []handoff.Source, harness, id string) (shareSubject,
 //  1. BEACON_SESSION_ID (with BEACON_HARNESS), which the Claude Code hook exports to the agent's
 //     shell. Skipped under --cwd, which names another directory, and when --harness names another
 //     runtime (a Codex started from a Claude Code shell inherits Claude's variables). An id that is
-//     set but cannot be found is an error rather than a reason to share some other session.
+//     set but cannot be found, or set with a missing or unknown BEACON_HARNESS, is an error rather
+//     than a reason to share some other session.
 //  2. The session a Beacon hook last saw in the directory, from the active-session record.
 //  3. The most recent session in the directory.
 func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject, error) {
@@ -578,11 +557,18 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 	}
 	if strings.TrimSpace(shareOpts.cwd) == "" {
 		if id := strings.TrimSpace(shareGetenv(shareSessionEnv)); id != "" {
-			envHarness, herr := handoff.ParseHarness(shareGetenv(shareHarnessEnv))
-			if herr == nil && (harness == "" || envHarness == "" || envHarness == harness) {
-				if envHarness == "" {
-					envHarness = harness
-				}
+			// The two variables name one session together. A runtime name that is missing or
+			// unknown is an error, never a reason to share some other session; only --harness naming
+			// a different runtime passes over them on purpose.
+			rawHarness := strings.TrimSpace(shareGetenv(shareHarnessEnv))
+			if rawHarness == "" {
+				return shareSubject{}, fmt.Errorf("%s=%s is set but %s is not; set both, or name the session with --session", shareSessionEnv, id, shareHarnessEnv)
+			}
+			envHarness, herr := handoff.ParseHarness(rawHarness)
+			if herr != nil {
+				return shareSubject{}, fmt.Errorf("%s=%q: %w", shareHarnessEnv, rawHarness, herr)
+			}
+			if harness == "" || envHarness == harness {
 				subject, err := resolveShareID(sources, envHarness, id)
 				if err != nil {
 					return shareSubject{}, fmt.Errorf("%s=%s names this session, but it cannot be read yet: %w", shareSessionEnv, id, err)
@@ -592,30 +578,47 @@ func resolveShareCurrent(sources []handoff.Source, harness string) (shareSubject
 			}
 		}
 	}
-	if entryHarness, entryID, ok := shareActiveSession(dir, harness); ok {
+	candidates, err := shareCandidateList(sources, harness, dir, 1)
+	if err != nil {
+		return shareSubject{}, err
+	}
+	if entry, ok := shareActiveSession(dir, harness); ok && shareActiveIsNewest(entry, candidates) {
 		// A record whose session cannot be read (a runtime Beacon reads only from the log, whose
 		// events have rotated away) falls through to the directory's most recent session.
-		if subject, err := resolveShareID(sources, entryHarness, entryID); err == nil {
+		if subject, err := resolveShareID(sources, entry.Harness, entry.SessionID); err == nil {
 			subject.selectedBy = "active"
 			return subject, nil
 		}
 	}
-	candidates, err := shareCandidates(sources, harness, dir, 1)
-	if err != nil {
-		return shareSubject{}, err
-	}
 	if len(candidates) == 0 {
 		return shareSubject{}, shareNoSessionError(sources, harness, dir)
 	}
-	// A session of a runtime whose store Beacon reads is read from that store; one the store has
-	// lost since falls back to the log when its events are read (shareEvents).
-	session := candidates[0]
-	if handoff.ReadsStore(session.Harness) {
-		return shareSubject{session: session, selectedBy: "recent"}, nil
+	// A session listed by its runtime's store is read from that store; one the store has lost or
+	// cannot read since falls back to the log when its events are read (shareEvents). A session
+	// only the log listed is read from the log: its store may be unreadable.
+	candidate := candidates[0]
+	if !candidate.fromLog && handoff.ReadsStore(candidate.session.Harness) {
+		return shareSubject{session: candidate.session, selectedBy: "recent"}, nil
 	}
-	subject, err := resolveShareLog(session)
+	subject, err := resolveShareLog(candidate.session)
 	subject.selectedBy = "recent"
 	return subject, err
+}
+
+// shareActiveIsNewest reports whether the active-session entry may stand for this directory's
+// session: only hooks write the record, so a runtime Beacon sees only through OTLP or a store (an
+// OTLP-only or poll runtime) never updates it, and an older entry would otherwise win over that
+// runtime's newer session. The entry is used when it is the newest candidate itself, or was seen at
+// least as recently as the newest candidate was updated.
+func shareActiveIsNewest(entry activesession.Entry, candidates []shareCandidate) bool {
+	if len(candidates) == 0 {
+		return true
+	}
+	newest := candidates[0].session
+	if newest.Harness == entry.Harness && newest.ID == entry.SessionID {
+		return true
+	}
+	return !entry.LastSeen.Before(newest.UpdatedAt)
 }
 
 func resolveShareLog(session handoff.Session) (shareSubject, error) {
@@ -664,10 +667,10 @@ func evalSymlinks(path string) string {
 
 // shareActiveSession is the session a Beacon hook last saw in dir, limited to harness when it is
 // set, from the active-session record. Entries older than shareActiveMaxAge are ignored.
-func shareActiveSession(dir, harness string) (entryHarness, sessionID string, ok bool) {
+func shareActiveSession(dir, harness string) (activesession.Entry, bool) {
 	entries, err := activesession.Read(shareActiveSessionsPath())
 	if err != nil {
-		return "", "", false
+		return activesession.Entry{}, false
 	}
 	dir = activesession.CleanDir(dir)
 	now := shareNow()
@@ -679,9 +682,10 @@ func shareActiveSession(dir, harness string) (entryHarness, sessionID string, ok
 		if err != nil || (harness != "" && name != harness) {
 			continue
 		}
-		return name, e.SessionID, true
+		e.Harness = name
+		return e, true
 	}
-	return "", "", false
+	return activesession.Entry{}, false
 }
 
 // shareNoSessionError explains that nothing ran in dir and names the most recent sessions anywhere,
@@ -717,23 +721,43 @@ func shareNoSessionError(sources []handoff.Source, harness, dir string) error {
 // sessions only Beacon's runtime log has. A store that cannot be read is skipped; the log still
 // answers for it.
 func shareCandidates(sources []handoff.Source, harness, dir string, limit int) ([]handoff.Session, error) {
+	candidates, err := shareCandidateList(sources, harness, dir, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]handoff.Session, 0, len(candidates))
+	for _, c := range candidates {
+		out = append(out, c.session)
+	}
+	return out, nil
+}
+
+// shareCandidate is a listed session and whether only the runtime log listed it.
+type shareCandidate struct {
+	session handoff.Session
+	fromLog bool
+}
+
+// shareCandidateList is shareCandidates with each session's origin, so a session only the log has
+// (its store lost it, or cannot be read) is read from the log rather than sent back to the store.
+func shareCandidateList(sources []handoff.Source, harness, dir string, limit int) ([]shareCandidate, error) {
 	stored, _ := handoff.List(sources, handoff.Filter{Harness: harness, Directory: dir})
 	logged, logErr := handoff.LogSessions(shareLogPath(), handoff.Filter{Harness: harness, Directory: dir})
 	if logErr != nil && !errors.Is(logErr, os.ErrNotExist) && len(stored) == 0 {
 		return nil, fmt.Errorf("read runtime log: %w", logErr)
 	}
 	seen := map[string]bool{}
-	var out []handoff.Session
+	var out []shareCandidate
 	for _, s := range stored {
 		seen[s.Harness+"\x00"+s.ID] = true
-		out = append(out, s)
+		out = append(out, shareCandidate{session: s})
 	}
 	for _, s := range logged {
 		if !seen[s.Harness+"\x00"+s.ID] {
-			out = append(out, s)
+			out = append(out, shareCandidate{session: s, fromLog: true})
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].session.UpdatedAt.After(out[j].session.UpdatedAt) })
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -778,12 +802,14 @@ func shareEvents(subject shareSubject) (shareSubject, []schema.Event, error) {
 	if err == nil {
 		return subject, events, nil
 	}
-	if !errors.Is(err, handoff.ErrNotFound) {
-		return subject, nil, fmt.Errorf("read %s session %s: %w", subject.session.Harness, subject.session.ID, err)
-	}
+	// The store lost the session, or cannot be read (locked, corrupt, no permission): the runtime
+	// log may still have it.
 	logSubject, logErr := resolveShareLog(subject.session)
 	if logErr != nil {
-		return subject, nil, logErr
+		if errors.Is(err, handoff.ErrNotFound) {
+			return subject, nil, logErr
+		}
+		return subject, nil, fmt.Errorf("read %s session %s: %w (and the runtime log: %v)", subject.session.Harness, subject.session.ID, err, logErr)
 	}
 	return logSubject, logSubject.logEvents, nil
 }
@@ -795,61 +821,82 @@ func buildSharePayload(subject shareSubject) (sharePayload, error) {
 	}
 	session := subject.session
 	sort.SliceStable(events, func(i, j int) bool { return shareEventTime(events[i]).Before(shareEventTime(events[j])) })
-	opts := asymptoteobserve.ShareOptions{WorkingDirectory: session.Directory}
-	messages := asymptoteobserve.BuildShareMessagesWithOptions(events, opts)
-	if len(messages) == 0 {
+	bundle := asymptoteobserve.BuildShareBundle(events, asymptoteobserve.ShareOptions{
+		WorkingDirectory: session.Directory,
+		BeaconVersion:    version.GetVersion(),
+		GeneratedAt:      shareNow(),
+	})
+	if len(bundle.Events) == 0 {
 		return sharePayload{}, fmt.Errorf("%s session %s has nothing to share yet", session.Harness, session.ID)
 	}
-	trace := asymptoteobserve.ShareMetadataFromEventsWithOptions(events, opts)
-	agent := asymptoteobserve.NormalizeHarnessName(session.Harness)
-	if agent == "" {
-		agent = session.Harness
+	// Visibility is set only when the person names one, so a re-share keeps the trace's own.
+	trace := asymptoteobserve.NewShareTrace(bundle, "")
+	if trace.Summary.Harness.Name == "" {
+		trace.Summary.Harness.Name = session.Harness
 	}
-	trace.AgentID = agent
-	trace.SourceSessionID = session.ID
+	if name := asymptoteobserve.NormalizeHarnessName(trace.Summary.Harness.Name); name != "" {
+		trace.Summary.Harness.Name = name
+	}
 	if title := strings.TrimSpace(shareOpts.title); title != "" {
 		trace.Title = asymptoteobserve.ShareTitle(title)
 	} else if title := asymptoteobserve.ShareTitle(session.Title); title != "" {
 		trace.Title = asymptoteobserve.RedactString(title)
 	}
-	if trace.GitBranch == "" {
-		trace.GitBranch = asymptoteobserve.ShareBranch(session.Branch)
-	}
-	if trace.GitRemoteURL == "" && session.Directory != "" {
-		trace.GitRemoteURL = asymptoteobserve.ShareRemoteURL(shareGitRemote(session.Directory))
-		if trace.ProjectName == "" || trace.ProjectName == filepath.Base(session.Directory) {
-			if name := strings.TrimSuffix(lastURLSegment(trace.GitRemoteURL), ".git"); name != "" {
-				trace.ProjectName = name
-			}
-		}
-	}
+	shareSummaryFromSession(&trace.Summary, session)
 	if session.Subagent && session.ParentID != "" {
 		trace.RelatedTo = asymptoteobserve.ShareExternalID(session.Harness, session.ParentID)
 		trace.RelationshipType = asymptoteobserve.ShareRelationshipSubagent
+	} else {
+		trace.RelatedTo, trace.RelationshipType = asymptoteobserve.ShareRelation(events)
 	}
 	// The token aggregator resolves cumulative metric series and live-versus-backfill overlap,
-	// which a plain sum of every event does not. Cost is what runtimes reported, never an estimate.
+	// which the summary's plain sum of every event does not. Cost is what runtimes reported, never
+	// an estimate.
 	totals := tokens.Aggregate(events, tokens.Options{}).Totals
-	usage := asymptoteobserve.ShareTokenUsageV1{
-		InputTokens:              totals.InputTokens,
-		OutputTokens:             totals.OutputTokens,
-		CacheReadInputTokens:     totals.CacheReadInputTokens,
-		CacheCreationInputTokens: totals.CacheCreationInputTokens,
-		ReasoningOutputTokens:    totals.ReasoningOutputTokens,
+	usage := asymptoteobserve.TraceUsageV1{
+		InputTokens:                totals.InputTokens,
+		OutputTokens:               totals.OutputTokens,
+		CacheReadInputTokens:       totals.CacheReadInputTokens,
+		CacheCreationInputTokens:   totals.CacheCreationInputTokens,
+		CacheCreation1hInputTokens: totals.CacheCreation1hInputTokens,
+		ReasoningOutputTokens:      totals.ReasoningOutputTokens,
+		CostUSD:                    totals.CostUSD,
 	}
-	trace.TokenUsage, trace.CostUSD = nil, nil
-	if !usage.IsZero() {
-		trace.TokenUsage = &usage
-	}
-	if totals.CostUSD > 0 {
-		cost := totals.CostUSD
-		trace.CostUSD = &cost
+	trace.Summary.TokenUsage = nil
+	if usage != (asymptoteobserve.TraceUsageV1{}) {
+		trace.Summary.TokenUsage = &usage
 	}
 	return sharePayload{
 		ExternalID: asymptoteobserve.ShareExternalID(session.Harness, session.ID),
 		Trace:      trace,
-		Messages:   messages,
+		Events:     bundle.Events,
 	}, nil
+}
+
+// shareSummaryFromSession fills what the events did not say from the session listing and the
+// repository it ran in: its branch, its origin remote (credentials removed), and the project's name
+// from that remote when the events named only the directory.
+func shareSummaryFromSession(summary *asymptoteobserve.TraceSummaryV1, session handoff.Session) {
+	repo := summary.Repository
+	if repo == nil {
+		repo = &asymptoteobserve.TraceRepositoryV1{}
+	}
+	if repo.Branch == "" {
+		repo.Branch = asymptoteobserve.ShareBranch(session.Branch)
+	}
+	if repo.RemoteURL == "" && session.Directory != "" {
+		repo.RemoteURL = asymptoteobserve.ShareRemoteURL(shareGitRemote(session.Directory))
+		if summary.Project == nil || summary.Project.Name == filepath.Base(session.Directory) {
+			if name := strings.TrimSuffix(lastURLSegment(repo.RemoteURL), ".git"); name != "" {
+				summary.Project = &asymptoteobserve.TraceProjectV1{Name: name}
+			}
+		}
+	}
+	if *repo == (asymptoteobserve.TraceRepositoryV1{}) {
+		summary.Repository = nil
+	} else {
+		summary.Repository = repo
+	}
 }
 
 func shareEventTime(event schema.Event) time.Time {
@@ -883,11 +930,11 @@ func gitRemoteForDir(dir string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func confirmPublicShare(errOut io.Writer, session handoff.Session, messages int) error {
+func confirmPublicShare(errOut io.Writer, session handoff.Session, events int) error {
 	if !shareIsTTY() || isCIEnvironment() {
 		return errors.New("a public trace is listed for anyone to find; pass --yes to share publicly without a terminal to confirm")
 	}
-	fmt.Fprintf(errOut, "Share %s session %s (%d messages) publicly? Anyone can find and read it in Discover. [y/N] ", session.Harness, session.ID, messages)
+	fmt.Fprintf(errOut, "Share %s session %s (%d events) publicly? Anyone can find and read it in Discover. [y/N] ", session.Harness, session.ID, events)
 	if !confirmNo(shareStdin) {
 		return errors.New("not shared")
 	}
@@ -940,7 +987,7 @@ func shareRecordEvent(session handoff.Session, result shareResult, refresh bool,
 		AgentVersion: version.GetVersion(),
 		Harness:      schema.HarnessInfo{Name: session.Harness},
 		Fidelity:     asymptoteobserve.FidelityInferred,
-		Message:      fmt.Sprintf("session %s to beacon.sh (%s, %d messages)", verb, result.Visibility, result.MessageCount),
+		Message:      fmt.Sprintf("session %s to beacon.sh (%s, %d events)", verb, result.Visibility, result.EventCount),
 	})
 	event.Timestamp = schema.FormatTimestamp(now)
 	event.Session = &schema.SessionInfo{ID: session.ID, WorkingDirectory: session.Directory}
@@ -954,6 +1001,10 @@ func shareRecordEvent(session handoff.Session, result shareResult, refresh bool,
 	}
 	if !refresh {
 		event.Raw["shared_at"] = stamp
+	} else if created, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(result.sharedAt)); err == nil {
+		// A refresh keeps the share date: the trace's creation on beacon.sh, which also stands in
+		// for a first record that has rotated out of the log.
+		event.Raw["shared_at"] = created.UTC().Format(time.RFC3339)
 	}
 	return event
 }
@@ -964,6 +1015,6 @@ func printShareResult(cmd *cobra.Command, result shareResult) error {
 		return json.NewEncoder(out).Encode(map[string]any{"ok": true, "data": result})
 	}
 	fmt.Fprintln(out, result.SharedURL)
-	fmt.Fprintf(cmd.ErrOrStderr(), "%s, %d messages (%d sent). External id: %s\n", result.Visibility, result.MessageCount, result.Uploaded, result.ExternalID)
+	fmt.Fprintf(cmd.ErrOrStderr(), "%s, %d events (%d sent). External id: %s\n", result.Visibility, result.EventCount, result.Uploaded, result.ExternalID)
 	return nil
 }

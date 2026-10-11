@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 // historyList, historySearch and historyShow answer a trace query from the local history, or
@@ -422,7 +423,7 @@ func (s *historyStore) show(sourceID int64, id string, query TraceQuery) (TraceS
 	}, true, nil
 }
 
-// historySpans is spansFromEvents over stored rows, so show does not have to project every event
+// historySpans is asymptoteobserve.TraceSpans over stored rows, so show does not have to project every event
 // of a long trace to list its spans.
 func historySpans(rows []historyShowRow) []TraceSpanV1 {
 	spans := map[string]*TraceSpanV1{}
@@ -440,29 +441,7 @@ func historySpans(rows []historyShowRow) []TraceSpanV1 {
 		}
 		span.EventIDs = append(span.EventIDs, row.eventID)
 	}
-	return traceSpanList(spans)
-}
-
-// spansFromEvents lists the spans of the given events, in the order traceSpanList sorts them. Both
-// paths build show's spans from the events the query selected, so a type filter narrows the spans
-// the same way whether the store or the JSONL scan answers.
-func spansFromEvents(events []TraceEventV1) []TraceSpanV1 {
-	spans := map[string]*TraceSpanV1{}
-	for _, event := range events {
-		if event.Trace == nil || event.Trace.SpanID == "" {
-			continue
-		}
-		span := spans[event.Trace.SpanID]
-		if span == nil {
-			span = &TraceSpanV1{ID: event.Trace.SpanID, ParentSpanID: event.Trace.ParentSpanID, TraceID: event.Trace.ID}
-			spans[event.Trace.SpanID] = span
-		}
-		if span.Name == "" {
-			span.Name = firstNonEmpty(event.Summary, event.Title, event.Action)
-		}
-		span.EventIDs = append(span.EventIDs, event.ID)
-	}
-	return traceSpanList(spans)
+	return asymptoteobserve.SortedTraceSpans(spans)
 }
 
 func traceEventTypeSet(values []string) map[string]bool {
