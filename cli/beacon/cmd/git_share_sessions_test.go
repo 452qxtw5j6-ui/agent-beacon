@@ -63,6 +63,7 @@ func TestGitHookPostCommitWritesAKnownShareURL(t *testing.T) {
 }
 
 func TestGitPrePushSharesLinkedSessions(t *testing.T) {
+	t.Setenv(gitlink.HookStdinEnv, "1") // as Beacon's hook block runs it
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t)
 	srv := newFakeShareServer(t)
@@ -118,6 +119,7 @@ func TestGitPrePushSharesLinkedSessions(t *testing.T) {
 }
 
 func TestGitPrePushWithoutCredentialsSharesNothingQuietly(t *testing.T) {
+	t.Setenv(gitlink.HookStdinEnv, "1") // as Beacon's hook block runs it
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t) // signed out, and any request fails the test
 	prevOpts := shareOpts
@@ -164,5 +166,88 @@ func TestGitSetupShareSessionsRules(t *testing.T) {
 	}
 	if out, _ := runGit(t, "status", "--cwd", root); !strings.Contains(out, "sessions    off") {
 		t.Fatalf("status:\n%s", out)
+	}
+}
+
+// Called straight from a hook manager (gitlink.HookCall), without Beacon's block to copy and
+// replay stdin, the pre-push hook must leave stdin to the steps after it (`git lfs pre-push`).
+// Without the refs it cannot know what is being pushed (another branch, --tags, --delete), so it
+// shares no sessions, says so once, and still pushes the commit links.
+func TestGitPrePushWithoutTheBlockLeavesStdinAloneAndSharesNothing(t *testing.T) {
+	root, remote := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	t.Setenv(gitlink.HookStdinEnv, "")
+
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", "beacon:claude_code/"+shareTestSession, sha)
+	if _, err := runGit(t, "setup", "--cwd", root, "--share-sessions"); err != nil {
+		t.Fatal(err)
+	}
+	stdin := "refs/heads/main " + sha + " refs/heads/main " + old + "\n"
+	reader := strings.NewReader(stdin)
+	rootCmd.SetIn(reader)
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var stderr bytes.Buffer
+	before := len(srv.requests)
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil {
+		t.Fatalf("pre-push: %v", err)
+	}
+	if reader.Len() != len(stdin) {
+		t.Fatalf("the hook read %d bytes of stdin that the next step needs", len(stdin)-reader.Len())
+	}
+	if len(srv.requests) != before {
+		t.Fatalf("shared sessions without knowing the pushed refs: %v", srv.requests[before:])
+	}
+	if !strings.Contains(stderr.String(), "commit links only") {
+		t.Fatalf("stderr %q, want the hint", stderr.String())
+	}
+	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != "beacon:claude_code/"+shareTestSession {
+		t.Fatalf("remote note %q, want the bare link pushed and nothing shared", note)
+	}
+}
+
+// Pre-push sharing to a trace that already exists keeps the title set on it earlier (with --title
+// or a rename on beacon.sh) and its visibility.
+func TestGitPrePushKeepsAnExistingTracesTitle(t *testing.T) {
+	root, remote := gitCommandTeam(t)
+	env := newShareEnv(t)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	// Shared from elsewhere (another log, so this machine's log has no record of it), titled.
+	elsewhere := filepath.Join(t.TempDir(), "other.jsonl")
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Login fix", "--visibility", "private", "--log-path", elsewhere); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	prevOpts := shareOpts
+	shareOpts = shareOptions{logPath: env.logPath}
+	t.Cleanup(func() { shareOpts = prevOpts })
+	t.Setenv(gitlink.HookStdinEnv, "1")
+
+	old := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
+	sha := mustGit(t, root, "rev-parse", "HEAD")
+	mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "add", "-m", "beacon:claude_code/"+shareTestSession, sha)
+	if _, err := runGit(t, "setup", "--cwd", root, "--share-sessions"); err != nil {
+		t.Fatal(err)
+	}
+	rootCmd.SetIn(strings.NewReader("refs/heads/main " + sha + " refs/heads/main " + old + "\n"))
+	t.Cleanup(func() { rootCmd.SetIn(nil) })
+	var stderr bytes.Buffer
+	before := len(srv.requests)
+	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil || stderr.Len() != 0 {
+		t.Fatalf("pre-push: %v %q", err, stderr.String())
+	}
+	if len(srv.requests) == before {
+		t.Fatal("pre-push made no share request")
+	}
+	if srv.trace.Title != "Login fix" || srv.trace.Visibility != "private" {
+		t.Fatalf("trace title %q visibility %q, want the ones set earlier", srv.trace.Title, srv.trace.Visibility)
 	}
 }

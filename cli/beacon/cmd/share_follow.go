@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/account"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/handoff"
 )
 
 // `beacon share --follow` keeps a shared trace current while its session runs: it re-reads the
@@ -30,6 +31,9 @@ const (
 	// shareFollowFinalRetries bounds how many more times --follow tries to upload a session's last
 	// messages after the session ended, one interval apart, before it gives up with an error.
 	shareFollowFinalRetries = 3
+	// shareFollowMaxReadFailures is how many polls in a row may fail to read the session, after
+	// the first upload, before --follow gives up with an error.
+	shareFollowMaxReadFailures = 5
 )
 
 var (
@@ -78,21 +82,56 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 		finalFailures int
 		finalErr      error
 	)
+	var (
+		readFailures int
+		lastReadWarn string
+	)
 	for {
+		var readErr error
 		if subject.fromLog {
 			// A session read from the runtime log is re-read each time; one from a store is read
 			// fresh by buildSharePayload anyway.
 			if fresh, err := resolveShareLog(subject.session); err == nil {
 				fresh.selectedBy = subject.selectedBy
 				subject = fresh
+			} else {
+				readErr = err
 			}
 		}
 		fingerprint, end, err := shareFollowState(subject)
 		ended = end
+		if readErr == nil && err != nil && !errors.Is(err, errShareNothingYet) {
+			readErr = err
+		}
+		if uploads > 0 {
+			// After the first upload a read failure is not fatal at once (a store or log being
+			// rewritten under us), but it is never silent, and it is not retried forever.
+			if readErr != nil {
+				readFailures++
+				if readFailures >= shareFollowMaxReadFailures {
+					return fmt.Errorf("stopped following: the session could not be read %d times in a row (%s holds %d messages): %w", readFailures, last.SharedURL, last.MessageCount, readErr)
+				}
+				if msg := readErr.Error(); msg != lastReadWarn {
+					fmt.Fprintf(errOut, "warning: could not read the session, retrying in %s: %v\n", interval, readErr)
+					lastReadWarn = msg
+				}
+			} else {
+				readFailures, lastReadWarn = 0, ""
+			}
+		}
 		if err == nil && fingerprint != lastPrint {
-			opts := shareUploadOptions{Record: uploads == 0}
+			// Every upload that sends messages records a session.shared refresh, so a session
+			// being followed never looks out of date locally; it is at most one per interval.
+			opts := shareUploadOptions{Record: true}
 			if uploads == 0 {
+				// An explicit --visibility or --title applies once, to the trace as it is now
+				// (created or existing). Later uploads leave both alone, so a rename on beacon.sh
+				// while following is kept.
 				opts.Visibility = visibility
+				opts.ExplicitVisibility = visibility != ""
+				if f := cmd.Flags().Lookup("title"); f != nil && f.Changed {
+					opts.ExplicitTitle = true
+				}
 			}
 			result, aligned, upErr := shareUpload(ctx, client, subject, opts)
 			var recordErr *shareRecordError
@@ -148,11 +187,6 @@ func runShareFollow(cmd *cobra.Command, client *account.ShareClient, subject sha
 		}
 		return fmt.Errorf("%s session %s has nothing to share", subject.session.Harness, subject.session.ID)
 	}
-	if uploads > 1 {
-		if err := recordShareEvent(subject.session, last, true); err != nil {
-			fmt.Fprintf(errOut, "warning: the runtime log was not updated: %v\n", err)
-		}
-	}
 	if finalErr != nil {
 		return finalErr
 	}
@@ -171,6 +205,9 @@ func shareFollowState(subject shareSubject) (string, bool, error) {
 		if e.Event.Action == "session.ended" {
 			ended = true
 		}
+	}
+	if !ended && !subject.fromLog {
+		ended = shareLogRecordsEnd(subject.session)
 	}
 	payload, err := buildSharePayload(subject)
 	if err != nil {
@@ -200,4 +237,20 @@ func printShareFollow(out, errOut io.Writer, result shareResult, first, final, e
 		fmt.Fprintf(errOut, "Uploaded %d message(s); %d in total.\n", result.Uploaded, result.MessageCount)
 	}
 	return nil
+}
+
+// shareLogRecordsEnd reports whether the runtime log records the end of session, which most store
+// mappers do not emit: the runtime's hooks write session.ended to the log, not to its own store.
+// A log that cannot be read says nothing.
+func shareLogRecordsEnd(session handoff.Session) bool {
+	found, events, ok, err := handoff.LogSession(shareLogPath(), session.ID, session.Harness)
+	if err != nil || !ok || found.ID != session.ID || found.Harness != session.Harness {
+		return false
+	}
+	for _, e := range events {
+		if e.Event.Action == "session.ended" {
+			return true
+		}
+	}
+	return false
 }

@@ -22,6 +22,8 @@ type growingSource struct {
 	mu      sync.Mutex
 	session handoff.Session
 	events  []schema.Event
+	// fail, when set, is what reading the session's events returns.
+	fail error
 }
 
 func (g *growingSource) Harness() string { return handoff.HarnessClaude }
@@ -31,6 +33,9 @@ func (g *growingSource) List() ([]handoff.Session, error) {
 func (g *growingSource) Events(handoff.Session) ([]schema.Event, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.fail != nil {
+		return nil, g.fail
+	}
 	return append([]schema.Event(nil), g.events...), nil
 }
 func (g *growingSource) add(e schema.Event) {
@@ -113,8 +118,19 @@ func TestShareFollowUploadsNewMessagesUntilTheSessionEnds(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &final); err != nil || !final.Data.Final || !final.Data.Ended || final.Data.SharedURL != "https://beacon.sh/s/k3xabc" {
 		t.Fatalf("last line %q (%v)", lines[len(lines)-1], err)
 	}
-	if n := len(shareEventsIn(t, env.logPath)); n != 2 {
-		t.Fatalf("session.shared events = %d, want one for the share and one at the end", n)
+	// One per upload: the share, the second answer, the new prompt and the end. Each later one is
+	// a refresh, so a followed session is never shown as out of date.
+	records := shareEventsIn(t, env.logPath)
+	if len(records) != 4 {
+		t.Fatalf("session.shared events = %d, want one per upload", len(records))
+	}
+	for i, r := range records {
+		if _, ok := r.Raw["shared_through"].(string); !ok {
+			t.Fatalf("record %d has no shared_through: %v", i, r.Raw)
+		}
+		if _, first := r.Raw["shared_at"]; first != (i == 0) {
+			t.Fatalf("record %d shared_at present = %v", i, first)
+		}
 	}
 }
 
@@ -285,5 +301,141 @@ func TestShareFollowKeepsGoingWhenTheFirstRecordFails(t *testing.T) {
 	defer srv.mu.Unlock()
 	if len(srv.messages) != 5 {
 		t.Fatalf("server has %d messages, want 5", len(srv.messages))
+	}
+}
+
+// --follow to a trace that already exists keeps the title set on it earlier, and applies an
+// explicit --visibility to it as plain share does.
+func TestShareFollowKeepsTitleAndAppliesExplicitVisibility(t *testing.T) {
+	env := newShareEnv(t)
+	src := &growingSource{
+		session: handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+		events:  shareFixtureEvents(env.projectDir),
+	}
+	stubHandoffSources(t, src)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	if _, stderr, err := runShareCommand(t, "--cwd", env.projectDir, "--title", "Login fix", "--visibility", "public", "--yes", "--log-path", env.logPath); err != nil {
+		t.Fatalf("share: %v\n%s", err, stderr)
+	}
+	polls := 0
+	prevWait := shareFollowWait
+	shareFollowWait = func(ctx context.Context, d time.Duration) error {
+		polls++
+		switch polls {
+		case 1:
+			m := followEvent(env.projectDir, "2026-10-01T10:01:00.000000000Z", "agent.message")
+			m.GenAI = &schema.GenAIInfo{Output: &schema.GenAIOutputInfo{Messages: asymptoteobserve.TextOutputMessages("Second answer.")}}
+			src.add(m)
+		case 2:
+			src.add(followEvent(env.projectDir, "2026-10-01T10:03:00.000000000Z", "session.ended"))
+		case 10:
+			return errors.New("the loop did not stop")
+		}
+		return nil
+	}
+	t.Cleanup(func() { shareFollowWait = prevWait })
+	if _, stderr, err := runShareCommand(t, "--follow", "--visibility", "private", "--cwd", env.projectDir, "--log-path", env.logPath); err != nil {
+		t.Fatalf("follow: %v\n%s", err, stderr)
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.trace.Title != "Login fix" {
+		t.Fatalf("title = %q, want the one set with --title", srv.trace.Title)
+	}
+	if srv.trace.Visibility != "private" {
+		t.Fatalf("visibility = %q, want the explicit --visibility", srv.trace.Visibility)
+	}
+}
+
+// Most store mappers never emit session.ended; the runtime's hooks write it to the runtime log.
+// --follow on a store-backed session stops when the log records the end.
+func TestShareFollowStopsWhenTheRuntimeLogRecordsTheEnd(t *testing.T) {
+	env := newShareEnv(t)
+	src := &growingSource{
+		session: handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+		events:  shareFixtureEvents(env.projectDir),
+	}
+	stubHandoffSources(t, src)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	polls := 0
+	prevWait := shareFollowWait
+	shareFollowWait = func(ctx context.Context, d time.Duration) error {
+		polls++
+		switch polls {
+		case 1:
+			// Another session's end must not stop this one.
+			other := followEvent(env.projectDir, "2026-10-01T10:02:00.000000000Z", "session.ended")
+			other.Session.ID = "someone-else"
+			appendLogEvent(t, env.logPath, other)
+		case 2:
+			appendLogEvent(t, env.logPath, followEvent(env.projectDir, "2026-10-01T10:03:00.000000000Z", "session.ended"))
+		case 10:
+			return errors.New("the loop did not stop at the end the runtime log recorded")
+		}
+		return nil
+	}
+	t.Cleanup(func() { shareFollowWait = prevWait })
+	_, stderr, err := runShareCommand(t, "--follow", "--cwd", env.projectDir, "--log-path", env.logPath)
+	if err != nil {
+		t.Fatalf("follow: %v\n%s", err, stderr)
+	}
+	if polls != 2 || !strings.Contains(stderr, "The session ended;") {
+		t.Fatalf("polls = %d, stderr:\n%s", polls, stderr)
+	}
+}
+
+// After the first upload, a session that cannot be read is reported (once per distinct error,
+// not every poll), and --follow gives up after shareFollowMaxReadFailures polls in a row.
+func TestShareFollowReportsReadFailuresAndGivesUp(t *testing.T) {
+	env := newShareEnv(t)
+	src := &growingSource{
+		session: handoff.Session{Harness: handoff.HarnessClaude, ID: shareTestSession, Directory: env.projectDir, UpdatedAt: time.Now()},
+		events:  shareFixtureEvents(env.projectDir),
+	}
+	stubHandoffSources(t, src)
+	srv := newFakeShareServer(t)
+	srv.signIn(account.ScopeTracesWrite)
+	polls := 0
+	prevWait := shareFollowWait
+	shareFollowWait = func(ctx context.Context, d time.Duration) error {
+		polls++
+		if polls == 1 {
+			src.mu.Lock()
+			src.fail = errors.New("store is being rewritten")
+			src.mu.Unlock()
+		}
+		if polls > 20 {
+			return errors.New("the loop did not give up")
+		}
+		return nil
+	}
+	t.Cleanup(func() { shareFollowWait = prevWait })
+	_, stderr, err := runShareCommand(t, "--follow", "--cwd", env.projectDir, "--log-path", env.logPath)
+	if err == nil || !strings.Contains(err.Error(), "could not be read") || !strings.Contains(err.Error(), "store is being rewritten") {
+		t.Fatalf("follow err = %v\n%s", err, stderr)
+	}
+	if polls != shareFollowMaxReadFailures {
+		t.Fatalf("waits = %d, want %d", polls, shareFollowMaxReadFailures)
+	}
+	if n := strings.Count(stderr, "warning: could not read the session"); n != 1 {
+		t.Fatalf("read warnings = %d, want one for the repeated error\n%s", n, stderr)
+	}
+}
+
+func appendLogEvent(t *testing.T, path string, e schema.Event) {
+	t.Helper()
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
 	}
 }
