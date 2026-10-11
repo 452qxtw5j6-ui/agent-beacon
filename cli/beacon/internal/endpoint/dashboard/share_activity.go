@@ -52,6 +52,12 @@ func (s *shareActivity) counts(event schema.Event) bool {
 	if shareBookkeeping(action) {
 		return false
 	}
+	// An event the share projection would not upload (status and idle lifecycle, metrics,
+	// token-only telemetry, ...) cannot make the shared trace out of date: a refresh would send
+	// nothing for it.
+	if !asymptoteobserve.ShareProjects(event) {
+		return false
+	}
 	callID := asymptoteobserve.ToolCallID(&event)
 	promptID := asymptoteobserve.PromptID(&event)
 	if isShareCallEvent(event) {
@@ -96,7 +102,7 @@ func isShareCallEvent(event schema.Event) bool {
 // file payload) and the plugin runtimes' agent.response / agent.response.completed.
 func isAssistantOutput(event schema.Event) bool {
 	switch event.Event.Action {
-	case "agent.message", "agent.reasoning", "token.usage", "agent.response", "agent.response.completed":
+	case "agent.message", "agent.reasoning", "agent.response", "agent.response.completed":
 		return true
 	case "tool.completed":
 		return isPayloadlessTurnEnd(event)

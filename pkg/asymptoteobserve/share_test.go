@@ -616,3 +616,46 @@ func TestBuildShareMessagesPairsPromptCapturesOnlyAcrossPaths(t *testing.T) {
 		t.Fatalf("unrelated prompts merged: %+v", got)
 	}
 }
+
+// ShareProjects agrees with BuildShareMessages: every event it rejects yields no message, even with
+// content that would otherwise be shared, and the events it accepts are the ones the projection
+// writes.
+func TestShareProjectsAgreesWithBuildShareMessages(t *testing.T) {
+	withText := func(e Event) Event {
+		e.Message = "something happened"
+		e.Prompt = &PromptInfo{Text: "a prompt-shaped field"}
+		e.GenAI = &GenAIInfo{Output: &GenAIOutputInfo{Messages: TextOutputMessages("assistant-shaped text")}}
+		return e
+	}
+	rejected := []Event{
+		shareEventAt("2026-10-01T10:00:00Z", "opencode", "plugin", "session.status", "session"),
+		shareEventAt("2026-10-01T10:00:01Z", "opencode", "plugin", "session.idle", "session"),
+		shareEventAt("2026-10-01T10:00:02Z", "claude_code", "hook", "session.activity", "session"),
+		shareEventAt("2026-10-01T10:00:03Z", "claude_code", "hook", "session.lock", "session"),
+		shareEventAt("2026-10-01T10:00:04Z", "claude_code", "otlp", "token.usage", "model"),
+		shareEventAt("2026-10-01T10:00:05Z", "claude_code", "otlp", "metric.point", "metric"),
+		shareEventAt("2026-10-01T10:00:06Z", "claude_code", "", "session.shared", "session"),
+		shareEventAt("2026-10-01T10:00:07Z", "claude_code", "", "session.share_requested", "session"),
+		shareEventAt("2026-10-01T10:00:08Z", "cursor", "hook", "mcp.tool_listed", "mcp"),
+	}
+	for _, e := range rejected {
+		if ShareProjects(e) {
+			t.Fatalf("ShareProjects(%s) = true, want false", e.Event.Action)
+		}
+		if got := BuildShareMessagesWithOptions([]Event{withText(e)}, shareTestOpts); len(got) != 0 {
+			t.Fatalf("%s: ShareProjects rejects it, but BuildShareMessages wrote %d message(s)", e.Event.Action, len(got))
+		}
+	}
+	prompt := shareEventAt("2026-10-01T10:01:00Z", "claude_code", "hook", "prompt.submitted", "prompt")
+	prompt.Prompt = &PromptInfo{Text: "fix the bug"}
+	reply := shareEventAt("2026-10-01T10:01:05Z", "claude_code", "hook", "agent.message", "agent")
+	reply.GenAI = &GenAIInfo{Output: &GenAIOutputInfo{Messages: TextOutputMessages("done")}}
+	for _, e := range []Event{prompt, reply} {
+		if !ShareProjects(e) {
+			t.Fatalf("ShareProjects(%s) = false, want true", e.Event.Action)
+		}
+		if got := BuildShareMessagesWithOptions([]Event{e}, shareTestOpts); len(got) != 1 {
+			t.Fatalf("%s: ShareProjects accepts it, but BuildShareMessages wrote %d message(s)", e.Event.Action, len(got))
+		}
+	}
+}

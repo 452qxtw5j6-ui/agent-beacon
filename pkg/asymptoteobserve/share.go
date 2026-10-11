@@ -577,6 +577,14 @@ const (
 	shareError
 )
 
+// ShareProjects reports whether BuildShareMessages considers event at all: false for the events it
+// always skips (Beacon's own share records, metrics, inventory, health, token-only telemetry, idle
+// and status lifecycle, tool listings). An event it rejects never yields a message, so local views
+// use it to decide that such an event cannot make a shared trace out of date.
+func ShareProjects(event Event) bool {
+	return classifyShareEvent(event) != shareSkip
+}
+
 func classifyShareEvent(event Event) shareEventClass {
 	action := strings.ToLower(strings.TrimSpace(event.Event.Action))
 	category := strings.ToLower(strings.TrimSpace(event.Event.Category))

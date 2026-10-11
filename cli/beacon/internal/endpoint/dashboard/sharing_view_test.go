@@ -331,3 +331,39 @@ func TestStateSharedIncludesStale(t *testing.T) {
 	optIn(t, path)
 	check("history")
 }
+
+// OpenCode ends a turn with agent.response and an idle session.status. Neither makes a share run
+// from inside the session stale (the projection skips status events, so a refresh would send
+// nothing); a later real tool call does.
+func TestOpenCodeShareFromInsideTheSessionIsNotStale(t *testing.T) {
+	inside := []string{
+		`{"timestamp":"2026-06-11T10:00:00Z","event":{"id":"q1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"opencode","collection_method":"plugin"},"session":{"id":"oc1"},"prompt":{"text":"share this session"}}`,
+		`{"timestamp":"2026-06-11T10:00:05Z","event":{"id":"q2","action":"command.invoked","category":"command"},"harness":{"name":"opencode","collection_method":"plugin"},"session":{"id":"oc1"},"command":{"command":"beacon share --current --harness opencode --json"},"gen_ai":{"tool":{"call":{"id":"oc-call"}}}}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","event":{"id":"q3","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"opencode"},"session":{"id":"oc1"},"raw":{"shared_url":"https://beacon.sh/s/oc1","visibility":"direct","shared_at":"2026-06-11T10:00:09Z","last_refreshed_at":"2026-06-11T10:00:09Z","shared_through":"2026-06-11T10:00:06Z"}}`,
+		`{"timestamp":"2026-06-11T10:00:12Z","event":{"id":"q4","action":"agent.response","category":"session"},"harness":{"name":"opencode","collection_method":"plugin"},"session":{"id":"oc1"},"message":"opencode assistant response captured"}`,
+		`{"timestamp":"2026-06-11T10:00:13Z","event":{"id":"q5","action":"session.status","category":"session"},"harness":{"name":"opencode","collection_method":"plugin"},"session":{"id":"oc1"},"message":"idle"}`,
+	}
+	check := func(t *testing.T, lines []string, want string) {
+		t.Helper()
+		path := newTestLog(t, sharingLines(lines...))
+		withoutHistory(t)
+		if s := sessionSharing(t, path, EventQuery{})["oc1"]; s == nil || s.State != want {
+			t.Fatalf("session sharing = %+v, want %s", s, want)
+		}
+		list, err := ReadTraceList(path, TraceQuery{Limit: 50})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, trace := range list.Traces {
+			if trace.ID == "session:opencode:oc1" && trace.Sharing.State != want {
+				t.Fatalf("trace sharing = %+v, want %s", trace.Sharing, want)
+			}
+		}
+	}
+	t.Run("share, reply and idle", func(t *testing.T) { check(t, inside, "shared") })
+	t.Run("later tool call", func(t *testing.T) {
+		check(t, append(append([]string{}, inside...),
+			`{"timestamp":"2026-06-11T10:04:00Z","event":{"id":"q6","action":"tool.invoked","category":"tool"},"harness":{"name":"opencode","collection_method":"plugin"},"session":{"id":"oc1"},"tool":{"name":"edit","path":"main.go"},"gen_ai":{"tool":{"call":{"id":"oc-edit"}}}}`,
+		), "stale")
+	})
+}
