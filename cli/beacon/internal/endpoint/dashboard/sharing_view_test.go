@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -194,6 +195,13 @@ func TestShareFromInsideTheSessionIsNotStale(t *testing.T) {
 		}
 	}
 	t.Run("share and its reply", func(t *testing.T) { check(t, inside, "shared") })
+	t.Run("without turn ids", func(t *testing.T) {
+		var bare []string
+		for _, line := range inside {
+			bare = append(bare, strings.ReplaceAll(line, `"prompt":{"id":"p1"},`, ""))
+		}
+		check(t, bare, "shared")
+	})
 	t.Run("later tool call", func(t *testing.T) {
 		check(t, append(append([]string{}, inside...),
 			`{"timestamp":"2026-06-11T10:05:00Z","event":{"id":"e7","action":"tool.invoked","category":"tool"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p1"},"tool":{"name":"Edit","path":"main.go"},"gen_ai":{"tool":{"call":{"id":"call-edit"}}}}`,
@@ -204,4 +212,27 @@ func TestShareFromInsideTheSessionIsNotStale(t *testing.T) {
 			`{"timestamp":"2026-06-11T10:05:00Z","event":{"id":"e8","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"in1"},"prompt":{"id":"p2","text":"now fix the bug"}}`,
 		), "stale")
 	})
+}
+
+// A share made from outside the session (another terminal, --follow) does not hide the agent's
+// later output: it was not uploaded, so the share is stale.
+func TestShareFromOutsideTheSessionGoesStaleOnAReply(t *testing.T) {
+	path := newTestLog(t, sharingLines(
+		`{"timestamp":"2026-06-11T10:00:00Z","event":{"id":"o1","action":"prompt.submitted","category":"prompt"},"harness":{"name":"claude_code"},"session":{"id":"out1"},"prompt":{"text":"work"}}`,
+		`{"timestamp":"2026-06-11T10:00:09Z","event":{"id":"o2","action":"session.shared","category":"session","fidelity":"inferred"},"harness":{"name":"claude_code"},"session":{"id":"out1"},"raw":{"shared_url":"https://beacon.sh/s/out1","visibility":"direct","shared_at":"2026-06-11T10:00:09Z","last_refreshed_at":"2026-06-11T10:00:09Z","shared_through":"2026-06-11T10:00:06Z"}}`,
+		`{"timestamp":"2026-06-11T10:00:15Z","event":{"id":"o3","action":"agent.message","category":"agent"},"harness":{"name":"claude_code"},"session":{"id":"out1"},"message":"Here is the answer."}`,
+	))
+	withoutHistory(t)
+	if s := sessionSharing(t, path, EventQuery{})["out1"]; s == nil || s.State != "stale" {
+		t.Fatalf("session sharing = %+v, want stale", s)
+	}
+	list, err := ReadTraceList(path, TraceQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, trace := range list.Traces {
+		if trace.ID == "session:claude_code:out1" && trace.Sharing.State != "stale" {
+			t.Fatalf("trace sharing = %+v, want stale", trace.Sharing)
+		}
+	}
 }
