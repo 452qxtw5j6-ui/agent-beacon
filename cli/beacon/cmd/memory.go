@@ -18,34 +18,38 @@ import (
 )
 
 var memoryOpts struct {
-	userMode    bool
-	systemMode  bool
-	logPath     string
-	jsonOutput  bool
-	projectPath string
-	limit       int
-	page        int
-	query       string
-	harness     string
-	traceID     string
-	since       string
-	until       string
-	dryRun      bool
-	jevEndpoint string
-	jevAPIKey   string
-	jevModel    string
-	jevCost     float64
-	timeout     time.Duration
-	state       string
-	kind        string
-	reason      string
-	replacement string
-	force       bool
-	title       string
-	body        string
-	bodyFile    string
-	applies     string
-	tags        []string
+	userMode     bool
+	systemMode   bool
+	logPath      string
+	jsonOutput   bool
+	projectPath  string
+	limit        int
+	page         int
+	query        string
+	harness      string
+	traceID      string
+	since        string
+	until        string
+	dryRun       bool
+	evaluator    string
+	jevEndpoint  string
+	jevAPIKey    string
+	jevModel     string
+	costPerTrace float64
+	subqEndpoint string
+	subqAPIKey   string
+	subqModel    string
+	timeout      time.Duration
+	state        string
+	kind         string
+	reason       string
+	replacement  string
+	force        bool
+	title        string
+	body         string
+	bodyFile     string
+	applies      string
+	tags         []string
 }
 
 var memoryCmd = &cobra.Command{
@@ -75,7 +79,7 @@ var memoryEvaluationsCmd = &cobra.Command{
 
 var memoryEvaluationsRunCmd = &cobra.Command{
 	Use:          "run",
-	Short:        "Evaluate local traces with Jev",
+	Short:        "Evaluate local traces with Jev or SubQ",
 	SilenceUsage: true,
 	RunE:         runMemoryEvaluationsRun,
 }
@@ -245,12 +249,19 @@ func init() {
 	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.traceID, "trace", "", "Evaluate a single trace ID")
 	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.since, "since", "", "RFC3339 lower time bound, inclusive")
 	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.until, "until", "", "RFC3339 upper time bound, inclusive")
-	memoryEvaluationsRunCmd.Flags().BoolVar(&memoryOpts.dryRun, "dry-run", false, "Preview selected traces, Jev calls, and estimated cost without writing evaluations")
+	memoryEvaluationsRunCmd.Flags().BoolVar(&memoryOpts.dryRun, "dry-run", false, "Preview selected traces, evaluator calls, and estimated cost without writing evaluations")
+	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.evaluator, "evaluator", "", "Evaluator provider: jev or subq (defaults to BEACON_EVALUATOR, then jev)")
 	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.jevEndpoint, "jev-endpoint", "", "Jev System One endpoint (defaults to BEACON_JEV_ENDPOINT, then "+learning.DefaultJevEndpoint+")")
 	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.jevAPIKey, "jev-api-key", "", "Jev API key (defaults to TYPESAFE_API_KEY, then BEACON_JEV_API_KEY)")
 	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.jevModel, "jev-model", "", "Jev model name, such as jev-latest or a pinned Jev version (defaults to BEACON_JEV_MODEL, then "+learning.DefaultJevModel+")")
-	memoryEvaluationsRunCmd.Flags().Float64Var(&memoryOpts.jevCost, "jev-cost-per-trace", learning.DefaultCostPerTrace, "Estimated Jev cost per trace in USD")
-	memoryEvaluationsRunCmd.Flags().DurationVar(&memoryOpts.timeout, "timeout", 10*time.Second, "Jev request timeout")
+	memoryEvaluationsRunCmd.Flags().Float64Var(&memoryOpts.costPerTrace, "cost-per-trace", learning.DefaultCostPerTrace, "Estimated evaluator cost per trace in USD, for Jev or SubQ")
+	// --jev-cost-per-trace is the pre-SubQ name, kept so existing scripts still work.
+	memoryEvaluationsRunCmd.Flags().Float64Var(&memoryOpts.costPerTrace, "jev-cost-per-trace", learning.DefaultCostPerTrace, "Estimated evaluator cost per trace in USD")
+	_ = memoryEvaluationsRunCmd.Flags().MarkDeprecated("jev-cost-per-trace", "use --cost-per-trace")
+	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.subqEndpoint, "subq-endpoint", "", "SubQ Decisions API endpoint (defaults to BEACON_SUBQ_ENDPOINT, then "+learning.DefaultSubQEndpoint+")")
+	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.subqAPIKey, "subq-api-key", "", "SubQ API key (defaults to SUBQ_API_KEY, then BEACON_SUBQ_API_KEY)")
+	memoryEvaluationsRunCmd.Flags().StringVar(&memoryOpts.subqModel, "subq-model", "", "SubQ System One model name (defaults to BEACON_SUBQ_MODEL, then "+learning.DefaultSubQModel+")")
+	memoryEvaluationsRunCmd.Flags().DurationVar(&memoryOpts.timeout, "timeout", 10*time.Second, "Evaluator request timeout")
 }
 
 func runMemoryList(cmd *cobra.Command, args []string) error {
@@ -311,13 +322,16 @@ func runMemoryEvaluationsRun(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	evaluatorOpts := jevEvaluatorOptions()
+	evaluatorOpts, err := evaluatorOptions()
+	if err != nil {
+		return err
+	}
 	result := evaluationRunResult{
 		DryRun:           memoryOpts.dryRun,
 		StorePath:        store.Path(),
 		TraceCount:       len(inputs),
 		EstimatedCalls:   len(inputs),
-		EstimatedCostUSD: float64(len(inputs)) * memoryOpts.jevCost,
+		EstimatedCostUSD: float64(len(inputs)) * memoryOpts.costPerTrace,
 	}
 	if strings.TrimSpace(memoryOpts.projectPath) != "" {
 		project, err := learning.ResolveProject(memoryOpts.projectPath)
@@ -355,7 +369,7 @@ func runMemoryEvaluationsRun(cmd *cobra.Command, args []string) error {
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	}
 	if result.DryRun {
-		fmt.Fprintf(cmd.OutOrStdout(), "Selected %d trace(s); estimated Jev calls: %d; estimated cost: $%.5f\n", result.TraceCount, result.EstimatedCalls, result.EstimatedCostUSD)
+		fmt.Fprintf(cmd.OutOrStdout(), "Selected %d trace(s); estimated %s calls: %d; estimated cost: $%.5f\n", result.TraceCount, evaluatorDisplayName(evaluatorOpts.Provider), result.EstimatedCalls, result.EstimatedCostUSD)
 		for _, preview := range result.Previews {
 			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t$%.5f\n", preview.TraceID, preview.Title, firstNonEmpty(preview.Project.Path, preview.Project.ID), preview.EstimatedCostUSD)
 		}
@@ -700,15 +714,50 @@ func parseMemoryTime(name, value string) (time.Time, error) {
 	return parsed, nil
 }
 
+// evaluatorOptions picks the provider from --evaluator, then BEACON_EVALUATOR,
+// then Jev, and resolves that provider's settings.
+func evaluatorOptions() (learning.EvaluatorOptions, error) {
+	provider := learning.NormalizeProvider(firstNonEmpty(memoryOpts.evaluator, os.Getenv("BEACON_EVALUATOR")))
+	switch provider {
+	case learning.ProviderJev:
+		return jevEvaluatorOptions(), nil
+	case learning.ProviderSubQ:
+		return subqEvaluatorOptions(), nil
+	}
+	_, _, err := learning.ProviderDefaults(provider)
+	return learning.EvaluatorOptions{}, err
+}
+
+func evaluatorDisplayName(provider string) string {
+	if learning.NormalizeProvider(provider) == learning.ProviderSubQ {
+		return "SubQ"
+	}
+	return "Jev"
+}
+
+// subqEvaluatorOptions resolves each SubQ setting from its flag, then the
+// environment, then the built-in default, the same way as the Jev settings.
+func subqEvaluatorOptions() learning.EvaluatorOptions {
+	return learning.EvaluatorOptions{
+		Provider:     learning.ProviderSubQ,
+		Endpoint:     firstNonEmpty(memoryOpts.subqEndpoint, os.Getenv("BEACON_SUBQ_ENDPOINT"), learning.DefaultSubQEndpoint),
+		APIKey:       firstNonEmpty(memoryOpts.subqAPIKey, os.Getenv("SUBQ_API_KEY"), os.Getenv("BEACON_SUBQ_API_KEY")),
+		Model:        firstNonEmpty(memoryOpts.subqModel, os.Getenv("BEACON_SUBQ_MODEL"), learning.DefaultSubQModel),
+		CostPerTrace: memoryOpts.costPerTrace,
+		Timeout:      memoryOpts.timeout,
+	}
+}
+
 // jevEvaluatorOptions resolves each Jev setting from its flag, then the environment,
 // then the built-in default. The flags must not carry the defaults themselves, or the
 // environment variables documented for them would never be consulted.
 func jevEvaluatorOptions() learning.EvaluatorOptions {
 	return learning.EvaluatorOptions{
+		Provider:     learning.ProviderJev,
 		Endpoint:     firstNonEmpty(memoryOpts.jevEndpoint, os.Getenv("BEACON_JEV_ENDPOINT"), learning.DefaultJevEndpoint),
 		APIKey:       firstNonEmpty(memoryOpts.jevAPIKey, os.Getenv("TYPESAFE_API_KEY"), os.Getenv("BEACON_JEV_API_KEY")),
 		Model:        firstNonEmpty(memoryOpts.jevModel, os.Getenv("BEACON_JEV_MODEL"), learning.DefaultJevModel),
-		CostPerTrace: memoryOpts.jevCost,
+		CostPerTrace: memoryOpts.costPerTrace,
 		Timeout:      memoryOpts.timeout,
 	}
 }

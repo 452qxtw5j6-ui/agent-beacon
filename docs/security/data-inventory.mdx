@@ -73,7 +73,7 @@ learning artifacts scoped to the resolved project:
 
 | Memory area | Data retained |
 |-------------|---------------|
-| Evaluations | Trace identity, project identity, bounded trace summary, Jev question results, evaluator model, usage metadata when returned, and evaluation timestamps |
+| Evaluations | Trace identity, project identity, bounded trace summary, Jev or SubQ question results, evaluator model, usage metadata when returned, and evaluation timestamps |
 | Candidates | Candidate title, body, kind, state, evidence pointers, source evaluation, project identity, and review transition metadata |
 | Approved memories | Approved title, body, kind, project identity, provenance, and review metadata |
 
@@ -84,10 +84,11 @@ to `.agents/skills/<slug>/SKILL.md`; Beacon hooks and the dashboard never instal
 skills or mutate memory review state.
 
 `beacon memory evaluations run` is the only command in this workflow that can call
-Jev. Dry runs do not make a network request. When evaluation is enabled, Beacon
-sends a bounded, redacted trace projection to the configured TypeSafe System One
-endpoint or a compatible internal endpoint. Normal endpoint capture, MCP reads,
-dashboard views, candidate review, and skill preview/install do not call Jev.
+an evaluator. Dry runs do not make a network request. When evaluation is enabled, Beacon
+sends a bounded, redacted trace projection to the configured System One endpoint:
+TypeSafe Jev by default, SubQ with `--evaluator subq`, or a compatible internal
+endpoint. Normal endpoint capture, MCP reads, dashboard views, candidate review, and
+skill preview/install do not call an evaluator.
 
 ## Required fields
 
