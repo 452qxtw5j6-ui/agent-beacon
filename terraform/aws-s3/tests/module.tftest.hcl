@@ -3,7 +3,8 @@
 mock_provider "aws" {
   mock_data "aws_partition" {
     defaults = {
-      partition = "aws"
+      partition  = "aws"
+      dns_suffix = "amazonaws.com"
     }
   }
 
@@ -147,6 +148,47 @@ run "forwarder_settings_match_the_helper" {
   assert {
     condition     = output.beacon_reader_source_url == "https://acme-beacon-telemetry.s3.us-west-2.amazonaws.com/beacon-prod"
     error_message = "The data connector URL is the bucket's regional endpoint plus the prefix."
+  }
+}
+
+run "source_url_uses_path_style_for_dotted_bucket_names" {
+  command = apply
+
+  variables {
+    bucket_name = "acme.beacon.telemetry"
+  }
+
+  assert {
+    condition     = output.beacon_reader_source_url == "https://s3.us-west-2.amazonaws.com/acme.beacon.telemetry/beacon-prod"
+    error_message = "A dotted bucket name fails TLS on a virtual-hosted URL, so the URL must be path style."
+  }
+}
+
+run "source_url_follows_the_partition" {
+  command = apply
+
+  override_data {
+    target = data.aws_partition.current
+    values = {
+      partition  = "aws-cn"
+      dns_suffix = "amazonaws.com.cn"
+    }
+  }
+
+  variables {
+    create_bucket          = false
+    bucket_name            = "acme-security-logs"
+    existing_bucket_region = "cn-north-1"
+  }
+
+  assert {
+    condition     = output.beacon_reader_source_url == "https://acme-security-logs.s3.cn-north-1.amazonaws.com.cn/beacon-prod"
+    error_message = "The URL uses the partition's DNS suffix."
+  }
+
+  assert {
+    condition     = output.bucket_arn == "arn:aws-cn:s3:::acme-security-logs"
+    error_message = "The bucket ARN uses the partition."
   }
 }
 

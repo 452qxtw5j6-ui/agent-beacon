@@ -16,6 +16,14 @@ locals {
   beacon_objects_arn = "${local.bucket_arn}/${var.prefix}/*"
 
   bucket_region = var.create_bucket ? aws_s3_bucket.this[0].region : data.aws_s3_bucket.existing[0].region
+
+  # S3's certificate for virtual-hosted URLs covers one label, so a dotted bucket name needs path style.
+  s3_host = "s3.${local.bucket_region}.${data.aws_partition.current.dns_suffix}"
+  beacon_reader_source_url = (
+    strcontains(var.bucket_name, ".")
+    ? "https://${local.s3_host}/${var.bucket_name}/${var.prefix}"
+    : "https://${var.bucket_name}.${local.s3_host}/${var.prefix}"
+  )
 }
 
 resource "aws_s3_bucket" "this" {

@@ -77,5 +77,5 @@ output "beacon_reader_secret_access_key" {
 
 output "beacon_reader_source_url" {
   description = "The location to give Beacon for the S3 data connector."
-  value       = "https://${var.bucket_name}.s3.${local.bucket_region}.amazonaws.com/${var.prefix}"
+  value       = local.beacon_reader_source_url
 }
