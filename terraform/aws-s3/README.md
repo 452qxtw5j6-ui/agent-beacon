@@ -2,13 +2,14 @@
 
 Creates the AWS side of Beacon's S3 forwarding:
 
-- an S3 bucket with public access blocked, ACLs disabled, TLS required, default
-  encryption (SSE-S3, or SSE-KMS with `kms_key_arn`), versioning, and a lifecycle rule
-  scoped to the Beacon prefix (skipped with `create_bucket = false`);
+- a new, dedicated S3 bucket with public access blocked, ACLs disabled, TLS required,
+  default encryption (SSE-S3, or SSE-KMS with `kms_key_arn`), versioning, and a
+  lifecycle rule scoped to the Beacon prefix;
 - `beacon-endpoint-writer`, an IAM user that can only `s3:PutObject` below the prefix
   (plus `s3:ListBucket` for the forwarder's startup health check);
 - optionally `beacon-s3-reader`, a read-only IAM user for Beacon Cloud's S3 data
-  connector (`create_beacon_reader = true`).
+  connector (`create_beacon_reader = true`), with an SQS queue per stream that S3
+  notifies of every new object, so Beacon loads objects in any order.
 
 ```hcl
 provider "aws" {
@@ -37,9 +38,9 @@ aws iam create-access-key --user-name beacon-endpoint-writer
 `forwarder_settings` holds the non-secret values the packaged forwarder helper reads
 (`BEACON_S3_BUCKET`, `AWS_REGION`, `BEACON_S3_PREFIX`, `BEACON_S3_STORAGE_CLASS`).
 
-The module needs Terraform 1.5 or later and the AWS provider 6.0 or later. A new bucket
-is created in the provider's region. For an existing bucket in another region, set
-`existing_bucket_region`.
+The module needs Terraform 1.5 or later and the AWS provider 5.0 or later. The bucket
+is created in the provider's region. The module always creates its own bucket; it does
+not manage existing ones.
 
 Before `terraform destroy`, delete the access keys you created with the AWS CLI. IAM
 refuses to delete a user that still has keys, which keeps a rename or replace from

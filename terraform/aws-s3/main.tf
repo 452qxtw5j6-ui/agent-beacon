@@ -1,13 +1,6 @@
 data "aws_partition" "current" {}
 
-# Only read for an existing bucket: it confirms the bucket exists and reports its region. The lookup
-# runs in the provider's region unless existing_bucket_region names another.
-data "aws_s3_bucket" "existing" {
-  count = var.create_bucket ? 0 : 1
-
-  bucket = var.bucket_name
-  region = var.existing_bucket_region
-}
+data "aws_caller_identity" "current" {}
 
 locals {
   bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::${var.bucket_name}"
@@ -15,10 +8,8 @@ locals {
   # Beacon writes <prefix>/runtime/date=YYYY-MM-DD/... and <prefix>/inventory/date=YYYY-MM-DD/...
   beacon_objects_arn = "${local.bucket_arn}/${var.prefix}/*"
 
-  bucket_region = var.create_bucket ? aws_s3_bucket.this[0].region : data.aws_s3_bucket.existing[0].region
-
   # S3's certificate for virtual-hosted URLs covers one label, so a dotted bucket name needs path style.
-  s3_host = "s3.${local.bucket_region}.${data.aws_partition.current.dns_suffix}"
+  s3_host = "s3.${aws_s3_bucket.this.region}.${data.aws_partition.current.dns_suffix}"
   beacon_reader_source_url = (
     strcontains(var.bucket_name, ".")
     ? "https://${local.s3_host}/${var.bucket_name}/${var.prefix}"
@@ -26,25 +17,15 @@ locals {
   )
 }
 
+# A dedicated bucket for Beacon telemetry, always created by the module.
 resource "aws_s3_bucket" "this" {
-  count = var.create_bucket ? 1 : 0
-
   bucket        = var.bucket_name
   force_destroy = var.force_destroy
   tags          = var.tags
-
-  lifecycle {
-    precondition {
-      condition     = var.existing_bucket_region == null
-      error_message = "existing_bucket_region applies only with create_bucket = false. A new bucket is created in the provider's region."
-    }
-  }
 }
 
 resource "aws_s3_bucket_public_access_block" "this" {
-  count = var.create_bucket ? 1 : 0
-
-  bucket                  = aws_s3_bucket.this[0].id
+  bucket                  = aws_s3_bucket.this.id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -53,9 +34,7 @@ resource "aws_s3_bucket_public_access_block" "this" {
 
 # ACLs off: every object belongs to the bucket owner. The forwarder sends no ACL.
 resource "aws_s3_bucket_ownership_controls" "this" {
-  count = var.create_bucket ? 1 : 0
-
-  bucket = aws_s3_bucket.this[0].id
+  bucket = aws_s3_bucket.this.id
 
   rule {
     object_ownership = "BucketOwnerEnforced"
@@ -64,9 +43,7 @@ resource "aws_s3_bucket_ownership_controls" "this" {
 
 # The forwarder sends no encryption headers, so the bucket default decides how objects are encrypted.
 resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
-  count = var.create_bucket ? 1 : 0
-
-  bucket = aws_s3_bucket.this[0].id
+  bucket = aws_s3_bucket.this.id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -78,9 +55,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "this" {
 }
 
 resource "aws_s3_bucket_versioning" "this" {
-  count = var.create_bucket && var.versioning_enabled ? 1 : 0
+  count = var.versioning_enabled ? 1 : 0
 
-  bucket = aws_s3_bucket.this[0].id
+  bucket = aws_s3_bucket.this.id
 
   versioning_configuration {
     status = "Enabled"
@@ -88,9 +65,7 @@ resource "aws_s3_bucket_versioning" "this" {
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "this" {
-  count = var.create_bucket ? 1 : 0
-
-  bucket = aws_s3_bucket.this[0].id
+  bucket = aws_s3_bucket.this.id
 
   rule {
     id     = "beacon-telemetry"
@@ -123,9 +98,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
 }
 
 resource "aws_s3_bucket_policy" "this" {
-  count = var.create_bucket ? 1 : 0
-
-  bucket = aws_s3_bucket.this[0].id
+  bucket = aws_s3_bucket.this.id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [

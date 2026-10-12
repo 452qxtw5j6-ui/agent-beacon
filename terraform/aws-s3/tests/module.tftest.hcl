@@ -8,10 +8,9 @@ mock_provider "aws" {
     }
   }
 
-  mock_data "aws_s3_bucket" {
+  mock_data "aws_caller_identity" {
     defaults = {
-      bucket = "acme-security-logs"
-      region = "eu-west-1"
+      account_id = "111122223333"
     }
   }
 
@@ -74,21 +73,21 @@ run "new_bucket_is_hardened" {
 
   assert {
     condition = (
-      aws_s3_bucket_public_access_block.this[0].block_public_acls
-      && aws_s3_bucket_public_access_block.this[0].block_public_policy
-      && aws_s3_bucket_public_access_block.this[0].ignore_public_acls
-      && aws_s3_bucket_public_access_block.this[0].restrict_public_buckets
+      aws_s3_bucket_public_access_block.this.block_public_acls
+      && aws_s3_bucket_public_access_block.this.block_public_policy
+      && aws_s3_bucket_public_access_block.this.ignore_public_acls
+      && aws_s3_bucket_public_access_block.this.restrict_public_buckets
     )
     error_message = "A new bucket must block all public access."
   }
 
   assert {
-    condition     = one(aws_s3_bucket_ownership_controls.this[0].rule).object_ownership == "BucketOwnerEnforced"
+    condition     = one(aws_s3_bucket_ownership_controls.this.rule).object_ownership == "BucketOwnerEnforced"
     error_message = "A new bucket must disable ACLs."
   }
 
   assert {
-    condition     = one(one(aws_s3_bucket_server_side_encryption_configuration.this[0].rule).apply_server_side_encryption_by_default).sse_algorithm == "AES256"
+    condition     = one(one(aws_s3_bucket_server_side_encryption_configuration.this.rule).apply_server_side_encryption_by_default).sse_algorithm == "AES256"
     error_message = "Without a KMS key the bucket defaults to SSE-S3."
   }
 
@@ -98,12 +97,12 @@ run "new_bucket_is_hardened" {
   }
 
   assert {
-    condition     = aws_s3_bucket.this[0].force_destroy == false
+    condition     = aws_s3_bucket.this.force_destroy == false
     error_message = "A bucket holding telemetry must not be force-destroyed by default."
   }
 
   assert {
-    condition = jsondecode(aws_s3_bucket_policy.this[0].policy).Statement == [
+    condition = jsondecode(aws_s3_bucket_policy.this.policy).Statement == [
       {
         Sid       = "DenyInsecureTransport"
         Effect    = "Deny"
@@ -117,17 +116,17 @@ run "new_bucket_is_hardened" {
   }
 
   assert {
-    condition     = one(aws_s3_bucket_lifecycle_configuration.this[0].rule[0].filter).prefix == "beacon-prod/"
+    condition     = one(aws_s3_bucket_lifecycle_configuration.this.rule[0].filter).prefix == "beacon-prod/"
     error_message = "The lifecycle rule applies only to the Beacon prefix."
   }
 
   assert {
-    condition     = length(aws_s3_bucket_lifecycle_configuration.this[0].rule[0].expiration) == 0
+    condition     = length(aws_s3_bucket_lifecycle_configuration.this.rule[0].expiration) == 0
     error_message = "Objects are kept forever unless expiration_days is set."
   }
 
   assert {
-    condition     = one(aws_s3_bucket_lifecycle_configuration.this[0].rule[0].noncurrent_version_expiration).noncurrent_days == 30
+    condition     = one(aws_s3_bucket_lifecycle_configuration.this.rule[0].noncurrent_version_expiration).noncurrent_days == 30
     error_message = "Noncurrent versions expire after 30 days by default."
   }
 }
@@ -164,36 +163,8 @@ run "source_url_uses_path_style_for_dotted_bucket_names" {
   }
 }
 
-run "source_url_follows_the_partition" {
-  command = apply
-
-  override_data {
-    target = data.aws_partition.current
-    values = {
-      partition  = "aws-cn"
-      dns_suffix = "amazonaws.com.cn"
-    }
-  }
-
-  variables {
-    create_bucket          = false
-    bucket_name            = "acme-security-logs"
-    existing_bucket_region = "cn-north-1"
-  }
-
-  assert {
-    condition     = output.beacon_reader_source_url == "https://acme-security-logs.s3.cn-north-1.amazonaws.com.cn/beacon-prod"
-    error_message = "The URL uses the partition's DNS suffix."
-  }
-
-  assert {
-    condition     = output.bucket_arn == "arn:aws-cn:s3:::acme-security-logs"
-    error_message = "The bucket ARN uses the partition."
-  }
-}
-
 run "kms_key_encrypts_and_is_granted" {
-  command = plan
+  command = apply
 
   variables {
     kms_key_arn          = "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
@@ -202,9 +173,9 @@ run "kms_key_encrypts_and_is_granted" {
 
   assert {
     condition = (
-      one(one(aws_s3_bucket_server_side_encryption_configuration.this[0].rule).apply_server_side_encryption_by_default).sse_algorithm == "aws:kms"
-      && one(one(aws_s3_bucket_server_side_encryption_configuration.this[0].rule).apply_server_side_encryption_by_default).kms_master_key_id == var.kms_key_arn
-      && one(aws_s3_bucket_server_side_encryption_configuration.this[0].rule).bucket_key_enabled
+      one(one(aws_s3_bucket_server_side_encryption_configuration.this.rule).apply_server_side_encryption_by_default).sse_algorithm == "aws:kms"
+      && one(one(aws_s3_bucket_server_side_encryption_configuration.this.rule).apply_server_side_encryption_by_default).kms_master_key_id == var.kms_key_arn
+      && one(aws_s3_bucket_server_side_encryption_configuration.this.rule).bucket_key_enabled
     )
     error_message = "A KMS key becomes the bucket default, with an S3 Bucket Key."
   }
@@ -244,7 +215,7 @@ run "healthcheck_permission_can_be_dropped" {
 }
 
 run "beacon_reader_reads_only_the_prefix" {
-  command = plan
+  command = apply
 
   variables {
     create_beacon_reader = true
@@ -264,13 +235,126 @@ run "beacon_reader_reads_only_the_prefix" {
         Action   = "s3:GetObject"
         Resource = "arn:aws:s3:::acme-beacon-telemetry/beacon-prod/*"
       },
+      {
+        Sid      = "ConsumeBeaconNotifications"
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        Resource = [aws_sqs_queue.beacon_reader["inventory"].arn, aws_sqs_queue.beacon_reader["runtime"].arn]
+      },
+      {
+        Sid      = "FindBeaconQueues"
+        Effect   = "Allow"
+        Action   = "sqs:ListQueues"
+        Resource = "*"
+      },
     ]
-    error_message = "The Beacon reader may list the bucket and read only the Beacon prefix."
+    error_message = "The Beacon reader may list the bucket, read only the Beacon prefix, and consume its two queues."
   }
 
   assert {
     condition     = aws_iam_user.beacon_reader[0].name == "beacon-s3-reader" && length(aws_iam_access_key.beacon_reader) == 0
     error_message = "The reader is created without a key unless create_access_keys is set."
+  }
+}
+
+run "beacon_reader_gets_new_object_queues" {
+  command = apply
+
+  variables {
+    create_beacon_reader = true
+  }
+
+  assert {
+    condition = (
+      aws_sqs_queue.beacon_reader["runtime"].name == "beacon-s3-reader-runtime"
+      && aws_sqs_queue.beacon_reader["inventory"].name == "beacon-s3-reader-inventory"
+      && aws_sqs_queue.beacon_reader_dead_letter["runtime"].name == "beacon-s3-reader-runtime-dlq"
+      && aws_sqs_queue.beacon_reader_dead_letter["inventory"].name == "beacon-s3-reader-inventory-dlq"
+    )
+    error_message = "Each stream gets a queue and a dead-letter queue named after the reader."
+  }
+
+  assert {
+    condition = alltrue([
+      for stream in ["runtime", "inventory"] :
+      aws_sqs_queue.beacon_reader[stream].sqs_managed_sse_enabled
+      && aws_sqs_queue.beacon_reader[stream].message_retention_seconds == 1209600
+      && aws_sqs_queue.beacon_reader[stream].visibility_timeout_seconds == 300
+      && jsondecode(aws_sqs_queue.beacon_reader[stream].redrive_policy) == {
+        deadLetterTargetArn = aws_sqs_queue.beacon_reader_dead_letter[stream].arn
+        maxReceiveCount     = 10
+      }
+    ])
+    error_message = "Queues are encrypted, keep messages 14 days, and move a message to the dead-letter queue after ten failed deliveries."
+  }
+
+  assert {
+    condition = alltrue([
+      for stream in ["runtime", "inventory"] :
+      jsondecode(aws_sqs_queue_policy.beacon_reader[stream].policy).Statement == [
+        {
+          Sid       = "AllowBucketNotifications"
+          Effect    = "Allow"
+          Principal = { Service = "s3.amazonaws.com" }
+          Action    = "sqs:SendMessage"
+          Resource  = aws_sqs_queue.beacon_reader[stream].arn
+          Condition = {
+            ArnEquals    = { "aws:SourceArn" = "arn:aws:s3:::acme-beacon-telemetry" }
+            StringEquals = { "aws:SourceAccount" = "111122223333" }
+          }
+        },
+      ]
+    ])
+    error_message = "Only this bucket, in this account, may send to the queues."
+  }
+
+  assert {
+    condition = {
+      for queue in aws_s3_bucket_notification.this[0].queue : queue.filter_prefix => {
+        arn    = queue.queue_arn
+        events = queue.events
+      }
+      } == {
+      "beacon-prod/runtime/"   = { arn = aws_sqs_queue.beacon_reader["runtime"].arn, events = toset(["s3:ObjectCreated:*"]) }
+      "beacon-prod/inventory/" = { arn = aws_sqs_queue.beacon_reader["inventory"].arn, events = toset(["s3:ObjectCreated:*"]) }
+    }
+    error_message = "Every new object below each stream's prefix is announced on that stream's queue."
+  }
+
+  assert {
+    condition = output.beacon_reader_queue_urls == {
+      runtime   = aws_sqs_queue.beacon_reader["runtime"].url
+      inventory = aws_sqs_queue.beacon_reader["inventory"].url
+    }
+    error_message = "beacon_reader_queue_urls gives the provisioning script's --queue-url values."
+  }
+}
+
+run "queue_names_drop_characters_sqs_refuses" {
+  command = plan
+
+  variables {
+    create_beacon_reader    = true
+    beacon_reader_user_name = "beacon.reader@acme"
+  }
+
+  assert {
+    condition     = aws_sqs_queue.beacon_reader["runtime"].name == "beacon-reader-acme-runtime"
+    error_message = "IAM user names allow . and @, which SQS names do not."
+  }
+}
+
+run "no_queues_without_the_reader" {
+  command = apply
+
+  assert {
+    condition = (
+      length(aws_sqs_queue.beacon_reader) == 0
+      && length(aws_sqs_queue.beacon_reader_dead_letter) == 0
+      && length(aws_s3_bucket_notification.this) == 0
+      && output.beacon_reader_queue_urls == null
+    )
+    error_message = "Queues and the bucket notification exist only with the Beacon reader."
   }
 }
 
@@ -288,68 +372,6 @@ run "access_keys_when_asked" {
   }
 }
 
-run "existing_bucket_is_left_alone" {
-  command = apply
-
-  variables {
-    create_bucket = false
-    bucket_name   = "acme-security-logs"
-  }
-
-  assert {
-    condition = (
-      length(aws_s3_bucket.this) == 0
-      && length(aws_s3_bucket_policy.this) == 0
-      && length(aws_s3_bucket_public_access_block.this) == 0
-      && length(aws_s3_bucket_server_side_encryption_configuration.this) == 0
-      && length(aws_s3_bucket_versioning.this) == 0
-      && length(aws_s3_bucket_lifecycle_configuration.this) == 0
-      && length(aws_s3_bucket_ownership_controls.this) == 0
-    )
-    error_message = "With create_bucket = false the module must not manage any bucket setting."
-  }
-
-  assert {
-    condition     = output.forwarder_settings.AWS_REGION == "eu-west-1" && output.forwarder_settings.BEACON_S3_BUCKET == "acme-security-logs"
-    error_message = "An existing bucket's name and region come from the bucket itself."
-  }
-
-  assert {
-    condition     = jsondecode(aws_iam_user_policy.writer.policy).Statement[0].Resource == "arn:aws:s3:::acme-security-logs/beacon-prod/*"
-    error_message = "The writer is scoped to the existing bucket's Beacon prefix."
-  }
-
-  assert {
-    condition     = data.aws_s3_bucket.existing[0].region == "eu-west-1"
-    error_message = "Without existing_bucket_region the bucket is looked up in the provider's region."
-  }
-}
-
-run "existing_bucket_in_another_region" {
-  command = plan
-
-  variables {
-    create_bucket          = false
-    bucket_name            = "acme-security-logs"
-    existing_bucket_region = "ap-southeast-2"
-  }
-
-  assert {
-    condition     = data.aws_s3_bucket.existing[0].region == "ap-southeast-2"
-    error_message = "existing_bucket_region is where the bucket is looked up, so the lookup works across regions."
-  }
-}
-
-run "rejects_existing_bucket_region_for_a_new_bucket" {
-  command = plan
-
-  variables {
-    existing_bucket_region = "ap-southeast-2"
-  }
-
-  expect_failures = [aws_s3_bucket.this]
-}
-
 run "expiration_when_asked" {
   command = plan
 
@@ -359,12 +381,12 @@ run "expiration_when_asked" {
   }
 
   assert {
-    condition     = one(aws_s3_bucket_lifecycle_configuration.this[0].rule[0].expiration).days == 365
+    condition     = one(aws_s3_bucket_lifecycle_configuration.this.rule[0].expiration).days == 365
     error_message = "expiration_days expires current objects."
   }
 
   assert {
-    condition     = length(aws_s3_bucket_versioning.this) == 0 && length(aws_s3_bucket_lifecycle_configuration.this[0].rule[0].noncurrent_version_expiration) == 0
+    condition     = length(aws_s3_bucket_versioning.this) == 0 && length(aws_s3_bucket_lifecycle_configuration.this.rule[0].noncurrent_version_expiration) == 0
     error_message = "Without versioning there is no versioning resource and no noncurrent rule."
   }
 }

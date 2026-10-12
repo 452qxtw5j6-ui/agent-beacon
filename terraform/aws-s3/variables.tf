@@ -1,27 +1,10 @@
 variable "bucket_name" {
-  description = "Name of the S3 bucket Beacon writes to. With create_bucket = true it must be globally unique."
+  description = "Name of the dedicated S3 bucket the module creates for Beacon telemetry. Bucket names are global across AWS, so it must be unused."
   type        = string
 
   validation {
     condition     = can(regex("^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$", var.bucket_name))
     error_message = "bucket_name must be a valid S3 bucket name: 3 to 63 lowercase letters, digits, dots and hyphens."
-  }
-}
-
-variable "create_bucket" {
-  description = "Create and harden the bucket. Set to false to use a bucket you already manage: the module then only creates the IAM users and changes nothing on the bucket."
-  type        = bool
-  default     = true
-}
-
-variable "existing_bucket_region" {
-  description = "Region of an existing bucket (create_bucket = false) when it is not the provider's region. Terraform cannot find a bucket in another region without it. A bucket the module creates is always in the provider's region, so leave this null then."
-  type        = string
-  default     = null
-
-  validation {
-    condition     = var.existing_bucket_region == null || can(regex("^[a-z]{2}(-[a-z]+)+-[0-9]+$", var.existing_bucket_region))
-    error_message = "existing_bucket_region must be an AWS region name such as us-west-2."
   }
 }
 
@@ -59,7 +42,7 @@ variable "storage_class" {
 }
 
 variable "kms_key_arn" {
-  description = "ARN of a customer managed KMS key. With create_bucket = true it becomes the bucket's default encryption (SSE-KMS with an S3 Bucket Key); with an existing bucket, set it to the key that bucket already uses. Either way the writer gets kms:GenerateDataKey and the Beacon reader gets kms:Decrypt on it. Leave null for SSE-S3."
+  description = "ARN of a customer managed KMS key to make the bucket's default encryption (SSE-KMS with an S3 Bucket Key). The writer gets kms:GenerateDataKey and the Beacon reader gets kms:Decrypt on it. Leave null for SSE-S3."
   type        = string
   default     = null
 
@@ -70,13 +53,13 @@ variable "kms_key_arn" {
 }
 
 variable "versioning_enabled" {
-  description = "Turn on bucket versioning, so objects deleted or overwritten by an administrator can be recovered. Applies only when the module creates the bucket."
+  description = "Turn on bucket versioning, so objects deleted or overwritten by an administrator can be recovered."
   type        = bool
   default     = true
 }
 
 variable "expiration_days" {
-  description = "Delete Beacon objects this many days after upload. Leave null to keep them until you delete them. Applies only when the module creates the bucket."
+  description = "Delete Beacon objects this many days after upload. Leave null to keep them until you delete them."
   type        = number
   default     = null
 
@@ -87,7 +70,7 @@ variable "expiration_days" {
 }
 
 variable "noncurrent_version_expiration_days" {
-  description = "With versioning on, delete replaced or deleted object versions this many days after they stop being current. Applies only when the module creates the bucket."
+  description = "With versioning on, delete replaced or deleted object versions this many days after they stop being current."
   type        = number
   default     = 30
 
@@ -116,13 +99,13 @@ variable "allow_writer_healthcheck" {
 }
 
 variable "create_beacon_reader" {
-  description = "Create a read-only IAM user for Beacon Cloud's S3 data connector, which reads your bucket with an access key. It can read only the Beacon prefix."
+  description = "Create a read-only IAM user for Beacon Cloud's S3 data connector, which reads your bucket with an access key. It can read only the Beacon prefix. The module also creates an SQS queue per stream, with a dead-letter queue, that S3 notifies of every new object, so the connector loads objects in any order."
   type        = bool
   default     = false
 }
 
 variable "beacon_reader_user_name" {
-  description = "Name of the read-only IAM user created when create_beacon_reader = true."
+  description = "Name of the read-only IAM user created when create_beacon_reader = true. Its queues are named after it: <name>-runtime and <name>-inventory, each with a -dlq."
   type        = string
   default     = "beacon-s3-reader"
 }

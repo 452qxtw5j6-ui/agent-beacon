@@ -1,6 +1,6 @@
 output "bucket_name" {
   description = "Bucket Beacon writes to."
-  value       = var.create_bucket ? aws_s3_bucket.this[0].bucket : data.aws_s3_bucket.existing[0].bucket
+  value       = aws_s3_bucket.this.bucket
 }
 
 output "bucket_arn" {
@@ -10,7 +10,7 @@ output "bucket_arn" {
 
 output "region" {
   description = "Region of the bucket (AWS_REGION for the forwarder)."
-  value       = local.bucket_region
+  value       = aws_s3_bucket.this.region
 }
 
 output "prefix" {
@@ -26,8 +26,8 @@ output "storage_class" {
 output "forwarder_settings" {
   description = "The non-secret settings Beacon's S3 forwarder helper reads, keyed by environment variable name."
   value = {
-    BEACON_S3_BUCKET        = var.create_bucket ? aws_s3_bucket.this[0].bucket : data.aws_s3_bucket.existing[0].bucket
-    AWS_REGION              = local.bucket_region
+    BEACON_S3_BUCKET        = aws_s3_bucket.this.bucket
+    AWS_REGION              = aws_s3_bucket.this.region
     BEACON_S3_PREFIX        = var.prefix
     BEACON_S3_STORAGE_CLASS = var.storage_class
   }
@@ -78,4 +78,9 @@ output "beacon_reader_secret_access_key" {
 output "beacon_reader_source_url" {
   description = "The location to give Beacon for the S3 data connector."
   value       = local.beacon_reader_source_url
+}
+
+output "beacon_reader_queue_urls" {
+  description = "The new-object queues to give Beacon for the S3 data connector, by stream, when create_beacon_reader = true."
+  value       = var.create_beacon_reader ? { for stream, queue in aws_sqs_queue.beacon_reader : stream => queue.url } : null
 }

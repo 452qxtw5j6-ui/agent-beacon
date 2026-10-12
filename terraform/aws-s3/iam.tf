@@ -40,6 +40,19 @@ locals {
         Action   = "s3:GetObject"
         Resource = local.beacon_objects_arn
       },
+      # The four actions ClickPipes needs to consume the new-object queues.
+      {
+        Sid      = "ConsumeBeaconNotifications"
+        Effect   = "Allow"
+        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+        Resource = [for queue in aws_sqs_queue.beacon_reader : queue.arn]
+      },
+      {
+        Sid      = "FindBeaconQueues"
+        Effect   = "Allow"
+        Action   = "sqs:ListQueues"
+        Resource = "*"
+      },
     ],
     var.kms_key_arn == null ? [] : [
       {

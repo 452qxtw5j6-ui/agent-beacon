@@ -14,6 +14,12 @@ mock_provider "google" {
     }
   }
 
+  mock_resource "google_pubsub_topic" {
+    defaults = {
+      id = "projects/acme-security/topics/beacon-acme-beacon-telemetry-objects"
+    }
+  }
+
   mock_data "google_storage_project_service_account" {
     defaults = {
       email_address = "service-123456789@gs-project-accounts.iam.gserviceaccount.com"
@@ -66,26 +72,26 @@ run "new_bucket_is_hardened" {
 
   assert {
     condition = (
-      google_storage_bucket.this[0].uniform_bucket_level_access
-      && google_storage_bucket.this[0].public_access_prevention == "enforced"
-      && google_storage_bucket.this[0].force_destroy == false
-      && one(google_storage_bucket.this[0].versioning).enabled
-      && google_storage_bucket.this[0].location == "us-west1"
-      && google_storage_bucket.this[0].storage_class == "STANDARD"
+      google_storage_bucket.this.uniform_bucket_level_access
+      && google_storage_bucket.this.public_access_prevention == "enforced"
+      && google_storage_bucket.this.force_destroy == false
+      && one(google_storage_bucket.this.versioning).enabled
+      && google_storage_bucket.this.location == "us-west1"
+      && google_storage_bucket.this.storage_class == "STANDARD"
     )
     error_message = "A new bucket uses uniform access, enforced public access prevention and versioning."
   }
 
   assert {
-    condition     = length(google_storage_bucket.this[0].encryption) == 0
+    condition     = length(google_storage_bucket.this.encryption) == 0
     error_message = "Without a KMS key the bucket uses Google-managed encryption."
   }
 
   assert {
     condition = (
-      length(google_storage_bucket.this[0].lifecycle_rule) == 1
-      && one(google_storage_bucket.this[0].lifecycle_rule[0].condition).days_since_noncurrent_time == 30
-      && one(google_storage_bucket.this[0].lifecycle_rule[0].condition).matches_prefix == tolist(["beacon-prod/"])
+      length(google_storage_bucket.this.lifecycle_rule) == 1
+      && one(google_storage_bucket.this.lifecycle_rule[0].condition).days_since_noncurrent_time == 30
+      && one(google_storage_bucket.this.lifecycle_rule[0].condition).matches_prefix == tolist(["beacon-prod/"])
     )
     error_message = "By default only noncurrent versions below the prefix expire, after 30 days."
   }
@@ -137,6 +143,84 @@ run "beacon_read_access_when_asked" {
   }
 }
 
+run "beacon_read_access_brings_new_object_subscriptions" {
+  command = apply
+
+  variables {
+    grant_beacon_read_access = true
+  }
+
+  assert {
+    condition = (
+      google_pubsub_topic.beacon_reader[0].name == "beacon-acme-beacon-telemetry-objects"
+      && google_pubsub_topic_iam_member.storage_agent[0].role == "roles/pubsub.publisher"
+      && google_pubsub_topic_iam_member.storage_agent[0].member == "serviceAccount:service-123456789@gs-project-accounts.iam.gserviceaccount.com"
+    )
+    error_message = "Cloud Storage's service agent publishes new-object notifications to a topic for this bucket."
+  }
+
+  assert {
+    condition = (
+      google_storage_notification.beacon_reader[0].event_types == toset(["OBJECT_FINALIZE"])
+      && google_storage_notification.beacon_reader[0].object_name_prefix == "beacon-prod/"
+      && google_storage_notification.beacon_reader[0].payload_format == "JSON_API_V1"
+    )
+    error_message = "Every new object below the prefix is announced."
+  }
+
+  assert {
+    condition = alltrue([
+      for stream in ["runtime", "inventory"] :
+      google_pubsub_subscription.beacon_reader[stream].name == "beacon-acme-beacon-telemetry-${stream}"
+      && google_pubsub_subscription.beacon_reader[stream].filter == "attributes.eventType = \"OBJECT_FINALIZE\" AND hasPrefix(attributes.objectId, \"beacon-prod/${stream}/\")"
+      && google_pubsub_subscription.beacon_reader[stream].ack_deadline_seconds == 60
+      && google_pubsub_subscription.beacon_reader[stream].message_retention_duration == "604800s"
+      && one(google_pubsub_subscription.beacon_reader[stream].expiration_policy).ttl == ""
+    ])
+    error_message = "Each stream has a never-expiring subscription filtered to its prefix, with the managed path's settings."
+  }
+
+  assert {
+    condition = toset([
+      for binding in google_pubsub_subscription_iam_member.beacon_reader : "${binding.subscription}|${binding.role}|${binding.member}"
+      ]) == toset(flatten([
+        for stream in ["runtime", "inventory"] : [
+          for role in ["roles/pubsub.subscriber", "roles/pubsub.viewer"] :
+          "${google_pubsub_subscription.beacon_reader[stream].name}|${role}|serviceAccount:beacon-clickpipes-reader@asymptote-labs.iam.gserviceaccount.com"
+        ]
+    ]))
+    error_message = "Beacon's reader may consume and view both subscriptions, and nothing else gets access."
+  }
+
+  assert {
+    condition = output.beacon_reader_subscriptions == {
+      runtime   = google_pubsub_subscription.beacon_reader["runtime"].id
+      inventory = google_pubsub_subscription.beacon_reader["inventory"].id
+    }
+    error_message = "beacon_reader_subscriptions gives the provisioning script's --queue-url values."
+  }
+
+  assert {
+    condition     = contains(keys(google_project_service.this), "pubsub.googleapis.com")
+    error_message = "Pub/Sub is enabled when Beacon reads the bucket."
+  }
+}
+
+run "no_pubsub_without_beacon_read_access" {
+  command = apply
+
+  assert {
+    condition = (
+      length(google_pubsub_topic.beacon_reader) == 0
+      && length(google_storage_notification.beacon_reader) == 0
+      && length(google_pubsub_subscription.beacon_reader) == 0
+      && output.beacon_reader_subscriptions == null
+      && !contains(keys(google_project_service.this), "pubsub.googleapis.com")
+    )
+    error_message = "The topic, notification and subscriptions exist only with Beacon read access."
+  }
+}
+
 run "kms_key_encrypts_and_is_granted_to_the_storage_agent" {
   command = plan
 
@@ -145,7 +229,7 @@ run "kms_key_encrypts_and_is_granted_to_the_storage_agent" {
   }
 
   assert {
-    condition     = one(google_storage_bucket.this[0].encryption).default_kms_key_name == var.kms_key_name
+    condition     = one(google_storage_bucket.this.encryption).default_kms_key_name == var.kms_key_name
     error_message = "The key becomes the bucket's default encryption."
   }
 
@@ -159,39 +243,6 @@ run "kms_key_encrypts_and_is_granted_to_the_storage_agent" {
   }
 }
 
-run "existing_bucket_is_left_alone" {
-  command = apply
-
-  variables {
-    create_bucket = false
-    bucket_name   = "acme-security-logs"
-    location      = null
-  }
-
-  assert {
-    condition     = length(google_storage_bucket.this) == 0 && length(google_kms_crypto_key_iam_member.storage_agent) == 0
-    error_message = "With create_bucket = false the module must not manage the bucket."
-  }
-
-  assert {
-    condition     = google_storage_bucket_iam_member.writer.bucket == "acme-security-logs" && output.forwarder_settings.BEACON_GCS_BUCKET == "acme-security-logs"
-    error_message = "The writer is bound on the existing bucket."
-  }
-}
-
-run "unscoped_writer_when_asked" {
-  command = plan
-
-  variables {
-    scope_writer_to_prefix = false
-  }
-
-  assert {
-    condition     = length(google_storage_bucket_iam_member.writer.condition) == 0
-    error_message = "scope_writer_to_prefix = false drops the IAM condition."
-  }
-}
-
 run "expiration_when_asked" {
   command = plan
 
@@ -202,9 +253,9 @@ run "expiration_when_asked" {
 
   assert {
     condition = (
-      length(google_storage_bucket.this[0].lifecycle_rule) == 1
-      && one(google_storage_bucket.this[0].lifecycle_rule[0].condition).age == 365
-      && one(google_storage_bucket.this[0].lifecycle_rule[0].condition).matches_prefix == tolist(["beacon-prod/"])
+      length(google_storage_bucket.this.lifecycle_rule) == 1
+      && one(google_storage_bucket.this.lifecycle_rule[0].condition).age == 365
+      && one(google_storage_bucket.this.lifecycle_rule[0].condition).matches_prefix == tolist(["beacon-prod/"])
     )
     error_message = "expiration_days deletes objects below the prefix, and no noncurrent rule exists without versioning."
   }
@@ -221,16 +272,6 @@ run "key_when_asked" {
     condition     = length(google_service_account_key.writer) == 1
     error_message = "create_writer_key creates one key."
   }
-}
-
-run "location_required_for_a_new_bucket" {
-  command = plan
-
-  variables {
-    location = null
-  }
-
-  expect_failures = [google_storage_bucket.this]
 }
 
 run "rejects_stream_suffix_prefix" {

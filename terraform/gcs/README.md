@@ -2,13 +2,15 @@
 
 Creates the Google Cloud side of Beacon's GCS forwarding:
 
-- a Cloud Storage bucket with uniform bucket-level access, public access prevention
-  enforced, versioning, optional CMEK (`kms_key_name`), and lifecycle rules scoped to
-  the Beacon prefix (skipped with `create_bucket = false`);
+- a new, dedicated Cloud Storage bucket with uniform bucket-level access, public access
+  prevention enforced, versioning, optional CMEK (`kms_key_name`), and lifecycle rules
+  scoped to the Beacon prefix;
 - `beacon-endpoint-writer`, a service account with `roles/storage.objectCreator` on
   the bucket, limited by an IAM condition to objects below the prefix;
 - optionally a read-only `beacon-endpoint-reader` (`create_reader = true`) and read
-  access for Beacon Cloud (`grant_beacon_read_access = true`).
+  access for Beacon Cloud (`grant_beacon_read_access = true`), which also publishes
+  every new object to Pub/Sub with a subscription per stream, so Beacon loads objects in
+  any order.
 
 ```hcl
 provider "google" {

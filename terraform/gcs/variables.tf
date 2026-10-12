@@ -4,7 +4,7 @@ variable "project" {
 }
 
 variable "bucket_name" {
-  description = "Name of the Cloud Storage bucket Beacon writes to. With create_bucket = true it must be globally unique."
+  description = "Name of the dedicated Cloud Storage bucket the module creates for Beacon telemetry. Bucket names are global across Google Cloud, so it must be unused."
   type        = string
 
   validation {
@@ -13,16 +13,9 @@ variable "bucket_name" {
   }
 }
 
-variable "create_bucket" {
-  description = "Create and harden the bucket. Set to false to use a bucket you already manage: the module then only creates the service account and its bucket IAM bindings."
-  type        = bool
-  default     = true
-}
-
 variable "location" {
-  description = "Bucket location, such as us-west1 or US. Required when create_bucket = true."
+  description = "Bucket location, such as us-west1 or US."
   type        = string
-  default     = null
 }
 
 variable "prefix" {
@@ -40,7 +33,7 @@ variable "prefix" {
 }
 
 variable "storage_class" {
-  description = "Storage class the forwarder writes objects with (BEACON_GCS_STORAGE_CLASS), and the default class of a bucket the module creates."
+  description = "Storage class the forwarder writes objects with (BEACON_GCS_STORAGE_CLASS), and the bucket's default class."
   type        = string
   default     = "STANDARD"
 
@@ -51,7 +44,7 @@ variable "storage_class" {
 }
 
 variable "kms_key_name" {
-  description = "Cloud KMS key (projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>) to use as the default encryption of a bucket the module creates. Leave null for Google-managed encryption."
+  description = "Cloud KMS key (projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>) to use as the bucket's default encryption. Leave null for Google-managed encryption."
   type        = string
   default     = null
 
@@ -68,13 +61,13 @@ variable "grant_kms_to_storage_agent" {
 }
 
 variable "versioning_enabled" {
-  description = "Turn on object versioning, so objects deleted or replaced by an administrator can be recovered. Applies only when the module creates the bucket."
+  description = "Turn on object versioning, so objects deleted or replaced by an administrator can be recovered."
   type        = bool
   default     = true
 }
 
 variable "expiration_days" {
-  description = "Delete Beacon objects this many days after upload. Leave null to keep them until you delete them. Applies only when the module creates the bucket."
+  description = "Delete Beacon objects this many days after upload. Leave null to keep them until you delete them."
   type        = number
   default     = null
 
@@ -85,7 +78,7 @@ variable "expiration_days" {
 }
 
 variable "noncurrent_version_expiration_days" {
-  description = "With versioning on, delete replaced or deleted object versions this many days after they stop being current. Applies only when the module creates the bucket."
+  description = "With versioning on, delete replaced or deleted object versions this many days after they stop being current."
   type        = number
   default     = 30
 
@@ -102,7 +95,7 @@ variable "force_destroy" {
 }
 
 variable "enable_apis" {
-  description = "Enable the Cloud Storage and IAM APIs on the project. They are left enabled when the module is destroyed."
+  description = "Enable the Cloud Storage and IAM APIs on the project, and Pub/Sub when grant_beacon_read_access = true. They are left enabled when the module is destroyed."
   type        = bool
   default     = true
 }
@@ -111,12 +104,6 @@ variable "writer_account_id" {
   description = "Account ID of the service account every Mac's forwarder authenticates as."
   type        = string
   default     = "beacon-endpoint-writer"
-}
-
-variable "scope_writer_to_prefix" {
-  description = "Limit the writer to creating objects below the Beacon prefix with an IAM condition. Conditions need uniform bucket-level access, which a bucket the module creates always has; set to false only for an existing bucket that still uses fine-grained ACLs."
-  type        = bool
-  default     = true
 }
 
 variable "create_writer_key" {
@@ -138,7 +125,7 @@ variable "reader_account_id" {
 }
 
 variable "grant_beacon_read_access" {
-  description = "Grant Beacon Cloud read access to the bucket (roles/storage.objectViewer for beacon_reader_member), so Beacon can ingest the telemetry you store there. No key is involved."
+  description = "Grant Beacon Cloud read access to the bucket (roles/storage.objectViewer for beacon_reader_member), so Beacon can ingest the telemetry you store there. No key is involved. The module also publishes every new object to a Pub/Sub topic with one subscription per stream that Beacon's reader may consume, so Beacon loads objects in any order."
   type        = bool
   default     = false
 }
@@ -150,7 +137,7 @@ variable "beacon_reader_member" {
 }
 
 variable "labels" {
-  description = "Labels to apply to a bucket the module creates."
+  description = "Labels to apply to the bucket, and to the Pub/Sub topic and subscriptions when they exist."
   type        = map(string)
   default     = {}
 }
