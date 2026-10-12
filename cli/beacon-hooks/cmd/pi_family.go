@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/diff"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
@@ -349,7 +350,7 @@ const ompDeviceScheme = "xd://"
 // ompDeviceHelpContent matches a device write that asks for documentation rather than making a
 // call: an empty payload, `?`, or `help`. It mirrors HELP_CONTENT_RE in Oh My Pi's tools/xdev.ts,
 // which is how the runtime itself tells the two apart before anything has run.
-var ompDeviceHelpContent = regexp.MustCompile(`(?i)^\s*(\?|help)?\s*$`)
+var ompDeviceHelpContent = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`(?i)^\s*(\?|help)?\s*$`) })
 
 // ompDeviceCall resolves a write to `xd://<tool>` into the call of <tool> it carries.
 //
@@ -383,7 +384,7 @@ func ompDeviceCall(call piToolCall) (piToolCall, bool) {
 		if getFirstStr(xdev, "mode") != "execute" {
 			return piToolCall{}, false
 		}
-	} else if ompDeviceHelpContent.MatchString(getFirstStr(call.args, "content")) {
+	} else if ompDeviceHelpContent().MatchString(getFirstStr(call.args, "content")) {
 		return piToolCall{}, false
 	}
 
@@ -565,17 +566,19 @@ func piResolvedPath(details map[string]interface{}) (string, bool) {
 // packages/tui/src/tools/read.ts: comma-joined line ranges (`10`, `10-40`, `10..40`, `10+30`,
 // `10-`), a tail (`-60`), or `raw`, `conflicts` or `img`. A range may not end in `+`, which is
 // what the runtime's trailing lookbehind enforces.
-var ompLineSelector = regexp.MustCompile(`(?i)^(?:` + ompLineRange + `(?:,` + ompLineRange + `)*|-\d+|raw|conflicts|img)$`)
+var ompLineSelector = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?i)^(?:` + ompLineRange + `(?:,` + ompLineRange + `)*|-\d+|raw|conflicts|img)$`)
+})
 
 const ompLineRange = `L?\d+(?:(?:\.\.|-)(?:L?\d+)?|\+L?\d+)?`
 
 // ompStrayColon matches the stray `:` some models put in front of a path (`:/abs`, `:../rel`,
 // `:C:\repo`), which Oh My Pi drops before resolving: no real path starts with `:`.
-var ompStrayColon = regexp.MustCompile(`^:(?:[/\\~]|\.\.?[/\\]|[A-Za-z]:)`)
+var ompStrayColon = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^:(?:[/\\~]|\.\.?[/\\]|[A-Za-z]:)`) })
 
 // ompWindowsAbsolute matches a Windows absolute path: a drive (`C:\`, `C:/`), a UNC share, or a
 // root-relative `\path`, the forms Node's path.win32.isAbsolute accepts.
-var ompWindowsAbsolute = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|[\\/]{2}|\\)`)
+var ompWindowsAbsolute = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|[\\/]{2}|\\)`) })
 
 // ompStripPathMarker drops the marker characters Oh My Pi strips from the front of a path before
 // it reads one, mirroring the first steps of its expandPath (tools/path-utils.ts).
@@ -586,14 +589,14 @@ var ompWindowsAbsolute = regexp.MustCompile(`^(?:[A-Za-z]:[\\/]|[\\/]{2}|\\)`)
 // than a file or web URL is taken for one here, because it is not a file either way. Stripping the
 // `@` before the URI check is what keeps `@skill://name` from being read as a file path.
 func ompStripPathMarker(target string) string {
-	if ompStrayColon.MatchString(target) {
+	if ompStrayColon().MatchString(target) {
 		target = target[1:]
 	}
 	rest, ok := strings.CutPrefix(target, "@")
 	if !ok {
 		return target
 	}
-	if strings.HasPrefix(rest, "/") || rest == "~" || strings.HasPrefix(rest, "~/") || ompWindowsAbsolute.MatchString(rest) {
+	if strings.HasPrefix(rest, "/") || rest == "~" || strings.HasPrefix(rest, "~/") || ompWindowsAbsolute().MatchString(rest) {
 		return rest
 	}
 	if scheme, _, ok := strings.Cut(rest, "://"); ok && isURIScheme(scheme) {
@@ -608,7 +611,7 @@ func ompStripPathMarker(target string) string {
 
 // ompUnicodeSpaces are the space characters Oh My Pi reads as a plain space in a path: no-break,
 // the U+2000 block, narrow no-break, medium mathematical and ideographic.
-var ompUnicodeSpaces = regexp.MustCompile("[\u00A0\u2000-\u200A\u202F\u205F\u3000]")
+var ompUnicodeSpaces = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile("[\u00A0\u2000-\u200A\u202F\u205F\u3000]") })
 
 // ompToolPath turns a path as an Oh My Pi tool was given it into the file it names.
 //
@@ -637,7 +640,7 @@ var ompUnicodeSpaces = regexp.MustCompile("[\u00A0\u2000-\u200A\u202F\u205F\u300
 // edit rebound by its snapshot tag, or a macOS spelling variant of the name. Those reach only the
 // result, which reports the file the runtime actually used.
 func ompToolPath(target, cwd, goos string, wsl bool) string {
-	p := ompUnicodeSpaces.ReplaceAllString(target, " ")
+	p := ompUnicodeSpaces().ReplaceAllString(target, " ")
 	if strings.HasPrefix(p, "~") {
 		if home, err := os.UserHomeDir(); err == nil {
 			p = filepath.Join(home, p[1:])
@@ -655,7 +658,7 @@ func ompToolPath(target, cwd, goos string, wsl bool) string {
 	stripped := p
 	for range 2 {
 		i := strings.LastIndexByte(stripped, ':')
-		if i <= 0 || !ompLineSelector.MatchString(stripped[i+1:]) {
+		if i <= 0 || !ompLineSelector().MatchString(stripped[i+1:]) {
 			break
 		}
 		stripped = stripped[:i]
@@ -697,7 +700,7 @@ func ompDriveAliasPath(p, goos string, wsl bool) string {
 		}
 		return drive + `:\` + strings.Join(nonEmpty(tail), `\`)
 	case wsl:
-		match := ompWindowsDrivePath.FindStringSubmatch(strings.ReplaceAll(strings.TrimSpace(p), "/", `\`))
+		match := ompWindowsDrivePath().FindStringSubmatch(strings.ReplaceAll(strings.TrimSpace(p), "/", `\`))
 		if match == nil {
 			return p
 		}
@@ -723,7 +726,7 @@ func ompDriveAliasPath(p, goos string, wsl bool) string {
 	}
 }
 
-var ompWindowsDrivePath = regexp.MustCompile(`^([A-Za-z]):\\(.*)$`)
+var ompWindowsDrivePath = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^([A-Za-z]):\\(.*)$`) })
 
 func isDriveLetter(s string) bool {
 	return len(s) == 1 && (s[0] >= 'a' && s[0] <= 'z' || s[0] >= 'A' && s[0] <= 'Z')

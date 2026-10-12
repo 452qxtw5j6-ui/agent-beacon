@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -114,8 +115,8 @@ type LensTokenModelV1 struct {
 }
 
 var (
-	lensIDPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
-	lensIconPattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	lensIDPattern   = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`) })
+	lensIconPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`) })
 	// The manifest element is matched by its exact opening tag. The spec fixes the spelling so that
 	// a reader needs no HTML parser and two readers cannot disagree about which element it is.
 	lensManifestOpen  = []byte(`<script type="` + LensManifestScriptType + `">`)
@@ -134,13 +135,13 @@ var ErrLensManifestMissing = errors.New("lens has no <script type=\"" + LensMani
 // Validate reports every way the manifest breaks the spec, joined, or nil.
 func (m LensManifestV1) Validate() error {
 	var problems []error
-	if !lensIDPattern.MatchString(m.ID) {
+	if !lensIDPattern().MatchString(m.ID) {
 		problems = append(problems, fmt.Errorf("id %q must be 1-63 lowercase letters, digits or hyphens, starting with a letter or digit", m.ID))
 	}
 	problems = append(problems, lensText("title", m.Title, lensTitleMaxRunes, true)...)
 	problems = append(problems, lensText("description", m.Description, lensDescriptionMaxRunes, false)...)
 	problems = append(problems, lensText("author", m.Author, lensAuthorMaxRunes, false)...)
-	if m.Icon != "" && !lensIconPattern.MatchString(m.Icon) {
+	if m.Icon != "" && !lensIconPattern().MatchString(m.Icon) {
 		problems = append(problems, fmt.Errorf("icon %q must be one lowercase word (letters, digits, hyphens)", m.Icon))
 	}
 	if m.Version < 1 {
@@ -176,7 +177,7 @@ func lensText(field, value string, maxRunes int, required bool) []error {
 
 // ValidLensID reports whether id is a well-formed lens ID. Callers that turn an ID into a file name
 // check it first, so an ID can never name a path outside the lens store.
-func ValidLensID(id string) bool { return lensIDPattern.MatchString(id) }
+func ValidLensID(id string) bool { return lensIDPattern().MatchString(id) }
 
 // CheckLensFile applies the spec's file-level rules -- the size cap, exactly one manifest, and a
 // valid manifest -- and returns the manifest. Everything that installs, serves or lints a lens

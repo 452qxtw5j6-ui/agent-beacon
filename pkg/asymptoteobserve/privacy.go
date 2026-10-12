@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 const (
@@ -68,13 +69,22 @@ const (
 // argument is a constant naming a credential (the pattern spells out "password") as returning that
 // credential, and these rules hold patterns, not secrets.
 func quotedRules(kind quotedKind, keep func(string) bool) []redactionRule {
-	prefix := `\b` + redactLabel + redactSeparator
+	prefix, words, separator, within := `\b`+redactLabel+redactSeparator, redactLabelWords, skipSeparator, redactLabelNeedles
 	if kind == quotedFlag {
-		prefix = redactFlag
+		prefix, words, separator, within = redactFlag, redactFlagWords, skipFlagSeparator, redactFlagNeedles
 	}
 	rules := make([]redactionRule, 0, len(quotedValues))
 	for _, quoted := range quotedValues {
-		rules = append(rules, redactionRule{regexp.MustCompile(`(?i)(` + prefix + quoted[0] + `)(?P<value>` + quoted[1] + `)`), "${1}" + redactedValue, keep})
+		// The pattern opens the value with this one quote right after the separator, so text
+		// where no label is followed by it cannot match.
+		open := strings.ReplaceAll(quoted[0], `\\`, `\`)
+		needles := newRedactNeedles(true, words...)
+		needles.within = within
+		needles.followedBy = func(rest string) bool {
+			rest, ok := separator(rest)
+			return ok && strings.HasPrefix(rest, open)
+		}
+		rules = append(rules, lazyRule(`(?i)(`+prefix+quoted[0]+`)(?P<value>`+quoted[1]+`)`, "${1}"+redactedValue, keep, needles))
 	}
 	return rules
 }
@@ -95,11 +105,160 @@ const redactFlag = `(?:^|\s)--?[a-z0-9-]*(?:password|passwd|passphrase|token|sec
 // redactionRule is one redaction. ${1} and ${3}, when the pattern has them, are kept around the
 // value.
 type redactionRule struct {
-	pattern     *regexp.Regexp
+	pattern     func() *regexp.Regexp
 	replacement string
 	// keep, when set, leaves a match alone if its value (the group named value) passes.
 	keep func(value string) bool
+	// needles are literals the pattern cannot match without: when the text holds none of them,
+	// the rule is skipped without running the pattern.
+	needles *redactNeedles
 }
+
+// redactNeedles is a set of literals a pattern cannot match without. folded needles are lower
+// case and compared against the lower-cased text, for a case-insensitive pattern. followedBy, when
+// set, must also hold for the text right after the needle. within, when set, is a broader set the
+// text must also hold, searched first: it is what keeps a family of narrow sets to one search on
+// text that holds none of them.
+type redactNeedles struct {
+	id         uint
+	folded     bool
+	needles    []string
+	followedBy func(rest string) bool
+	precededBy func(before string) bool
+	within     *redactNeedles
+}
+
+var redactNeedleSets uint
+
+func newRedactNeedles(folded bool, needles ...string) *redactNeedles {
+	if len(needles) == 0 {
+		panic("asymptoteobserve: a redaction rule needs at least one needle")
+	}
+	if redactNeedleSets >= 64 {
+		panic("asymptoteobserve: redactGate tracks at most 64 needle sets")
+	}
+	set := &redactNeedles{id: redactNeedleSets, folded: folded, needles: needles}
+	redactNeedleSets++
+	return set
+}
+
+// rule is a case-sensitive rule that cannot match text holding none of needles.
+func rule(expr, replacement string, keep func(string) bool, needles ...string) redactionRule {
+	return lazyRule(expr, replacement, keep, newRedactNeedles(false, needles...))
+}
+
+// foldedRule is a case-insensitive rule that cannot match text whose lower-cased form holds none
+// of needles, which must be lower case.
+func foldedRule(expr, replacement string, keep func(string) bool, needles ...string) redactionRule {
+	return lazyRule(expr, replacement, keep, newRedactNeedles(true, needles...))
+}
+
+// lazyRule compiles its pattern the first time text gets past the needles. A hook is a process
+// per event, and most events never need most rules: compiling all of them up front cost every
+// hook run a few milliseconds before it had read its input.
+func lazyRule(expr, replacement string, keep func(string) bool, needles *redactNeedles) redactionRule {
+	return redactionRule{pattern: sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(expr) }), replacement: replacement, keep: keep, needles: needles}
+}
+
+// redactLabelWords are the words every redactLabel match ends in, lower-cased: each marker in its
+// alternation ends in one of them (api_key in "key", client_secret in "secret").
+var redactLabelWords = []string{"key", "secret", "token", "password", "passwd", "passphrase", "authorization", "credential", "credentials"}
+
+// redactLabelNeedles gate the rules that take a label and redactSeparator. A word that is not
+// followed by a separator (`input_tokens`, `keyboard`) cannot start a match. The rules share the
+// one set, so the gate searches for it once per text rather than once per rule.
+var redactLabelNeedles = func() *redactNeedles {
+	set := newRedactNeedles(true, redactLabelWords...)
+	set.followedBy = func(rest string) bool {
+		_, ok := skipSeparator(rest)
+		return ok
+	}
+	return set
+}()
+
+// redactQuotedLabelNeedles gate the rule whose label is closed by a quote before its separator.
+var redactQuotedLabelNeedles = func() *redactNeedles {
+	set := newRedactNeedles(true, redactLabelWords...)
+	set.within = redactLabelNeedles
+	set.followedBy = func(rest string) bool {
+		rest = strings.TrimPrefix(rest, `\`)
+		if rest == "" || !strings.ContainsRune(redactQuotes, rune(rest[0])) {
+			return false
+		}
+		_, ok := skipSeparator(rest)
+		return ok
+	}
+	return set
+}()
+
+// redactFlagWords are the words every redactFlag match ends in, lower-cased.
+var redactFlagWords = []string{"password", "passwd", "passphrase", "token", "secret", "key"}
+
+// redactFlagNeedles gate the flag rules: a flag's name is followed by `=` or whitespace, and is the
+// end of a word that starts with a dash at the start of the text or after whitespace.
+var redactFlagNeedles = func() *redactNeedles {
+	set := newRedactNeedles(true, redactFlagWords...)
+	set.followedBy = func(rest string) bool {
+		_, ok := skipFlagSeparator(rest)
+		return ok
+	}
+	set.precededBy = startsFlag
+	return set
+}()
+
+// startsFlag reports whether the text before a flag word ends in what redactFlag puts ahead of it:
+// `(?:^|\s)--?[a-z0-9-]*`. That run of letters, digits and dashes can only begin where the
+// maximal one does, because the character before it must be whitespace, which the run excludes.
+func startsFlag(before string) bool {
+	start := len(before)
+	for start > 0 {
+		c := before[start-1]
+		if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+			break
+		}
+		start--
+	}
+	if start == len(before) || before[start] != '-' {
+		return false
+	}
+	return start == 0 || strings.ContainsRune(regexpSpace, rune(before[start-1]))
+}
+
+// redactQuotes are the quote characters redactSeparator and quotedValues know.
+const redactQuotes = "\"'`"
+
+// skipSeparator consumes what redactSeparator matches, `(?:\\?["'`])?\s*[:=]\s*`, from the start
+// of rest. Taking all the whitespace is what the pattern does too: nothing that may follow it can
+// start with whitespace.
+func skipSeparator(rest string) (string, bool) {
+	if strings.HasPrefix(rest, `\`) {
+		if len(rest) < 2 || !strings.ContainsRune(redactQuotes, rune(rest[1])) {
+			return "", false
+		}
+		rest = rest[2:]
+	} else if rest != "" && strings.ContainsRune(redactQuotes, rune(rest[0])) {
+		rest = rest[1:]
+	}
+	rest = strings.TrimLeft(rest, regexpSpace)
+	if rest == "" || (rest[0] != ':' && rest[0] != '=') {
+		return "", false
+	}
+	return strings.TrimLeft(rest[1:], regexpSpace), true
+}
+
+// skipFlagSeparator consumes the separator ending redactFlag, `(?:=|\s+)`, from the start of rest.
+func skipFlagSeparator(rest string) (string, bool) {
+	if strings.HasPrefix(rest, "=") {
+		return rest[1:], true
+	}
+	if trimmed := strings.TrimLeft(rest, regexpSpace); len(trimmed) < len(rest) {
+		return trimmed, true
+	}
+	return "", false
+}
+
+// regexpSpace is \s in Go's regexp syntax: ASCII whitespace, never Unicode.
+const regexpSpace = " \t\n\f\r"
 
 // isAuthScheme reports whether a labeled value is an Authorization scheme, alone or with its
 // credential already redacted, rather than a credential. `Authorization: Bearer x` is redacted to
@@ -136,14 +295,14 @@ var redactionRules = concatRules([]redactionRule{
 	// A private key block. The header must be followed by key material, so source code, a diff or
 	// grep output that only names the header keeps the text after it. Without an END line (the
 	// block was cut) the rest of the text goes.
-	{regexp.MustCompile(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:\s|\\[rn]|(?:Proc-Type|DEK-Info|Comment|Version):[^\n\\]*)*` +
-		`[A-Za-z0-9+/=]{16,}[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|$)`), redactedValue, nil},
+	rule(`-----BEGIN [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----(?:\s|\\[rn]|(?:Proc-Type|DEK-Info|Comment|Version):[^\n\\]*)*`+
+		`[A-Za-z0-9+/=]{16,}[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY( BLOCK)?-----|$)`, redactedValue, nil, "-----BEGIN "),
 	// An Authorization header's credential after its scheme: Bearer, Basic, Token, Digest. A JWT
 	// keeps its public `eyJ` prefix, as the shape rules below keep theirs, so `Bearer eyJ[REDACTED]`
 	// still says a token was there where `Bearer [REDACTED]` may only have been the word "token" or
 	// a `$VARIABLE`.
-	{regexp.MustCompile(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+(?-i:eyJ)?)([^"'\s,]+)()`), "${1}" + redactedValue, nil},
-	{regexp.MustCompile(`(?i)(\bbearer\s+(?-i:eyJ)?)(?P<value>[a-z0-9._~+/=-]+)`), "${1}" + redactedValue, isRedactedJWTPrefix},
+	foldedRule(`(?i)(authorization["']?\s*[:=]\s*["']?(?:bearer|basic|token|digest)\s+(?-i:eyJ)?)([^"'\s,]+)()`, "${1}"+redactedValue, nil, "authorization"),
+	foldedRule(`(?i)(\bbearer\s+(?-i:eyJ)?)(?P<value>[a-z0-9._~+/=-]+)`, "${1}"+redactedValue, isRedactedJWTPrefix, "bearer"),
 	// A labeled assignment in prose, shell, env files, YAML, TOML or JSON: `token=x`,
 	// `export GITHUB_TOKEN="x"`, `{"api_key": "x"}`. The closing quote of a quoted label is allowed
 	// between the label and the separator. A quoted value runs to its closing quote; the unquoted
@@ -153,30 +312,30 @@ var redactionRules = concatRules([]redactionRule{
 	// literal or a structure. The replacement is quoted the way the label is, so the text still
 	// parses where something decodes it again (string-encoded tool arguments do); null, true, false
 	// and nested objects or arrays are left for their own fields' rules.
-	{regexp.MustCompile(`(?i)(\b` + redactLabel + `(?P<q>` + redactOpenQuote + `)\s*[:=]\s*)(?P<value>` + redactBare + `)`), "${1}${q}" + redactedValue + "${q}", isLiteralOrAuthScheme},
-	{regexp.MustCompile(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`), "${1}" + redactedValue, isAuthScheme},
+	lazyRule(`(?i)(\b`+redactLabel+`(?P<q>`+redactOpenQuote+`)\s*[:=]\s*)(?P<value>`+redactBare+`)`, "${1}${q}"+redactedValue+"${q}", isLiteralOrAuthScheme, redactQuotedLabelNeedles),
+	lazyRule(`(?i)(\b`+redactLabel+`\s*[:=]\s*)(?P<value>`+redactUnquoted+`)`, "${1}"+redactedValue, isAuthScheme, redactLabelNeedles),
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`, and quoted, the way agents
 	// usually write arguments: `--password "x y"`, `--token='x'`.
 }, quotedRules(quotedFlag, nil), []redactionRule{
-	{regexp.MustCompile(`(?i)(` + redactFlag + `)([^\s"'-][^\s"']*)`), "${1}" + redactedValue, nil},
+	lazyRule(`(?i)(`+redactFlag+`)([^\s"'-][^\s"']*)`, "${1}"+redactedValue, nil, redactFlagNeedles),
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
-	{regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`), "${1}" + redactedValue + "${3}", nil},
+	foldedRule(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`, "${1}"+redactedValue+"${3}", nil, "://"),
 	// Credentials recognizable by their own shape, wherever they appear. The type prefix is public
 	// and stays (`ghp_[REDACTED]`, `AKIA[REDACTED]`), the way secret scanners report a finding: the
 	// line still says a GitHub token or an AWS key was there, which is what detection rules match on
 	// in the log, and none of the credential is left.
-	{regexp.MustCompile(`\b(sk-)[A-Za-z0-9_-]{20,}`), "${1}" + redactedValue, nil},                                         // Anthropic sk-ant-, OpenAI sk-proj- and sk-
-	{regexp.MustCompile(`\b(AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b`), "${1}" + redactedValue, nil},                             // AWS access key id
-	{regexp.MustCompile(`\b(gh[pousr]_)[A-Za-z0-9]{30,}`), "${1}" + redactedValue, nil},                                    // GitHub tokens
-	{regexp.MustCompile(`\b(github_pat_)[A-Za-z0-9_]{22,}`), "${1}" + redactedValue, nil},                                  // GitHub fine-grained tokens
-	{regexp.MustCompile(`\b(glpat-)[A-Za-z0-9_-]{20,}`), "${1}" + redactedValue, nil},                                      // GitLab
-	{regexp.MustCompile(`\b(xox[abposr]-)[A-Za-z0-9-]{10,}`), "${1}" + redactedValue, nil},                                 // Slack
-	{regexp.MustCompile(`\b([rs]k_(?:live|test)_)[A-Za-z0-9]{16,}`), "${1}" + redactedValue, nil},                          // Stripe
-	{regexp.MustCompile(`\b(AIza)[0-9A-Za-z_-]{35}`), "${1}" + redactedValue, nil},                                         // Google API key
-	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36}`), "${1}" + redactedValue, nil},                                           // npm
-	{regexp.MustCompile(`\b(hf_)[A-Za-z0-9]{30,}`), "${1}" + redactedValue, nil},                                           // Hugging Face
-	{regexp.MustCompile(`\b(bcn_(?:api|device|mcp)_)[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil},                      // Beacon's own keys
-	{regexp.MustCompile(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil}, // JWT
+	rule(`\b(sk-)[A-Za-z0-9_-]{20,}`, "${1}"+redactedValue, nil, "sk-"),                                         // Anthropic sk-ant-, OpenAI sk-proj- and sk-
+	rule(`\b(AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b`, "${1}"+redactedValue, nil, "AKIA", "ASIA", "ABIA", "ACCA"),    // AWS access key id
+	rule(`\b(gh[pousr]_)[A-Za-z0-9]{30,}`, "${1}"+redactedValue, nil, "ghp_", "gho_", "ghu_", "ghs_", "ghr_"),   // GitHub tokens
+	rule(`\b(github_pat_)[A-Za-z0-9_]{22,}`, "${1}"+redactedValue, nil, "github_pat_"),                          // GitHub fine-grained tokens
+	rule(`\b(glpat-)[A-Za-z0-9_-]{20,}`, "${1}"+redactedValue, nil, "glpat-"),                                   // GitLab
+	rule(`\b(xox[abposr]-)[A-Za-z0-9-]{10,}`, "${1}"+redactedValue, nil, "xox"),                                 // Slack
+	rule(`\b([rs]k_(?:live|test)_)[A-Za-z0-9]{16,}`, "${1}"+redactedValue, nil, "k_live_", "k_test_"),           // Stripe
+	rule(`\b(AIza)[0-9A-Za-z_-]{35}`, "${1}"+redactedValue, nil, "AIza"),                                        // Google API key
+	rule(`\b(npm_)[A-Za-z0-9]{36}`, "${1}"+redactedValue, nil, "npm_"),                                          // npm
+	rule(`\b(hf_)[A-Za-z0-9]{30,}`, "${1}"+redactedValue, nil, "hf_"),                                           // Hugging Face
+	rule(`\b(bcn_(?:api|device|mcp)_)[A-Za-z0-9_-]{8,}`, "${1}"+redactedValue, nil, "bcn_"),                     // Beacon's own keys
+	rule(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`, "${1}"+redactedValue, nil, "eyJ"), // JWT
 })
 
 func concatRules(groups ...[]redactionRule) []redactionRule {
@@ -188,22 +347,23 @@ func concatRules(groups ...[]redactionRule) []redactionRule {
 }
 
 func (rule redactionRule) apply(value string) string {
+	pattern := rule.pattern()
 	if rule.keep == nil {
-		return rule.pattern.ReplaceAllString(value, rule.replacement)
+		return pattern.ReplaceAllString(value, rule.replacement)
 	}
-	index := rule.pattern.SubexpIndex("value")
+	index := pattern.SubexpIndex("value")
 	if index < 0 {
 		index = 2
 	}
 	group := 2 * index
 	var out []byte
 	last := 0
-	for _, match := range rule.pattern.FindAllStringSubmatchIndex(value, -1) {
+	for _, match := range pattern.FindAllStringSubmatchIndex(value, -1) {
 		if match[group] >= 0 && rule.keep(value[match[group]:match[group+1]]) {
 			continue
 		}
 		out = append(out, value[last:match[0]]...)
-		out = rule.pattern.ExpandString(out, rule.replacement, value, match)
+		out = pattern.ExpandString(out, rule.replacement, value, match)
 		last = match[1]
 	}
 	if out == nil {
@@ -215,7 +375,9 @@ func (rule redactionRule) apply(value string) string {
 // redactAssignedPattern captures the value of a labeled assignment, quoted with ", ' or a backtick
 // (${1} to ${3}) or not (${4}), so a bare copy of it elsewhere in the same text is
 // removed too.
-var redactAssignedPattern = regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator + `(?:` + quotedAlternatives() + `|(` + redactUnquoted + `))`)
+var redactAssignedPattern = sync.OnceValue(func() *regexp.Regexp {
+	return regexp.MustCompile(`(?i)\b` + redactLabel + redactSeparator + `(?:` + quotedAlternatives() + `|(` + redactUnquoted + `))`)
+})
 
 // quotedAlternatives is every quotedValues entry as one capturing alternative.
 func quotedAlternatives() string {
@@ -237,25 +399,108 @@ type PrivacyOptions struct {
 }
 
 func RedactString(value string) string {
+	return redactString(value, true)
+}
+
+// redactString is RedactString; gated false runs every rule whatever the text holds, which the
+// tests use to prove the gate never changes a result.
+//
+// The gate is what keeps redaction affordable on the hook path, where it runs over every string of
+// every event before the agent may continue. Go's regexp engine has no DFA, so the case-insensitive
+// label rules cost microseconds on a short string and tens of milliseconds on a tool output of a
+// few kilobytes. Almost no text holds a needle of most rules, and a substring search for one is
+// orders of magnitude cheaper than the pattern it stands in front of.
+func redactString(value string, gated bool) string {
+	text := redactGate{value: value, enabled: gated}
 	// Remember assignment values before replacing their labeled occurrence so
 	// repeated bare copies in the same retained prompt/output are also removed.
 	// This is common in model reasoning that quotes `token=value` and later
 	// refers to `value` by itself.
 	var assigned []string
-	for _, match := range redactAssignedPattern.FindAllStringSubmatch(value, -1) {
-		copied := strings.Join(match[1:], "")
-		if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
-			assigned = append(assigned, copied)
+	if text.holds(redactLabelNeedles) {
+		for _, match := range redactAssignedPattern().FindAllStringSubmatch(value, -1) {
+			copied := strings.Join(match[1:], "")
+			if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
+				assigned = append(assigned, copied)
+			}
 		}
 	}
 	for _, rule := range redactionRules {
-		value = rule.apply(value)
+		if !text.holds(rule.needles) {
+			continue
+		}
+		text.set(rule.apply(text.value))
 	}
+	value = text.value
 	// Each copy is searched for and removed; none of it survives into the result.
 	for _, copied := range assigned {
 		value = strings.ReplaceAll(value, copied, redactedValue)
 	}
 	return value
+}
+
+// redactGate answers whether text holds any of a set of needles, lower-casing it and searching for
+// each set at most once per version of the text.
+type redactGate struct {
+	value   string
+	enabled bool
+	lower   string
+	lowered bool
+	// known and present are bit sets over redactNeedles ids: which sets were searched for in this
+	// version of the text, and which were found.
+	known, present uint64
+	// unfoldable is set when the text holds a character Go's case folding equates with an ASCII
+	// letter (U+017F folds to s, U+212A to k): a case-insensitive pattern can match "ſecret", which
+	// lower-casing does not turn into "secret", so folded rules always run on such text.
+	unfoldable bool
+}
+
+func (g *redactGate) set(value string) {
+	if value != g.value {
+		g.value, g.lowered, g.known, g.present = value, false, 0, 0
+	}
+}
+
+func (g *redactGate) holds(set *redactNeedles) bool {
+	if !g.enabled {
+		return true
+	}
+	if set.within != nil && !g.holds(set.within) {
+		return false
+	}
+	bit := uint64(1) << set.id
+	if g.known&bit != 0 {
+		return g.present&bit != 0
+	}
+	g.known |= bit
+	haystack := g.value
+	if set.folded {
+		if !g.lowered {
+			g.lower, g.lowered = strings.ToLower(g.value), true
+			g.unfoldable = strings.ContainsAny(g.value, "\u017f\u212a")
+		}
+		if g.unfoldable {
+			g.present |= bit
+			return true
+		}
+		haystack = g.lower
+	}
+	for _, needle := range set.needles {
+		for from := 0; ; {
+			i := strings.Index(haystack[from:], needle)
+			if i < 0 {
+				break
+			}
+			start, end := from+i, from+i+len(needle)
+			// The next search starts one byte on, not at end: an occurrence may overlap this one.
+			from = start + 1
+			if (set.precededBy == nil || set.precededBy(haystack[:start])) && (set.followedBy == nil || set.followedBy(haystack[end:])) {
+				g.present |= bit
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isSecretKeyName reports whether a structured field's name says its value is a credential:

@@ -17,11 +17,12 @@ const (
 )
 
 type endpointDedupeEvent struct {
-	action  string
-	harness string
-	key     string
-	callID  string
-	ts      time.Time
+	action    string
+	harness   string
+	sessionID string
+	key       string
+	callID    string
+	ts        time.Time
 }
 
 // IsDuplicateEndpointEvent reports whether candidateLine duplicates a recently
@@ -37,7 +38,11 @@ func IsDuplicateEndpointEvent(path string, candidateLine []byte, window time.Dur
 		return false
 	}
 	effectiveWindow := endpointDedupeWindow(candidate.action, window)
+	sessionBytes := dedupeSessionNeedle(candidate.sessionID)
 	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if sessionBytes != nil && !mayDuplicate(line, sessionBytes, candidate.action) {
+			continue
+		}
 		existing, ok := endpointDedupeCandidate(line)
 		if !ok {
 			continue
@@ -170,7 +175,63 @@ func endpointDedupeCandidate(line []byte) (endpointDedupeEvent, bool) {
 		strings.ToLower(workspace),
 		target,
 	}, "\x00")
-	return endpointDedupeEvent{action: strings.ToLower(action), harness: harness, key: key, callID: callID, ts: ts.UTC()}, true
+	return endpointDedupeEvent{action: strings.ToLower(action), harness: harness, sessionID: sessionID, key: key, callID: callID, ts: ts.UTC()}, true
+}
+
+// dedupeSessionNeedle is the bytes every log line describing sessionID holds, or nil when there is
+// no such guarantee.
+//
+// Decoding a line is what the tail scan costs: a hook pays it for every line of the last 256 KiB
+// of the log, before every event it writes. A line can only duplicate the candidate when its
+// session.id and its event.action are the same (the action compared without case), and a value of
+// printable ASCII without a quote or backslash has one spelling in JSON that does not escape
+// ordinary characters, so a line that does not hold both verbatim can be skipped undecoded. An id
+// that a JSON number, literal, object or array would also produce (stringValue accepts those) gets
+// no needle, and mayDuplicate still decodes every line with a \u or \/ escape in it. Every action
+// dedupeAction accepts is such a value.
+func dedupeSessionNeedle(sessionID string) []byte {
+	if sessionID == "" || sessionID == "true" || sessionID == "false" || sessionID == "null" {
+		return nil
+	}
+	if sessionID[0] == '{' || sessionID[0] == '[' || sessionID[0] == '-' || (sessionID[0] >= '0' && sessionID[0] <= '9') {
+		return nil
+	}
+	for i := 0; i < len(sessionID); i++ {
+		if c := sessionID[i]; c < 0x20 || c > 0x7e || c == '"' || c == '\\' {
+			return nil
+		}
+	}
+	return []byte(sessionID)
+}
+
+// mayDuplicate reports whether line could describe action in the session, by its bytes alone.
+func mayDuplicate(line, session []byte, action string) bool {
+	if bytes.Contains(line, []byte(`\u`)) || bytes.Contains(line, []byte(`\/`)) {
+		return true
+	}
+	// The action is compared after strings.ToLower, which takes U+0130 to i and U+212A (the
+	// Kelvin sign) to k: an action spelled with either matches in bytes no fold of ours finds.
+	if bytes.Contains(line, []byte("\u0130")) || bytes.Contains(line, []byte("\u212a")) {
+		return true
+	}
+	return bytes.Contains(line, session) && containsFold(line, action)
+}
+
+// containsFold reports whether s holds needle, which is lower case ASCII, in any case.
+func containsFold(s []byte, needle string) bool {
+	if needle == "" {
+		return true
+	}
+	first, upper := needle[0], needle[0]
+	if first >= 'a' && first <= 'z' {
+		upper = first - 'a' + 'A'
+	}
+	for i := 0; i+len(needle) <= len(s); i++ {
+		if (s[i] == first || s[i] == upper) && bytes.EqualFold(s[i:i+len(needle)], []byte(needle)) {
+			return true
+		}
+	}
+	return false
 }
 
 func endpointDedupeWindow(action string, fallback time.Duration) time.Duration {

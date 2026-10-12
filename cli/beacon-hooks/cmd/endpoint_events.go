@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/cloudshuttle"
@@ -442,7 +443,7 @@ func applyIngestedToolResult(fields map[string]interface{}, action, toolName str
 
 // claudeBashExitLine is the first line Claude Code writes into a failed Bash call's `error` when
 // the command ran and exited. Its absence means the shell itself could not be started.
-var claudeBashExitLine = regexp.MustCompile(`^Exit code (-?\d+)$`)
+var claudeBashExitLine = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^Exit code (-?\d+)$`) })
 
 // applyClaudeBashResult maps the result of Claude Code's Bash tool onto the command field, and
 // reports whether the payload is a failure of a command that ran and exited.
@@ -466,7 +467,7 @@ func applyClaudeBashResult(fields, input map[string]interface{}, toolName string
 	exited := false
 	if errText := getFirstStr(input, "error"); errText != "" {
 		firstLine, rest, _ := strings.Cut(errText, "\n")
-		match := claudeBashExitLine.FindStringSubmatch(strings.TrimSpace(firstLine))
+		match := claudeBashExitLine().FindStringSubmatch(strings.TrimSpace(firstLine))
 		if match == nil {
 			return false
 		}

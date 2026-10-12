@@ -5,6 +5,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -81,7 +82,7 @@ func runSessionStart(cmd *cobra.Command, args []string) {
 
 // claudeEnvSessionID is the shape of session id written to CLAUDE_ENV_FILE. The file is run as shell
 // code before every Bash command, so anything outside this set is refused rather than quoted.
-var claudeEnvSessionID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
+var claudeEnvSessionID = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`) })
 
 // exportClaudeSessionEnv appends BEACON_SESSION_ID and BEACON_HARNESS to the file Claude Code names
 // in CLAUDE_ENV_FILE, so the shell commands an agent runs later in the session -- `beacon share
@@ -96,7 +97,7 @@ func exportClaudeSessionEnv(sessionID string) error {
 		return nil
 	}
 	path := strings.TrimSpace(os.Getenv("CLAUDE_ENV_FILE"))
-	if path == "" || !claudeEnvSessionID.MatchString(sessionID) {
+	if path == "" || !claudeEnvSessionID().MatchString(sessionID) {
 		return nil
 	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)

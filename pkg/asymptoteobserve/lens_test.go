@@ -271,11 +271,11 @@ func TestLensManifestSchemaInSync(t *testing.T) {
 	}
 
 	props := schema.Properties
-	if props["id"].Pattern != lensIDPattern.String() {
-		t.Errorf("id pattern: schema %q, Go %q", props["id"].Pattern, lensIDPattern.String())
+	if props["id"].Pattern != lensIDPattern().String() {
+		t.Errorf("id pattern: schema %q, Go %q", props["id"].Pattern, lensIDPattern().String())
 	}
-	if props["icon"].Pattern != lensIconPattern.String() {
-		t.Errorf("icon pattern: schema %q, Go %q", props["icon"].Pattern, lensIconPattern.String())
+	if props["icon"].Pattern != lensIconPattern().String() {
+		t.Errorf("icon pattern: schema %q, Go %q", props["icon"].Pattern, lensIconPattern().String())
 	}
 	for field, max := range map[string]int{"title": lensTitleMaxRunes, "description": lensDescriptionMaxRunes, "author": lensAuthorMaxRunes} {
 		if props[field].MaxLength != max {
