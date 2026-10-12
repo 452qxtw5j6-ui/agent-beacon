@@ -546,34 +546,38 @@ func resetMemoryOpts(t *testing.T) {
 	t.Helper()
 	previous := memoryOpts
 	memoryOpts = struct {
-		userMode    bool
-		systemMode  bool
-		logPath     string
-		jsonOutput  bool
-		projectPath string
-		limit       int
-		page        int
-		query       string
-		harness     string
-		traceID     string
-		since       string
-		until       string
-		dryRun      bool
-		jevEndpoint string
-		jevAPIKey   string
-		jevModel    string
-		jevCost     float64
-		timeout     time.Duration
-		state       string
-		kind        string
-		reason      string
-		replacement string
-		force       bool
-		title       string
-		body        string
-		bodyFile    string
-		applies     string
-		tags        []string
+		userMode     bool
+		systemMode   bool
+		logPath      string
+		jsonOutput   bool
+		projectPath  string
+		limit        int
+		page         int
+		query        string
+		harness      string
+		traceID      string
+		since        string
+		until        string
+		dryRun       bool
+		evaluator    string
+		jevEndpoint  string
+		jevAPIKey    string
+		jevModel     string
+		jevCost      float64
+		subqEndpoint string
+		subqAPIKey   string
+		subqModel    string
+		timeout      time.Duration
+		state        string
+		kind         string
+		reason       string
+		replacement  string
+		force        bool
+		title        string
+		body         string
+		bodyFile     string
+		applies      string
+		tags         []string
 	}{userMode: true, limit: 25, page: 1, jevCost: learning.DefaultCostPerTrace}
 	t.Cleanup(func() { memoryOpts = previous })
 }
@@ -784,5 +788,110 @@ func TestJevEvaluatorOptionsPrecedence(t *testing.T) {
 					got.Endpoint, got.Model, got.APIKey, tc.wantEndpoint, tc.wantModel, tc.wantKey)
 			}
 		})
+	}
+}
+
+// SubQ's Decisions API is the same System One contract as Jev, so selecting it
+// must send the same request to the SubQ endpoint with SUBQ_API_KEY and record
+// the evaluation under the subq provider.
+func TestMemoryEvaluationsRunWithSubQ(t *testing.T) {
+	logPath, project := writeMemoryCommandFixture(t)
+	var gotModel string
+	var gotTypes []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer subq-key" {
+			t.Errorf("Authorization = %q, want Bearer subq-key", r.Header.Get("Authorization"))
+		}
+		var req struct {
+			Model     string                           `json:"model"`
+			Questions map[string]struct{ Type string } `json:"questions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotModel = req.Model
+		for _, q := range req.Questions {
+			gotTypes = append(gotTypes, q.Type)
+		}
+		_, _ = w.Write([]byte(`{"model":"subq-snap-preview","answers":{"task_success":{"type":"noul","noul":0.9},"reusable_correction":{"type":"noul","noul":0.8},"evidence_supported":{"type":"noul","noul":0.7}},"usage":{"input_tokens":120,"output_tokens":0}}`))
+	}))
+	defer server.Close()
+
+	t.Setenv("BEACON_EVALUATOR", "subq")
+	t.Setenv("BEACON_SUBQ_ENDPOINT", server.URL)
+	t.Setenv("BEACON_SUBQ_MODEL", "")
+	t.Setenv("SUBQ_API_KEY", "subq-key")
+	t.Setenv("TYPESAFE_API_KEY", "jev-key-must-not-be-sent")
+
+	resetMemoryOpts(t)
+	memoryOpts.userMode = true
+	memoryOpts.logPath = logPath
+	memoryOpts.projectPath = project
+	memoryOpts.traceID = "session:cursor:s1"
+	memoryOpts.jsonOutput = true
+
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	if err := runMemoryEvaluationsRun(cmd, nil); err != nil {
+		t.Fatalf("runMemoryEvaluationsRun returned error: %v", err)
+	}
+	if gotModel != learning.DefaultSubQModel {
+		t.Fatalf("request model = %q, want %s", gotModel, learning.DefaultSubQModel)
+	}
+	if len(gotTypes) != len(learning.RubricQuestions) {
+		t.Fatalf("question types = %v", gotTypes)
+	}
+	for _, typ := range gotTypes {
+		if typ != "noul" {
+			t.Fatalf("question type = %q, want noul", typ)
+		}
+	}
+	var result evaluationRunResult
+	if err := json.Unmarshal(out.Bytes(), &result); err != nil {
+		t.Fatalf("decode result: %v\n%s", err, out.String())
+	}
+	if len(result.Evaluations) != 1 {
+		t.Fatalf("evaluations = %#v", result.Evaluations)
+	}
+	if got, want := result.Evaluations[0].Evaluator, "subq:"+server.URL; got != want {
+		t.Fatalf("evaluator = %q, want %q", got, want)
+	}
+}
+
+func TestEvaluatorOptionsSelectsProvider(t *testing.T) {
+	for k, v := range map[string]string{
+		"BEACON_EVALUATOR": "", "BEACON_SUBQ_ENDPOINT": "", "BEACON_SUBQ_MODEL": "", "SUBQ_API_KEY": "", "BEACON_SUBQ_API_KEY": "fallback-subq",
+		"BEACON_JEV_ENDPOINT": "", "BEACON_JEV_MODEL": "", "TYPESAFE_API_KEY": "", "BEACON_JEV_API_KEY": "",
+	} {
+		t.Setenv(k, v)
+	}
+	resetMemoryOpts(t)
+	got, err := evaluatorOptions()
+	if err != nil || got.Provider != learning.ProviderJev || got.Endpoint != learning.DefaultJevEndpoint {
+		t.Fatalf("default evaluatorOptions() = %+v, %v; want Jev defaults", got, err)
+	}
+
+	memoryOpts.evaluator = "SubQ"
+	got, err = evaluatorOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Provider != learning.ProviderSubQ || got.Endpoint != learning.DefaultSubQEndpoint || got.Model != learning.DefaultSubQModel || got.APIKey != "fallback-subq" {
+		t.Fatalf("subq evaluatorOptions() = %+v", got)
+	}
+
+	memoryOpts.subqEndpoint = "https://flag.example/v1/systemone"
+	memoryOpts.subqModel = "subq-pinned"
+	memoryOpts.subqAPIKey = "flag-key"
+	t.Setenv("SUBQ_API_KEY", "env-key")
+	got, _ = evaluatorOptions()
+	if got.Endpoint != "https://flag.example/v1/systemone" || got.Model != "subq-pinned" || got.APIKey != "flag-key" {
+		t.Fatalf("subq flags did not win: %+v", got)
+	}
+
+	memoryOpts.evaluator = "openai"
+	if _, err := evaluatorOptions(); err == nil {
+		t.Fatal("unknown evaluator was accepted")
 	}
 }

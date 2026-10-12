@@ -19,14 +19,55 @@ const (
 	RubricVersion       = "beacon.learning.rubric.v1"
 	DefaultJevEndpoint  = "https://api.typesafe.ai/v1/systemone"
 	DefaultJevModel     = "jev-latest"
+	DefaultSubQEndpoint = "https://api.subq.ai/v1/systemone"
+	DefaultSubQModel    = "subq-snap-preview"
 	DefaultCostPerTrace = 0.00035
 	maxProjectionEvents = 80
 	maxProjectionText   = 1200
 
-	// jevQuestionType is the System One question type Beacon asks for. Jev echoes
-	// it back as each answer's "type", which is not a rationale.
+	// jevQuestionType is the System One question type Beacon asks for. Jev and
+	// SubQ echo it back as each answer's "type", which is not a rationale.
 	jevQuestionType = "noul"
 )
+
+// Evaluator providers. Both speak the System One decisions API (a POST of
+// model, state and typed questions answered with probabilities), so they share
+// one request and response shape and differ only in their hosted defaults.
+const (
+	ProviderJev  = "jev"
+	ProviderSubQ = "subq"
+)
+
+// Providers lists the accepted --evaluator values.
+var Providers = []string{ProviderJev, ProviderSubQ}
+
+// ProviderDefaults returns the hosted endpoint and model for a provider.
+func ProviderDefaults(provider string) (endpoint, model string, err error) {
+	switch NormalizeProvider(provider) {
+	case ProviderJev:
+		return DefaultJevEndpoint, DefaultJevModel, nil
+	case ProviderSubQ:
+		return DefaultSubQEndpoint, DefaultSubQModel, nil
+	}
+	return "", "", fmt.Errorf("unknown evaluator %q (want one of %s)", provider, strings.Join(Providers, ", "))
+}
+
+// NormalizeProvider lowercases a provider name; empty means Jev, the original
+// and default evaluator.
+func NormalizeProvider(provider string) string {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return ProviderJev
+	}
+	return provider
+}
+
+func providerLabel(opts EvaluatorOptions) string {
+	if NormalizeProvider(opts.Provider) == ProviderSubQ {
+		return "SubQ"
+	}
+	return "Jev"
+}
 
 var RubricQuestions = []asymptoteobserve.LearningEvaluationQuestionV1{
 	{ID: TaskSuccessQuestionID, Prompt: "Did the trace complete the user's engineering task successfully?"},
@@ -35,6 +76,8 @@ var RubricQuestions = []asymptoteobserve.LearningEvaluationQuestionV1{
 }
 
 type EvaluatorOptions struct {
+	// Provider is ProviderJev (the default when empty) or ProviderSubQ.
+	Provider     string
 	Endpoint     string
 	APIKey       string
 	Model        string
@@ -125,7 +168,7 @@ func Evaluate(ctx context.Context, opts EvaluatorOptions, input EvaluationInput)
 		return evaluation, nil
 	}
 	if strings.TrimSpace(opts.Endpoint) == "" {
-		opts.Endpoint = DefaultJevEndpoint
+		opts.Endpoint = defaultEndpoint(opts)
 	}
 	resp, err := callEvaluator(ctx, opts, projection)
 	if err != nil {
@@ -142,7 +185,7 @@ func Evaluate(ctx context.Context, opts EvaluatorOptions, input EvaluationInput)
 		questions = resp.Results
 	}
 	if len(questions) == 0 {
-		return asymptoteobserve.LearningEvaluationV1{}, fmt.Errorf("Jev response did not include answers, questions, or results")
+		return asymptoteobserve.LearningEvaluationV1{}, fmt.Errorf("%s response did not include answers, questions, or results", providerLabel(opts))
 	}
 	evaluation.Questions = normalizeQuestionResults(questions)
 	evaluation.Score = evaluationScore(evaluation.Questions)
@@ -176,7 +219,7 @@ func Preview(input EvaluationInput, opts EvaluatorOptions) EvaluationPreview {
 		EventCount:       input.Trace.Range.TotalEvents,
 		EstimatedCalls:   1,
 		EstimatedCostUSD: costPerTrace(opts),
-		Reason:           "explicit evaluation command; hooks and collectors do not call Jev",
+		Reason:           "explicit evaluation command; hooks and collectors do not call " + providerLabel(opts),
 		Project:          input.Project,
 	}
 }
@@ -305,7 +348,7 @@ func callEvaluator(ctx context.Context, opts EvaluatorOptions, projection Projec
 		return jevResponse{}, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return jevResponse{}, fmt.Errorf("Jev endpoint returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
+		return jevResponse{}, fmt.Errorf("%s endpoint returned %s: %s", providerLabel(opts), resp.Status, strings.TrimSpace(string(data)))
 	}
 	var parsed jevResponse
 	if err := json.Unmarshal(data, &parsed); err != nil {
@@ -418,17 +461,32 @@ func evaluationScore(results []asymptoteobserve.LearningEvaluationQuestionV1) fl
 }
 
 func evaluatorName(opts EvaluatorOptions) string {
+	provider := NormalizeProvider(opts.Provider)
 	if opts.Endpoint == "" {
-		return "jev:" + DefaultJevEndpoint
+		return provider + ":" + defaultEndpoint(opts)
 	}
-	return "jev:" + opts.Endpoint
+	return provider + ":" + opts.Endpoint
+}
+
+func defaultEndpoint(opts EvaluatorOptions) string {
+	endpoint, _ := providerDefaultsOrJev(opts.Provider)
+	return endpoint
+}
+
+func providerDefaultsOrJev(provider string) (endpoint, model string) {
+	endpoint, model, err := ProviderDefaults(provider)
+	if err != nil {
+		return DefaultJevEndpoint, DefaultJevModel
+	}
+	return endpoint, model
 }
 
 func modelName(opts EvaluatorOptions) string {
 	if strings.TrimSpace(opts.Model) != "" {
 		return strings.TrimSpace(opts.Model)
 	}
-	return DefaultJevModel
+	_, model := providerDefaultsOrJev(opts.Provider)
+	return model
 }
 
 func costPerTrace(opts EvaluatorOptions) float64 {
