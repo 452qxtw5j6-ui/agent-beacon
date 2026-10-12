@@ -149,11 +149,11 @@ var endpointTracesSearchCmd = &cobra.Command{
 		}
 		if result.ResultLevel == "event" {
 			for _, match := range result.Events {
-				fmt.Printf("%s\t#%d\t%s\t%s\n", match.Trace.ID, match.Event.Number, match.Event.Type, traceFirstNonEmpty(match.Snippet, match.Event.Title, match.Event.Summary))
+				fmt.Printf("%s\t#%d\t%s\t%s\n", match.Trace.ID, match.Event.Number, match.Event.Type, strings.Join(strings.Fields(traceFirstNonEmpty(match.Snippet, match.Event.Title, match.Event.Summary)), " "))
 			}
 		} else {
 			for _, trace := range result.Traces {
-				fmt.Printf("%s\t%s\t%s\n", trace.ID, trace.Harness.Name, trace.Title)
+				fmt.Printf("%s\t%s\t%s\n", trace.ID, trace.Harness.Name, strings.Join(strings.Fields(trace.Title), " "))
 			}
 		}
 		return nil
@@ -178,9 +178,9 @@ var endpointTracesShowCmd = &cobra.Command{
 		if endpointOpts.jsonOutput {
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
-		fmt.Printf("%s\t%s\n", result.Trace.ID, result.Trace.Title)
+		fmt.Printf("%s\t%s\n", result.Trace.ID, strings.Join(strings.Fields(result.Trace.Title), " "))
 		for _, event := range result.Events {
-			fmt.Printf("#%d\t%s\t%s\n", event.Number, event.Type, traceFirstNonEmpty(event.Title, event.Summary))
+			fmt.Printf("#%d\t%s\t%s\n", event.Number, event.Type, strings.Join(strings.Fields(traceFirstNonEmpty(event.Title, event.Summary)), " "))
 			if event.Content != nil && event.Content.Text != "" {
 				fmt.Println(indentTraceText(event.Content.Text))
 			}
