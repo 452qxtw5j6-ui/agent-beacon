@@ -730,7 +730,7 @@ func inspectCandidate(item candidate, redaction string, co contentOptions) (Conf
 		ParserStatus: StatusNotFound,
 		Redaction:    redaction,
 	}
-	info, err := os.Stat(item.path)
+	info, err := statPath(item.path)
 	if err != nil {
 		config.Reason = errReason(err)
 		if !os.IsNotExist(err) {
@@ -745,7 +745,7 @@ func inspectCandidate(item candidate, redaction string, co contentOptions) (Conf
 		config.Reason = "path is a directory"
 		return config, nil
 	}
-	data, err := os.ReadFile(item.path)
+	data, err := readFilePath(item.path)
 	if err != nil {
 		config.ParserStatus = StatusUnreadable
 		config.Reason = errReason(err)
