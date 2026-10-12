@@ -991,27 +991,46 @@ mkdir -p "$GCS_ATOMIC_BASE" "$GCS_ATOMIC_PLISTS"
 printf '%s\n' original-config >"$GCS_ATOMIC_BASE/gcs-vector.toml"
 printf '%s\n' original-env >"$GCS_ATOMIC_BASE/gcs-vector.env"
 printf '%s\n' original-plist >"$GCS_ATOMIC_PLISTS/com.beacon.endpoint.gcs-forwarder.plist"
+# Vector reports a rejected config on stdout; this is what it prints for a service-account key
+# Google does not accept yet.
 cat >"$GCS_FAIL_VECTOR" <<'STUB'
 #!/bin/sh
 case "$1" in
   --version) exit 0 ;;
-  validate) exit 12 ;;
+  validate)
+    echo 'x Sink "beacon_runtime_gcs": Failed to get OAuth token: TokenErr: Invalid JWT Signature.'
+    exit 78
+    ;;
   *) exit 1 ;;
 esac
 STUB
 chmod +x "$GCS_FAIL_VECTOR"
-if BEACON_VECTOR_BIN="$GCS_FAIL_VECTOR" \
+GCS_FAIL_STDERR="$TMP_DIR/gcs-validation-fails.err"
+set +e
+BEACON_VECTOR_BIN="$GCS_FAIL_VECTOR" \
   BEACON_GCS_FORWARDER_WRAPPER="$ROOT_DIR/packaging/macos/jamf/claude/gcs/run-forwarder.sh" \
   BEACON_FORWARDER_BASE_DIR="$GCS_ATOMIC_BASE" \
   BEACON_LAUNCHDAEMONS_DIR="$GCS_ATOMIC_PLISTS" \
   BEACON_RUNTIME_LOG_PATHS="$TMP_DIR/gcs-atomic-runtime.jsonl" \
   BEACON_NO_START="1" \
   GOOGLE_APPLICATION_CREDENTIALS="$GCS_CREDENTIALS" \
-  "$ROOT_DIR/packaging/macos/jamf/claude/gcs/install-forwarder.sh" _ _ _ "beacon-gcs-test-bucket" >/dev/null 2>&1
-then
-  echo "GCS installer should fail when Vector rejects generated config" >&2
+  "$ROOT_DIR/packaging/macos/jamf/claude/gcs/install-forwarder.sh" _ _ _ "beacon-gcs-test-bucket" >/dev/null 2>"$GCS_FAIL_STDERR"
+GCS_FAIL_STATUS=$?
+set -e
+if [ "$GCS_FAIL_STATUS" -ne 78 ]; then
+  echo "GCS installer should fail with Vector's exit code when Vector rejects generated config, got $GCS_FAIL_STATUS" >&2
   exit 1
 fi
+for expected in \
+  'Failed to get OAuth token: TokenErr: Invalid JWT Signature.' \
+  'A new key takes up to a minute to start working' \
+  'the installed forwarder was left unchanged'; do
+  if ! grep -Fq "$expected" "$GCS_FAIL_STDERR"; then
+    echo "GCS installer should explain a rejected config on stderr; missing: $expected" >&2
+    cat "$GCS_FAIL_STDERR" >&2
+    exit 1
+  fi
+done
 if [ "$(cat "$GCS_ATOMIC_BASE/gcs-vector.toml")" != "original-config" ] ||
    [ "$(cat "$GCS_ATOMIC_BASE/gcs-vector.env")" != "original-env" ] ||
    [ "$(cat "$GCS_ATOMIC_PLISTS/com.beacon.endpoint.gcs-forwarder.plist")" != "original-plist" ]; then
