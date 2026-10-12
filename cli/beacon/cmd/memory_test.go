@@ -51,7 +51,7 @@ func TestMemoryEvaluationsRunDryRunPreviewsCost(t *testing.T) {
 	memoryOpts.traceID = "session:cursor:s1"
 	memoryOpts.dryRun = true
 	memoryOpts.jsonOutput = true
-	memoryOpts.jevCost = 0.01
+	memoryOpts.costPerTrace = 0.01
 
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -90,7 +90,7 @@ func TestMemoryEvaluationsRunPersistsMockedJevResult(t *testing.T) {
 	memoryOpts.jevEndpoint = server.URL
 	memoryOpts.jevAPIKey = "test-key"
 	memoryOpts.jevModel = "jev-test"
-	memoryOpts.jevCost = learning.DefaultCostPerTrace
+	memoryOpts.costPerTrace = learning.DefaultCostPerTrace
 
 	var out bytes.Buffer
 	cmd := &cobra.Command{}
@@ -563,7 +563,7 @@ func resetMemoryOpts(t *testing.T) {
 		jevEndpoint  string
 		jevAPIKey    string
 		jevModel     string
-		jevCost      float64
+		costPerTrace float64
 		subqEndpoint string
 		subqAPIKey   string
 		subqModel    string
@@ -578,7 +578,7 @@ func resetMemoryOpts(t *testing.T) {
 		bodyFile     string
 		applies      string
 		tags         []string
-	}{userMode: true, limit: 25, page: 1, jevCost: learning.DefaultCostPerTrace}
+	}{userMode: true, limit: 25, page: 1, costPerTrace: learning.DefaultCostPerTrace}
 	t.Cleanup(func() { memoryOpts = previous })
 }
 
@@ -893,5 +893,23 @@ func TestEvaluatorOptionsSelectsProvider(t *testing.T) {
 	memoryOpts.evaluator = "openai"
 	if _, err := evaluatorOptions(); err == nil {
 		t.Fatal("unknown evaluator was accepted")
+	}
+}
+
+// --cost-per-trace replaced --jev-cost-per-trace when SubQ was added; the old
+// name must keep setting the same estimate.
+func TestMemoryEvaluationsCostPerTraceFlags(t *testing.T) {
+	for _, name := range []string{"cost-per-trace", "jev-cost-per-trace"} {
+		t.Run(name, func(t *testing.T) {
+			resetMemoryOpts(t)
+			flags := memoryEvaluationsRunCmd.Flags()
+			if err := flags.Set(name, "0.02"); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { flags.Lookup(name).Changed = false })
+			if memoryOpts.costPerTrace != 0.02 {
+				t.Fatalf("costPerTrace = %v after --%s=0.02", memoryOpts.costPerTrace, name)
+			}
+		})
 	}
 }
