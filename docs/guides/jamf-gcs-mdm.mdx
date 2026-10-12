@@ -30,59 +30,113 @@ deployments should use the root layout.
 
 ## 1. Prepare Google Cloud
 
-Set placeholders in an administrator shell:
+<Tabs>
+  <Tab title="gcloud">
+    Set placeholders in an administrator shell:
 
-```bash
-export GCP_PROJECT="<project-id>"
-export GCP_REGION="<region>"                 # for example us-central1
-export BEACON_GCS_BUCKET="<globally-unique-bucket>"
-export BEACON_GCS_PREFIX="beacon-prod"
-export BEACON_GCS_WRITER="beacon-endpoint-writer"
-export BEACON_GCS_READER="beacon-endpoint-reader"
-```
+    ```bash
+    export GCP_PROJECT="<project-id>"
+    export GCP_REGION="<region>"                 # for example us-central1
+    export BEACON_GCS_BUCKET="<globally-unique-bucket>"
+    export BEACON_GCS_PREFIX="beacon-prod"
+    export BEACON_GCS_WRITER="beacon-endpoint-writer"
+    export BEACON_GCS_READER="beacon-endpoint-reader"
+    ```
 
-Create the bucket and writer service account:
+    Create the bucket and writer service account:
 
-```bash
-gcloud services enable storage.googleapis.com iam.googleapis.com \
-  --project "$GCP_PROJECT"
+    ```bash
+    gcloud services enable storage.googleapis.com iam.googleapis.com \
+      --project "$GCP_PROJECT"
 
-gcloud storage buckets create "gs://${BEACON_GCS_BUCKET}" \
-  --project "$GCP_PROJECT" \
-  --location "$GCP_REGION" \
-  --uniform-bucket-level-access
+    gcloud storage buckets create "gs://${BEACON_GCS_BUCKET}" \
+      --project "$GCP_PROJECT" \
+      --location "$GCP_REGION" \
+      --uniform-bucket-level-access
 
-gcloud iam service-accounts create "$BEACON_GCS_WRITER" \
-  --project "$GCP_PROJECT" \
-  --display-name "Beacon endpoint GCS writer"
+    gcloud iam service-accounts create "$BEACON_GCS_WRITER" \
+      --project "$GCP_PROJECT" \
+      --display-name "Beacon endpoint GCS writer"
 
-export BEACON_GCS_WRITER_EMAIL="${BEACON_GCS_WRITER}@${GCP_PROJECT}.iam.gserviceaccount.com"
+    export BEACON_GCS_WRITER_EMAIL="${BEACON_GCS_WRITER}@${GCP_PROJECT}.iam.gserviceaccount.com"
 
-gcloud storage buckets add-iam-policy-binding "gs://${BEACON_GCS_BUCKET}" \
-  --member "serviceAccount:${BEACON_GCS_WRITER_EMAIL}" \
-  --role roles/storage.objectCreator
-```
+    gcloud storage buckets add-iam-policy-binding "gs://${BEACON_GCS_BUCKET}" \
+      --member "serviceAccount:${BEACON_GCS_WRITER_EMAIL}" \
+      --role roles/storage.objectCreator
+    ```
 
-`roles/storage.objectCreator` can create objects but cannot list, read, overwrite,
-or delete them. A successful writer therefore cannot validate delivery by
-running `gcloud storage ls` or `cat`.
+    `roles/storage.objectCreator` can create objects but cannot list, read, overwrite,
+    or delete them. A successful writer therefore cannot validate delivery by
+    running `gcloud storage ls` or `cat`.
 
-Create a separate read-only identity for validation and downstream consumers:
+    Create a separate read-only identity for validation and downstream consumers:
 
-```bash
-gcloud iam service-accounts create "$BEACON_GCS_READER" \
-  --project "$GCP_PROJECT" \
-  --display-name "Beacon endpoint GCS reader"
+    ```bash
+    gcloud iam service-accounts create "$BEACON_GCS_READER" \
+      --project "$GCP_PROJECT" \
+      --display-name "Beacon endpoint GCS reader"
 
-export BEACON_GCS_READER_EMAIL="${BEACON_GCS_READER}@${GCP_PROJECT}.iam.gserviceaccount.com"
+    export BEACON_GCS_READER_EMAIL="${BEACON_GCS_READER}@${GCP_PROJECT}.iam.gserviceaccount.com"
 
-gcloud storage buckets add-iam-policy-binding "gs://${BEACON_GCS_BUCKET}" \
-  --member "serviceAccount:${BEACON_GCS_READER_EMAIL}" \
-  --role roles/storage.objectViewer
-```
+    gcloud storage buckets add-iam-policy-binding "gs://${BEACON_GCS_BUCKET}" \
+      --member "serviceAccount:${BEACON_GCS_READER_EMAIL}" \
+      --role roles/storage.objectViewer
+    ```
 
-Apply lifecycle, retention, logging, and CMEK controls in Google Cloud according
-to your organization's policy.
+    Apply lifecycle, retention, logging, and CMEK controls in Google Cloud according
+    to your organization's policy.
+  </Tab>
+  <Tab title="Terraform">
+    Beacon's [Terraform module](/log-forwarding/gcs-terraform) creates the bucket, the
+    writer, and the read-only service account, with the same roles as the gcloud steps.
+    The writer is also limited to the Beacon prefix:
+
+    ```hcl title="main.tf"
+    module "beacon_gcs" {
+      source = "github.com/asymptote-labs/agent-beacon//terraform/gcs?ref=v1.3.38"
+
+      project       = "<project-id>"
+      location      = "<region>" # for example us-central1
+      bucket_name   = "<globally-unique-bucket>"
+      prefix        = "beacon-prod"
+      create_reader = true
+    }
+
+    output "bucket_name" {
+      value = module.beacon_gcs.bucket_name
+    }
+
+    output "prefix" {
+      value = module.beacon_gcs.prefix
+    }
+
+    output "writer_email" {
+      value = module.beacon_gcs.writer_email
+    }
+
+    output "reader_email" {
+      value = module.beacon_gcs.reader_email
+    }
+    ```
+
+    Apply it and save the outputs for the next steps:
+
+    ```bash
+    terraform init
+    terraform apply
+
+    export GCP_PROJECT="<project-id>"
+    export BEACON_GCS_BUCKET="$(terraform output -raw bucket_name)"
+    export BEACON_GCS_PREFIX="$(terraform output -raw prefix)"
+    export BEACON_GCS_WRITER_EMAIL="$(terraform output -raw writer_email)"
+    export BEACON_GCS_WRITER="${BEACON_GCS_WRITER_EMAIL%%@*}"
+    export BEACON_GCS_READER_EMAIL="$(terraform output -raw reader_email)"
+    ```
+
+    For lifecycle rules or CMEK, see the
+    [module's options](/log-forwarding/gcs-terraform#options).
+  </Tab>
+</Tabs>
 
 ## 2. Deliver the writer credential
 

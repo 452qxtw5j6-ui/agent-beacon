@@ -289,6 +289,29 @@ jobs:
           go vet ./...
           go test ./...
 
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.3
+          terraform_wrapper: false
+      # Hermetic: the tests mock the AWS and Google providers, so no cloud account or
+      # credentials are involved. Only the provider downloads reach the network.
+      - name: Check Terraform modules
+        run: |
+          terraform fmt -check -recursive -diff terraform
+          for module in terraform/*/; do
+            terraform -chdir="$module" init -backend=false -input=false
+            terraform -chdir="$module" validate
+            terraform -chdir="$module" test
+          done
+          for example in terraform/*/examples/*/; do
+            terraform -chdir="$example" init -backend=false -input=false
+            terraform -chdir="$example" validate
+          done
+
   cross-build:
     runs-on: ubuntu-latest
     strategy:

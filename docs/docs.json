@@ -505,7 +505,9 @@
                 "group": "Object Storage",
                 "expanded": true,
                 "pages": [
-                  "guides/macos-object-storage-system"
+                  "guides/macos-object-storage-system",
+                  "log-forwarding/aws-s3-terraform",
+                  "log-forwarding/gcs-terraform"
                 ]
               },
               {
@@ -674,6 +676,10 @@
     ]
   },
   "redirects": [
+    {
+      "source": "/manage/configure-s3-data-connector",
+      "destination": "https://docs.asymptotelabs.ai/deployment/self-hosted-s3"
+    },
     {
       "source": "/log-forwarding/s3",
       "destination": "/guides/macos-object-storage-system"

@@ -79,28 +79,52 @@ You can leave this Mac as it is. When Fleet installs the same package on it late
 
 **Pick a prefix** such as `beacon-prod`. Beacon adds `runtime/` and `inventory/` under it, so don't put either in the prefix.
 
-**Create an IAM user for Beacon** with this policy. Replace the bucket and prefix with yours:
+<Tabs>
+  <Tab title="AWS console or CLI">
+    **Create an IAM user for Beacon** with this policy. Replace the bucket and prefix with yours:
 
-```json title="IAM policy for the Beacon writer"
-{
-  "Version": "2012-10-17",
-  "Statement": [
+    ```json title="IAM policy for the Beacon writer"
     {
-      "Effect": "Allow",
-      "Action": ["s3:PutObject"],
-      "Resource": "arn:aws:s3:::example-security-logs/beacon-prod/*"
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["s3:PutObject"],
+          "Resource": "arn:aws:s3:::example-security-logs/beacon-prod/*"
+        }
+      ]
     }
-  ]
-}
-```
+    ```
 
-**Create an access key** for that user. Use a long-lived key, which starts with `AKIA`. Temporary credentials stop working when they expire, and uploads that fail after that point are lost.
+    **Create an access key** for that user. Use a long-lived key, which starts with `AKIA`. Temporary credentials stop working when they expire, and uploads that fail after that point are lost.
 
-Three things about the bucket:
+    Three things about the bucket:
 
-- **Startup check.** When the forwarder starts, it checks that it can reach the bucket, which needs `s3:ListBucket` on `arn:aws:s3:::example-security-logs`. Without it, uploads still work, but the forwarder's log shows a health-check error at startup. Add the permission if you'd rather not see that error.
-- **KMS.** If the bucket's default encryption uses a customer managed KMS key, also allow `kms:GenerateDataKey` on that key.
-- **Encryption headers.** Beacon doesn't send encryption headers or ACLs, so the bucket's default encryption applies. A bucket policy that requires an encryption header on every upload will reject Beacon's uploads.
+    - **Startup check.** When the forwarder starts, it checks that it can reach the bucket, which needs `s3:ListBucket` on `arn:aws:s3:::example-security-logs`. Without it, uploads still work, but the forwarder's log shows a health-check error at startup. Add the permission if you'd rather not see that error.
+    - **KMS.** If the bucket's default encryption uses a customer managed KMS key, also allow `kms:GenerateDataKey` on that key.
+    - **Encryption headers.** Beacon doesn't send encryption headers or ACLs, so the bucket's default encryption applies. A bucket policy that requires an encryption header on every upload will reject Beacon's uploads.
+  </Tab>
+  <Tab title="Terraform">
+    Beacon's [Terraform module](/log-forwarding/aws-s3-terraform) creates the bucket and an IAM user with the policy from the other tab, plus `s3:ListBucket` for the forwarder's startup check. Add it to a configuration whose AWS provider uses the region you want the bucket in:
+
+    ```hcl
+    module "beacon_s3" {
+      source = "github.com/asymptote-labs/agent-beacon//terraform/aws-s3?ref=v1.3.38"
+
+      bucket_name = "example-security-logs"
+      prefix      = "beacon-prod"
+    }
+    ```
+
+    Run `terraform apply`. Then **create an access key** with the AWS CLI, which keeps the secret out of your Terraform state:
+
+    ```bash
+    aws iam create-access-key --user-name beacon-endpoint-writer --output json
+    ```
+
+    The key starts with `AKIA` and doesn't expire. For your own KMS key, object expiry, and other settings, see the [module's options](/log-forwarding/aws-s3-terraform#options).
+  </Tab>
+</Tabs>
 
 ## 3. Set up Fleet
 
