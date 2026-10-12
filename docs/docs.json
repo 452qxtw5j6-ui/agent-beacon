@@ -505,7 +505,9 @@
                 "group": "Object Storage",
                 "expanded": true,
                 "pages": [
-                  "guides/macos-object-storage-system"
+                  "guides/macos-object-storage-system",
+                  "log-forwarding/aws-s3-terraform",
+                  "log-forwarding/gcs-terraform"
                 ]
               },
               {

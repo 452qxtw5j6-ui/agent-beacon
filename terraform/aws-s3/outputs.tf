@@ -1,0 +1,81 @@
+output "bucket_name" {
+  description = "Bucket Beacon writes to."
+  value       = var.create_bucket ? aws_s3_bucket.this[0].bucket : data.aws_s3_bucket.existing[0].bucket
+}
+
+output "bucket_arn" {
+  description = "ARN of the bucket."
+  value       = local.bucket_arn
+}
+
+output "region" {
+  description = "Region of the bucket (AWS_REGION for the forwarder)."
+  value       = local.bucket_region
+}
+
+output "prefix" {
+  description = "Root prefix Beacon writes below (BEACON_S3_PREFIX)."
+  value       = var.prefix
+}
+
+output "storage_class" {
+  description = "Storage class the forwarder writes objects with (BEACON_S3_STORAGE_CLASS)."
+  value       = var.storage_class
+}
+
+output "forwarder_settings" {
+  description = "The non-secret settings Beacon's S3 forwarder helper reads, keyed by environment variable name."
+  value = {
+    BEACON_S3_BUCKET        = var.create_bucket ? aws_s3_bucket.this[0].bucket : data.aws_s3_bucket.existing[0].bucket
+    AWS_REGION              = local.bucket_region
+    BEACON_S3_PREFIX        = var.prefix
+    BEACON_S3_STORAGE_CLASS = var.storage_class
+  }
+}
+
+output "writer_user_name" {
+  description = "IAM user the forwarder authenticates as. Create its access key with: aws iam create-access-key --user-name <this value>"
+  value       = aws_iam_user.writer.name
+}
+
+output "writer_user_arn" {
+  description = "ARN of the writer IAM user."
+  value       = aws_iam_user.writer.arn
+}
+
+output "writer_access_key_id" {
+  description = "Writer access key ID, when create_access_keys = true."
+  value       = try(aws_iam_access_key.writer[0].id, null)
+}
+
+output "writer_secret_access_key" {
+  description = "Writer secret access key, when create_access_keys = true. Read it with terraform output -raw writer_secret_access_key."
+  value       = try(aws_iam_access_key.writer[0].secret, null)
+  sensitive   = true
+}
+
+output "beacon_reader_user_name" {
+  description = "Read-only IAM user for Beacon Cloud's S3 data connector, when create_beacon_reader = true."
+  value       = try(aws_iam_user.beacon_reader[0].name, null)
+}
+
+output "beacon_reader_user_arn" {
+  description = "ARN of the Beacon reader IAM user, when create_beacon_reader = true."
+  value       = try(aws_iam_user.beacon_reader[0].arn, null)
+}
+
+output "beacon_reader_access_key_id" {
+  description = "Beacon reader access key ID, when create_beacon_reader and create_access_keys are both true."
+  value       = try(aws_iam_access_key.beacon_reader[0].id, null)
+}
+
+output "beacon_reader_secret_access_key" {
+  description = "Beacon reader secret access key, when create_beacon_reader and create_access_keys are both true."
+  value       = try(aws_iam_access_key.beacon_reader[0].secret, null)
+  sensitive   = true
+}
+
+output "beacon_reader_source_url" {
+  description = "The location to give Beacon for the S3 data connector."
+  value       = "https://${var.bucket_name}.s3.${local.bucket_region}.amazonaws.com/${var.prefix}"
+}

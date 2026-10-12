@@ -5,106 +5,102 @@ description: "Configure read-only S3 access for Beacon ingestion."
 
 ## Overview
 
-Beacon can ingest customer-hosted event files from a private AWS S3 bucket or prefix. Grant Beacon's ingestion worker read-only access to the bucket that contains the event files.
+Beacon can ingest customer-hosted event files from a private AWS S3 bucket or prefix. Beacon reads them with the access key of a read-only IAM user you create. That user can list the bucket and read objects below the prefix you choose, and nothing else.
+
+Beacon can't assume an IAM role in your account for this connector, so use an IAM user's access key.
 
 Do not make the bucket public. Do not grant write or delete permissions.
 
-At the end of setup, send Beacon the full IAM role ARN for the role you create.
+## Create the read-only user
 
-## Customer steps
+<Tabs>
+  <Tab title="Terraform">
+    If you created the bucket with [AWS S3 with Terraform](/log-forwarding/aws-s3-terraform), turn on the reader in the module block and apply:
 
-1. Send Beacon the S3 location details.
+    ```hcl
+    module "beacon_s3" {
+      # ...your existing settings...
+      create_beacon_reader = true
+    }
+    ```
 
-   Include:
+    The module creates `beacon-s3-reader` with the policy shown in the other tab, including `kms:Decrypt` when you set `kms_key_arn`. Create its access key:
 
-   - AWS account ID
-   - S3 bucket name
-   - AWS region
-   - Prefix/path for the event files, such as `s3://your-bucket/asymptote/events/`
-   - File format, ideally JSONL or JSONEachRow
-   - Delivery cadence and approximate event volume
-   - Encryption type, either SSE-S3 or SSE-KMS
-   - KMS key ARN, only if SSE-KMS is enabled
+    ```bash
+    aws iam create-access-key --user-name beacon-s3-reader --output json
+    ```
+  </Tab>
+  <Tab title="AWS CLI">
+    Set the bucket and the prefix that holds the event files:
 
-2. Create a dedicated IAM role in AWS.
+    ```bash
+    export BEACON_S3_BUCKET="<bucket>"
+    export BEACON_S3_PREFIX="beacon-prod"
+    ```
 
-   Sign in to the AWS account that owns the S3 bucket with an IAM user that can create and manage IAM roles. Open the IAM service console, then create a new role named something like `asymptote-s3-read`.
+    Create the user and give it read-only access to that prefix:
 
-3. Configure the role trust policy.
+    ```bash
+    aws iam create-user --user-name beacon-s3-reader
 
-   Use the IAM ARN Beacon gives you as the trusted principal. Replace `ASYMPTOTE_IAM_ARN` with that ARN.
+    aws iam put-user-policy \
+      --user-name beacon-s3-reader \
+      --policy-name BeaconTelemetryReadOnly \
+      --policy-document "$(cat <<EOF
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+          "Resource": "arn:aws:s3:::${BEACON_S3_BUCKET}"
+        },
+        {
+          "Effect": "Allow",
+          "Action": "s3:GetObject",
+          "Resource": "arn:aws:s3:::${BEACON_S3_BUCKET}/${BEACON_S3_PREFIX}/*"
+        }
+      ]
+    }
+    EOF
+    )"
+    ```
 
-   ```json title="IAM role trust policy"
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Principal": {
-           "AWS": "ASYMPTOTE_IAM_ARN"
-         },
-         "Action": "sts:AssumeRole"
-       }
-     ]
-   }
-   ```
+    If the bucket uses SSE-KMS, also allow `kms:Decrypt` on the key, and make sure the key policy lets IAM policies in your account grant it:
 
-4. Attach a read-only S3 policy.
+    ```json title="SSE-KMS decrypt statement"
+    {
+      "Effect": "Allow",
+      "Action": "kms:Decrypt",
+      "Resource": "YOUR_KMS_KEY_ARN"
+    }
+    ```
 
-   ```json title="Read-only S3 policy"
-   {
-     "Version": "2012-10-17",
-     "Statement": [
-       {
-         "Effect": "Allow",
-         "Action": [
-           "s3:GetBucketLocation",
-           "s3:ListBucket"
-         ],
-         "Resource": [
-           "arn:aws:s3:::YOUR_BUCKET_NAME"
-         ]
-       },
-       {
-         "Effect": "Allow",
-         "Action": [
-           "s3:Get*",
-           "s3:List*"
-         ],
-         "Resource": [
-           "arn:aws:s3:::YOUR_BUCKET_NAME/*"
-         ]
-       }
-     ]
-   }
-   ```
+    Create the access key:
 
-   Replace `YOUR_BUCKET_NAME` with the name of the S3 bucket that contains the event files.
+    ```bash
+    aws iam create-access-key --user-name beacon-s3-reader --output json
+    ```
+  </Tab>
+</Tabs>
 
-5. Add KMS decrypt permission if needed.
+AWS shows the secret only once. Keep it in your password manager until you send it to Beacon.
 
-   If the bucket uses SSE-KMS, add this statement to the role policy:
+## Send Beacon the details
 
-   ```json title="SSE-KMS decrypt statement"
-   {
-     "Sid": "DecryptEventObjects",
-     "Effect": "Allow",
-     "Action": "kms:Decrypt",
-     "Resource": "YOUR_KMS_KEY_ARN"
-   }
-   ```
+Send these through the secure channel your Beacon contact gives you. Don't send the secret access key by email or chat.
 
-   The KMS key policy must also allow this IAM role to use `kms:Decrypt`.
+- S3 bucket name and AWS region
+- Prefix for the event files, such as `s3://your-bucket/beacon-prod/`
+- The access key ID and secret access key
+- KMS key ARN, only if SSE-KMS is enabled
+- For files that Beacon's forwarder didn't write: the file format (ideally JSONL), delivery cadence, approximate event volume, and a small sample file or example JSONL row
 
-6. Send Beacon the final onboarding details.
+To rotate the key later, create a second key for `beacon-s3-reader`, send it to Beacon, and delete the old key once Beacon confirms the switch.
 
-   Send:
+## Using Google Cloud Storage
 
-   - IAM role ARN for the role you created
-   - S3 URL/prefix
-   - AWS region
-   - KMS key ARN, if applicable
-   - A small sample event file or example JSONL row
+For a Cloud Storage bucket, no key is involved. Grant `roles/storage.objectViewer` on the bucket to `beacon-clickpipes-reader@asymptote-labs.iam.gserviceaccount.com`, or set `grant_beacon_read_access = true` in the [Terraform module](/log-forwarding/gcs-terraform). Then send Beacon the bucket name and prefix.
 
 ## Event file requirements
 
@@ -112,19 +108,21 @@ Use newline-delimited JSON, with one complete JSON object per line. Each event s
 
 Share a representative sample file before production ingestion. The sample should show realistic field names and value shapes, but should not include secrets.
 
+Beacon's own S3 forwarder already writes this format, as gzip-compressed JSONL below `<prefix>/runtime/` and `<prefix>/inventory/`.
+
 ## Related
 
 <Columns cols={2}>
   <Card title="Beacon Cloud" icon="cloud" href="/deployment/managed">
     Review managed visibility, governance, and investigation workflows.
   </Card>
-  <Card title="Endpoint Event Schema" icon="code" href="/telemetry-schema/event-schema">
-    Review normalized event fields and example payloads.
+  <Card title="AWS S3 with Terraform" icon="bucket" href="/log-forwarding/aws-s3-terraform">
+    Create the bucket, writer, and Beacon reader with Terraform.
   </Card>
   <Card title="Object Storage Forwarding" icon="bucket" href="/guides/macos-object-storage-system">
     Configure customer-managed Beacon event forwarding into S3.
   </Card>
-  <Card title="Data Inventory" icon="table-list" href="/security/data-inventory">
-    Review the endpoint event fields Beacon can write.
+  <Card title="Endpoint Event Schema" icon="code" href="/telemetry-schema/event-schema">
+    Review normalized event fields and example payloads.
   </Card>
 </Columns>

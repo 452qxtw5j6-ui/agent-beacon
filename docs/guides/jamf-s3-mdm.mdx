@@ -54,6 +54,10 @@ The helper normalizes old prefixes ending in `/runtime` or `/inventory`, but new
 
 ## AWS permission
 
+<Tip>
+  Managing AWS with Terraform? [AWS S3 with Terraform](/log-forwarding/aws-s3-terraform) creates the bucket and an IAM user with this policy. Create its access key with the AWS CLI, then continue here.
+</Tip>
+
 Use a bucket policy or IAM policy scoped to the Beacon prefix. Example:
 
 ```json
