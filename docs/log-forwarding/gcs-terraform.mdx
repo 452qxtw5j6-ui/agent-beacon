@@ -12,7 +12,6 @@ The gcloud steps in the rollout guides create the same resources. Follow either 
 - **A new Cloud Storage bucket just for Beacon**, with uniform bucket-level access, public access prevention enforced, versioning, and optionally your Cloud KMS key. The module always creates its own bucket and does not manage existing ones.
 - **`beacon-endpoint-writer`**, a service account that can create objects below your Beacon prefix and can't list, read, or delete them.
 - **`beacon-endpoint-reader`**, a read-only service account for checking uploads.
-- **Optionally, read access for Beacon Cloud**, so Beacon can ingest the telemetry you store, with Pub/Sub subscriptions that tell Beacon about each new object.
 
 Every Mac's forwarder writes both of Beacon's logs to the bucket:
 
@@ -173,17 +172,6 @@ Set any of these in the `module "beacon_gcs"` block and run `terraform apply` ag
 
     Objects below the prefix are deleted a year after upload. Versioning is on by default, so a deleted or replaced object stays recoverable for `noncurrent_version_expiration_days` (default 30). Set `versioning_enabled = false` to turn versioning off.
   </Accordion>
-  <Accordion title="Let Beacon Cloud read the bucket">
-    ```hcl
-    grant_beacon_read_access = true
-    ```
-
-    This grants `roles/storage.objectViewer` on the bucket to Beacon's reader, `beacon-clickpipes-reader@asymptote-labs.iam.gserviceaccount.com`. No key is involved.
-
-    It also enables Pub/Sub and creates a topic that the bucket notifies of every new object below the prefix, with one subscription per stream that Beacon's reader can consume. Beacon loads what the subscriptions name. Without them Beacon would read objects in name order and could skip ones that arrive late, which happens when many Macs upload at once.
-
-    Send Beacon the bucket name, the prefix, and the two subscriptions in `beacon_reader_subscriptions`.
-  </Accordion>
   <Accordion title="Create the writer's key with Terraform">
     ```hcl
     create_writer_key = true
@@ -206,7 +194,6 @@ Set any of these in the `module "beacon_gcs"` block and run `terraform apply` ag
 | `bucket_url` | `gs://<bucket>/<prefix>/` |
 | `writer_email` | The service account every Mac uploads as |
 | `reader_email` | The read-only service account, when `create_reader = true` |
-| `beacon_reader_subscriptions` | The new-object subscriptions to send Beacon, by stream, when `grant_beacon_read_access = true` |
 | `writer_private_key` | Only with `create_writer_key = true` |
 
 ## Rotate the writer key

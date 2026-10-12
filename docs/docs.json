@@ -677,6 +677,10 @@
   },
   "redirects": [
     {
+      "source": "/manage/configure-s3-data-connector",
+      "destination": "https://docs.asymptotelabs.ai/manage/configure-s3-data-connector"
+    },
+    {
       "source": "/log-forwarding/s3",
       "destination": "/guides/macos-object-storage-system"
     },

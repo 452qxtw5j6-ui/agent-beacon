@@ -11,7 +11,6 @@ The AWS CLI steps in the rollout guides create the same resources. Follow either
 
 - **A new S3 bucket just for Beacon**, with public access blocked, ACLs disabled, HTTPS required, default encryption (SSE-S3, or SSE-KMS with your key), and versioning. The module always creates its own bucket and does not manage existing ones.
 - **`beacon-endpoint-writer`**, an IAM user that can upload objects below your Beacon prefix and can't read or delete them.
-- **Optionally, `beacon-s3-reader`**, a read-only IAM user for [Beacon Cloud's S3 data connector](/manage/configure-s3-data-connector), with two SQS queues that tell Beacon about each new object.
 
 Every Mac's forwarder writes both of Beacon's logs to the bucket:
 
@@ -152,7 +151,7 @@ Set any of these in the `module "beacon_s3"` block and run `terraform apply` aga
     kms_key_arn = "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
     ```
 
-    The bucket uses SSE-KMS with an S3 Bucket Key. The writer gets `kms:GenerateDataKey` and the Beacon reader gets `kms:Decrypt` on the key. The key's own policy must allow IAM policies in your account to grant access, which the default key policy does.
+    The bucket uses SSE-KMS with an S3 Bucket Key. The writer gets `kms:GenerateDataKey` on the key. The key's own policy must allow IAM policies in your account to grant access, which the default key policy does.
   </Accordion>
   <Accordion title="Delete old objects">
     ```hcl
@@ -161,32 +160,17 @@ Set any of these in the `module "beacon_s3"` block and run `terraform apply` aga
 
     Objects below the prefix are deleted a year after upload. Versioning is on by default, so a deleted or replaced object stays recoverable for `noncurrent_version_expiration_days` (default 30). Set `versioning_enabled = false` to turn versioning off.
   </Accordion>
-  <Accordion title="Let Beacon Cloud read the bucket">
-    ```hcl
-    create_beacon_reader = true
-    ```
-
-    This adds `beacon-s3-reader`, which can list the bucket and read objects below the prefix. Create its key the same way as the writer's:
-
-    ```bash
-    aws iam create-access-key --user-name beacon-s3-reader --output json
-    ```
-
-    It also adds two SQS queues, `beacon-s3-reader-runtime` and `beacon-s3-reader-inventory`, each with a dead-letter queue. S3 announces every new object below the prefix on its stream's queue, and Beacon loads what the queues name. Without them Beacon would read objects in name order and could skip ones that arrive late, which happens when many Macs upload at once.
-
-    Send Beacon the key, the `beacon_reader_source_url` output, and the two URLs in `beacon_reader_queue_urls`. See [Configure S3 Data Connector](/manage/configure-s3-data-connector).
-  </Accordion>
   <Accordion title="Create the access keys with Terraform">
     ```hcl
     create_access_keys = true
     ```
 
-    Terraform creates the writer's key, and the reader's when you have one. Read the secret with `terraform output -raw writer_secret_access_key` after adding a matching `output` block. The secret is stored in Terraform state, so use this only when your state is encrypted and access is restricted.
+    Terraform creates the writer's key. Read the secret with `terraform output -raw writer_secret_access_key` after adding a matching `output` block. The secret is stored in Terraform state, so use this only when your state is encrypted and access is restricted.
   </Accordion>
   <Accordion title="Match your organization's IAM rules">
-    - `writer_user_name` and `beacon_reader_user_name` rename the users.
-    - `iam_path` puts them under a path such as `/beacon/`.
-    - `permissions_boundary_arn` attaches a permissions boundary.
+    - `writer_user_name` renames the writer.
+    - `iam_path` puts it under a path such as `/beacon/`.
+    - `permissions_boundary_arn` attaches a permissions boundary to it.
     - `tags` tags every resource the module creates.
   </Accordion>
   <Accordion title="Drop the health-check permission">
@@ -204,9 +188,6 @@ Set any of these in the `module "beacon_s3"` block and run `terraform apply` aga
 | --- | --- |
 | `bucket_name`, `region`, `prefix`, `storage_class` | The forwarder settings, also together as `forwarder_settings` |
 | `writer_user_name`, `writer_user_arn` | The IAM user every Mac uploads as |
-| `beacon_reader_user_name`, `beacon_reader_user_arn` | The Beacon reader, when `create_beacon_reader = true` |
-| `beacon_reader_source_url` | The location to send Beacon for the S3 data connector |
-| `beacon_reader_queue_urls` | The new-object queues to send Beacon, by stream |
 | `writer_access_key_id`, `writer_secret_access_key` | Only with `create_access_keys = true` |
 
 ## Rotate the writer key
@@ -254,8 +235,5 @@ Rotation happens outside Terraform. IAM allows two keys per user, so the old key
   </Card>
   <Card title="Google Cloud Storage with Terraform" icon="cloud" href="/log-forwarding/gcs-terraform">
     The same setup for a Cloud Storage bucket.
-  </Card>
-  <Card title="Configure S3 Data Connector" icon="database" href="/manage/configure-s3-data-connector">
-    Let Beacon Cloud read the telemetry in your bucket.
   </Card>
 </Columns>
