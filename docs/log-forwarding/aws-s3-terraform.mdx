@@ -160,9 +160,9 @@ Set any of these in the `module "beacon_s3"` block and run `terraform apply` aga
 
     Objects below the prefix are deleted a year after upload. Versioning is on by default, so a deleted or replaced object stays recoverable for `noncurrent_version_expiration_days` (default 30). Set `versioning_enabled = false` to turn versioning off.
   </Accordion>
-  <Accordion title="Create the access keys with Terraform">
+  <Accordion title="Create the access key with Terraform">
     ```hcl
-    create_access_keys = true
+    create_writer_access_key = true
     ```
 
     Terraform creates the writer's key. Read the secret with `terraform output -raw writer_secret_access_key` after adding a matching `output` block. The secret is stored in Terraform state, so use this only when your state is encrypted and access is restricted.
@@ -188,7 +188,7 @@ Set any of these in the `module "beacon_s3"` block and run `terraform apply` aga
 | --- | --- |
 | `bucket_name`, `region`, `prefix`, `storage_class` | The forwarder settings, also together as `forwarder_settings` |
 | `writer_user_name`, `writer_user_arn` | The IAM user every Mac uploads as |
-| `writer_access_key_id`, `writer_secret_access_key` | Only with `create_access_keys = true` |
+| `writer_access_key_id`, `writer_secret_access_key` | Only with `create_writer_access_key = true` |
 
 ## Rotate the writer key
 

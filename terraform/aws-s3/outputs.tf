@@ -18,6 +18,17 @@ output "prefix" {
   value       = var.prefix
 }
 
+output "bucket" {
+  description = "The bucket as one object, for the aws-s3-asymptote-reader module: bucket = module.beacon_s3.bucket."
+  value = {
+    name        = aws_s3_bucket.this.bucket
+    arn         = local.bucket_arn
+    region      = aws_s3_bucket.this.region
+    prefix      = var.prefix
+    kms_key_arn = var.kms_key_arn
+  }
+}
+
 output "storage_class" {
   description = "Storage class the forwarder writes objects with (BEACON_S3_STORAGE_CLASS)."
   value       = var.storage_class
@@ -44,43 +55,12 @@ output "writer_user_arn" {
 }
 
 output "writer_access_key_id" {
-  description = "Writer access key ID, when create_access_keys = true."
+  description = "Writer access key ID, when create_writer_access_key = true."
   value       = try(aws_iam_access_key.writer[0].id, null)
 }
 
 output "writer_secret_access_key" {
-  description = "Writer secret access key, when create_access_keys = true. Read it with terraform output -raw writer_secret_access_key."
+  description = "Writer secret access key, when create_writer_access_key = true. Read it with terraform output -raw writer_secret_access_key."
   value       = try(aws_iam_access_key.writer[0].secret, null)
   sensitive   = true
-}
-
-output "beacon_reader_user_name" {
-  description = "Read-only IAM user for Beacon Cloud's S3 data connector, when create_beacon_reader = true."
-  value       = try(aws_iam_user.beacon_reader[0].name, null)
-}
-
-output "beacon_reader_user_arn" {
-  description = "ARN of the Beacon reader IAM user, when create_beacon_reader = true."
-  value       = try(aws_iam_user.beacon_reader[0].arn, null)
-}
-
-output "beacon_reader_access_key_id" {
-  description = "Beacon reader access key ID, when create_beacon_reader and create_access_keys are both true."
-  value       = try(aws_iam_access_key.beacon_reader[0].id, null)
-}
-
-output "beacon_reader_secret_access_key" {
-  description = "Beacon reader secret access key, when create_beacon_reader and create_access_keys are both true."
-  value       = try(aws_iam_access_key.beacon_reader[0].secret, null)
-  sensitive   = true
-}
-
-output "beacon_reader_source_url" {
-  description = "The location to give Beacon for the S3 data connector."
-  value       = local.beacon_reader_source_url
-}
-
-output "beacon_reader_queue_urls" {
-  description = "The new-object queues to give Beacon for the S3 data connector, by stream, when create_beacon_reader = true."
-  value       = var.create_beacon_reader ? { for stream, queue in aws_sqs_queue.beacon_reader : stream => queue.url } : null
 }

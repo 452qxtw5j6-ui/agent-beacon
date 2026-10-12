@@ -7,9 +7,8 @@ Creates the AWS side of Beacon's S3 forwarding:
   lifecycle rule scoped to the Beacon prefix;
 - `beacon-endpoint-writer`, an IAM user that can only `s3:PutObject` below the prefix
   (plus `s3:ListBucket` for the forwarder's startup health check);
-- optionally `beacon-s3-reader`, a read-only IAM user for Beacon Cloud's S3 data
-  connector (`create_beacon_reader = true`), with an SQS queue per stream that S3
-  notifies of every new object, so Beacon loads objects in any order.
+- optionally the writer's access key (`create_writer_access_key = true`), though the
+  docs create it with the AWS CLI so its secret stays out of Terraform state.
 
 ```hcl
 provider "aws" {

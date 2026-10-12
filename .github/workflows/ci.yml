@@ -302,7 +302,7 @@ jobs:
       - name: Check Terraform modules
         run: |
           terraform fmt -check -recursive -diff terraform
-          for module in terraform/aws-s3 terraform/gcs; do
+          for module in terraform/*/; do
             terraform -chdir="$module" init -backend=false -input=false
             terraform -chdir="$module" validate
             terraform -chdir="$module" test

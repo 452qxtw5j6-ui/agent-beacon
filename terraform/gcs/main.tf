@@ -1,15 +1,9 @@
 locals {
-  apis = var.enable_apis ? toset(concat(
-    ["storage.googleapis.com", "iam.googleapis.com"],
-    var.grant_beacon_read_access ? ["pubsub.googleapis.com"] : [],
-  )) : toset([])
+  apis = var.enable_apis ? toset(["storage.googleapis.com", "iam.googleapis.com"]) : toset([])
 
   # Beacon writes <prefix>/runtime/date=YYYY-MM-DD/... and <prefix>/inventory/date=YYYY-MM-DD/...
   # The condition is built from the variable, not the bucket resource, so it is known at plan time.
   writer_condition = "resource.name.startsWith(\"projects/_/buckets/${var.bucket_name}/objects/${var.prefix}/\")"
-
-  # Cloud Storage's service agent encrypts with a customer-managed key and publishes notifications.
-  needs_storage_agent = var.kms_key_name != null && var.grant_kms_to_storage_agent || var.grant_beacon_read_access
 }
 
 resource "google_project_service" "this" {
@@ -21,15 +15,16 @@ resource "google_project_service" "this" {
 }
 
 data "google_storage_project_service_account" "this" {
-  count = local.needs_storage_agent ? 1 : 0
+  count = var.kms_key_name != null && var.grant_kms_to_storage_agent ? 1 : 0
 
   project = var.project
 
   depends_on = [google_project_service.this]
 }
 
+# Cloud Storage encrypts with a customer-managed key as its own service agent, not as the writer.
 resource "google_kms_crypto_key_iam_member" "storage_agent" {
-  count = var.kms_key_name != null && var.grant_kms_to_storage_agent ? 1 : 0
+  count = length(data.google_storage_project_service_account.this)
 
   crypto_key_id = var.kms_key_name
   role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
@@ -133,12 +128,4 @@ resource "google_storage_bucket_iam_member" "reader" {
   bucket = google_storage_bucket.this.name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${google_service_account.reader[0].email}"
-}
-
-resource "google_storage_bucket_iam_member" "beacon_reader" {
-  count = var.grant_beacon_read_access ? 1 : 0
-
-  bucket = google_storage_bucket.this.name
-  role   = "roles/storage.objectViewer"
-  member = var.beacon_reader_member
 }

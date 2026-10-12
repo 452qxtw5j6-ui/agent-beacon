@@ -13,6 +13,15 @@ output "prefix" {
   value       = var.prefix
 }
 
+output "bucket" {
+  description = "The bucket as one object, for the gcs-asymptote-reader module: bucket = module.beacon_gcs.bucket."
+  value = {
+    name    = google_storage_bucket.this.name
+    project = var.project
+    prefix  = var.prefix
+  }
+}
+
 output "storage_class" {
   description = "Storage class the forwarder writes objects with (BEACON_GCS_STORAGE_CLASS)."
   value       = var.storage_class
@@ -41,9 +50,4 @@ output "writer_private_key" {
 output "reader_email" {
   description = "Read-only service account, when create_reader = true."
   value       = try(google_service_account.reader[0].email, null)
-}
-
-output "beacon_reader_subscriptions" {
-  description = "The new-object subscriptions to give Beacon, by stream, when grant_beacon_read_access = true."
-  value       = var.grant_beacon_read_access ? { for stream, sub in google_pubsub_subscription.beacon_reader : stream => sub.id } : null
 }

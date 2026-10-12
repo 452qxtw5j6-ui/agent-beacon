@@ -95,7 +95,7 @@ variable "force_destroy" {
 }
 
 variable "enable_apis" {
-  description = "Enable the Cloud Storage and IAM APIs on the project, and Pub/Sub when grant_beacon_read_access = true. They are left enabled when the module is destroyed."
+  description = "Enable the Cloud Storage and IAM APIs on the project. They are left enabled when the module is destroyed."
   type        = bool
   default     = true
 }
@@ -124,20 +124,8 @@ variable "reader_account_id" {
   default     = "beacon-endpoint-reader"
 }
 
-variable "grant_beacon_read_access" {
-  description = "Grant Beacon Cloud read access to the bucket (roles/storage.objectViewer for beacon_reader_member), so Beacon can ingest the telemetry you store there. No key is involved. The module also publishes every new object to a Pub/Sub topic with one subscription per stream that Beacon's reader may consume, so Beacon loads objects in any order."
-  type        = bool
-  default     = false
-}
-
-variable "beacon_reader_member" {
-  description = "Beacon Cloud's reader identity. Change it only if Beacon gives you a different one."
-  type        = string
-  default     = "serviceAccount:beacon-clickpipes-reader@asymptote-labs.iam.gserviceaccount.com"
-}
-
 variable "labels" {
-  description = "Labels to apply to the bucket, and to the Pub/Sub topic and subscriptions when they exist."
+  description = "Labels to apply to the bucket."
   type        = map(string)
   default     = {}
 }

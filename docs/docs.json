@@ -678,7 +678,7 @@
   "redirects": [
     {
       "source": "/manage/configure-s3-data-connector",
-      "destination": "https://docs.asymptotelabs.ai/manage/configure-s3-data-connector"
+      "destination": "https://docs.asymptotelabs.ai/deployment/self-hosted-s3"
     },
     {
       "source": "/log-forwarding/s3",

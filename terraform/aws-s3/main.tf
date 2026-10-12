@@ -1,20 +1,10 @@
 data "aws_partition" "current" {}
 
-data "aws_caller_identity" "current" {}
-
 locals {
   bucket_arn = "arn:${data.aws_partition.current.partition}:s3:::${var.bucket_name}"
 
   # Beacon writes <prefix>/runtime/date=YYYY-MM-DD/... and <prefix>/inventory/date=YYYY-MM-DD/...
   beacon_objects_arn = "${local.bucket_arn}/${var.prefix}/*"
-
-  # S3's certificate for virtual-hosted URLs covers one label, so a dotted bucket name needs path style.
-  s3_host = "s3.${aws_s3_bucket.this.region}.${data.aws_partition.current.dns_suffix}"
-  beacon_reader_source_url = (
-    strcontains(var.bucket_name, ".")
-    ? "https://${local.s3_host}/${var.bucket_name}/${var.prefix}"
-    : "https://${var.bucket_name}.${local.s3_host}/${var.prefix}"
-  )
 }
 
 # A dedicated bucket for Beacon telemetry, always created by the module.

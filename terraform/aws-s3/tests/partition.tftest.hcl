@@ -25,11 +25,6 @@ run "urls_and_arns_follow_the_partition" {
   command = apply
 
   assert {
-    condition     = output.beacon_reader_source_url == "https://acme-beacon-telemetry.s3.cn-north-1.amazonaws.com.cn/beacon-prod"
-    error_message = "The data connector URL uses the partition's DNS suffix."
-  }
-
-  assert {
     condition     = output.bucket_arn == "arn:aws-cn:s3:::acme-beacon-telemetry"
     error_message = "The bucket ARN uses the partition."
   }

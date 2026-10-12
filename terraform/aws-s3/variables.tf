@@ -42,7 +42,7 @@ variable "storage_class" {
 }
 
 variable "kms_key_arn" {
-  description = "ARN of a customer managed KMS key to make the bucket's default encryption (SSE-KMS with an S3 Bucket Key). The writer gets kms:GenerateDataKey and the Beacon reader gets kms:Decrypt on it. Leave null for SSE-S3."
+  description = "ARN of a customer managed KMS key to make the bucket's default encryption (SSE-KMS with an S3 Bucket Key). The writer gets kms:GenerateDataKey on it. Leave null for SSE-S3."
   type        = string
   default     = null
 
@@ -98,26 +98,14 @@ variable "allow_writer_healthcheck" {
   default     = true
 }
 
-variable "create_beacon_reader" {
-  description = "Create a read-only IAM user for Beacon Cloud's S3 data connector, which reads your bucket with an access key. It can read only the Beacon prefix. The module also creates an SQS queue per stream, with a dead-letter queue, that S3 notifies of every new object, so the connector loads objects in any order."
-  type        = bool
-  default     = false
-}
-
-variable "beacon_reader_user_name" {
-  description = "Name of the read-only IAM user created when create_beacon_reader = true. Its queues are named after it: <name>-runtime and <name>-inventory, each with a -dlq."
-  type        = string
-  default     = "beacon-s3-reader"
-}
-
-variable "create_access_keys" {
-  description = "Also create an access key for the writer (and for the Beacon reader, when created). The secret keys are then stored in Terraform state, so leave this false unless your state is encrypted and access-controlled, and create the keys with the AWS CLI instead."
+variable "create_writer_access_key" {
+  description = "Also create the writer's access key. The secret key is then stored in Terraform state, so leave this false unless your state is encrypted and access-controlled, and create the key with the AWS CLI instead."
   type        = bool
   default     = false
 }
 
 variable "iam_path" {
-  description = "Path for the IAM users."
+  description = "Path for the writer IAM user."
   type        = string
   default     = "/"
 
@@ -128,7 +116,7 @@ variable "iam_path" {
 }
 
 variable "permissions_boundary_arn" {
-  description = "ARN of a permissions boundary policy to attach to the IAM users, if your organization requires one."
+  description = "ARN of a permissions boundary policy to attach to the writer IAM user, if your organization requires one."
   type        = string
   default     = null
 }

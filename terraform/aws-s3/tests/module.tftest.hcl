@@ -8,12 +8,6 @@ mock_provider "aws" {
     }
   }
 
-  mock_data "aws_caller_identity" {
-    defaults = {
-      account_id = "111122223333"
-    }
-  }
-
   mock_resource "aws_s3_bucket" {
     defaults = {
       bucket = "acme-beacon-telemetry"
@@ -58,13 +52,8 @@ run "no_access_keys_by_default" {
   command = plan
 
   assert {
-    condition     = length(aws_iam_access_key.writer) == 0 && length(aws_iam_access_key.beacon_reader) == 0
-    error_message = "Access keys, whose secrets would land in state, must be opt-in."
-  }
-
-  assert {
-    condition     = length(aws_iam_user.beacon_reader) == 0
-    error_message = "The Beacon reader must be opt-in."
+    condition     = length(aws_iam_access_key.writer) == 0
+    error_message = "The access key, whose secret would land in state, must be opt-in."
   }
 }
 
@@ -145,30 +134,22 @@ run "forwarder_settings_match_the_helper" {
   }
 
   assert {
-    condition     = output.beacon_reader_source_url == "https://acme-beacon-telemetry.s3.us-west-2.amazonaws.com/beacon-prod"
-    error_message = "The data connector URL is the bucket's regional endpoint plus the prefix."
-  }
-}
-
-run "source_url_uses_path_style_for_dotted_bucket_names" {
-  command = apply
-
-  variables {
-    bucket_name = "acme.beacon.telemetry"
-  }
-
-  assert {
-    condition     = output.beacon_reader_source_url == "https://s3.us-west-2.amazonaws.com/acme.beacon.telemetry/beacon-prod"
-    error_message = "A dotted bucket name fails TLS on a virtual-hosted URL, so the URL must be path style."
+    condition = (
+      output.bucket.name == "acme-beacon-telemetry"
+      && output.bucket.arn == "arn:aws:s3:::acme-beacon-telemetry"
+      && output.bucket.region == "us-west-2"
+      && output.bucket.prefix == "beacon-prod"
+      && output.bucket.kms_key_arn == null
+    )
+    error_message = "The bucket output carries what the reader module needs."
   }
 }
 
 run "kms_key_encrypts_and_is_granted" {
-  command = apply
+  command = plan
 
   variables {
-    kms_key_arn          = "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-    create_beacon_reader = true
+    kms_key_arn = "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
   }
 
   assert {
@@ -189,16 +170,6 @@ run "kms_key_encrypts_and_is_granted" {
     })
     error_message = "The writer needs kms:GenerateDataKey to upload to an SSE-KMS bucket."
   }
-
-  assert {
-    condition = contains(jsondecode(aws_iam_user_policy.beacon_reader[0].policy).Statement, {
-      Sid      = "DecryptBeaconObjects"
-      Effect   = "Allow"
-      Action   = "kms:Decrypt"
-      Resource = "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-    })
-    error_message = "The Beacon reader needs kms:Decrypt to read an SSE-KMS bucket."
-  }
 }
 
 run "healthcheck_permission_can_be_dropped" {
@@ -214,161 +185,16 @@ run "healthcheck_permission_can_be_dropped" {
   }
 }
 
-run "beacon_reader_reads_only_the_prefix" {
-  command = apply
-
-  variables {
-    create_beacon_reader = true
-  }
-
-  assert {
-    condition = jsondecode(aws_iam_user_policy.beacon_reader[0].policy).Statement == [
-      {
-        Sid      = "ListBeaconBucket"
-        Effect   = "Allow"
-        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
-        Resource = "arn:aws:s3:::acme-beacon-telemetry"
-      },
-      {
-        Sid      = "ReadBeaconObjects"
-        Effect   = "Allow"
-        Action   = "s3:GetObject"
-        Resource = "arn:aws:s3:::acme-beacon-telemetry/beacon-prod/*"
-      },
-      {
-        Sid      = "ConsumeBeaconNotifications"
-        Effect   = "Allow"
-        Action   = ["sqs:ReceiveMessage", "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
-        Resource = [aws_sqs_queue.beacon_reader["inventory"].arn, aws_sqs_queue.beacon_reader["runtime"].arn]
-      },
-      {
-        Sid      = "FindBeaconQueues"
-        Effect   = "Allow"
-        Action   = "sqs:ListQueues"
-        Resource = "*"
-      },
-    ]
-    error_message = "The Beacon reader may list the bucket, read only the Beacon prefix, and consume its two queues."
-  }
-
-  assert {
-    condition     = aws_iam_user.beacon_reader[0].name == "beacon-s3-reader" && length(aws_iam_access_key.beacon_reader) == 0
-    error_message = "The reader is created without a key unless create_access_keys is set."
-  }
-}
-
-run "beacon_reader_gets_new_object_queues" {
-  command = apply
-
-  variables {
-    create_beacon_reader = true
-  }
-
-  assert {
-    condition = (
-      aws_sqs_queue.beacon_reader["runtime"].name == "beacon-s3-reader-runtime"
-      && aws_sqs_queue.beacon_reader["inventory"].name == "beacon-s3-reader-inventory"
-      && aws_sqs_queue.beacon_reader_dead_letter["runtime"].name == "beacon-s3-reader-runtime-dlq"
-      && aws_sqs_queue.beacon_reader_dead_letter["inventory"].name == "beacon-s3-reader-inventory-dlq"
-    )
-    error_message = "Each stream gets a queue and a dead-letter queue named after the reader."
-  }
-
-  assert {
-    condition = alltrue([
-      for stream in ["runtime", "inventory"] :
-      aws_sqs_queue.beacon_reader[stream].sqs_managed_sse_enabled
-      && aws_sqs_queue.beacon_reader[stream].message_retention_seconds == 1209600
-      && aws_sqs_queue.beacon_reader[stream].visibility_timeout_seconds == 300
-      && jsondecode(aws_sqs_queue.beacon_reader[stream].redrive_policy) == {
-        deadLetterTargetArn = aws_sqs_queue.beacon_reader_dead_letter[stream].arn
-        maxReceiveCount     = 10
-      }
-    ])
-    error_message = "Queues are encrypted, keep messages 14 days, and move a message to the dead-letter queue after ten failed deliveries."
-  }
-
-  assert {
-    condition = alltrue([
-      for stream in ["runtime", "inventory"] :
-      jsondecode(aws_sqs_queue_policy.beacon_reader[stream].policy).Statement == [
-        {
-          Sid       = "AllowBucketNotifications"
-          Effect    = "Allow"
-          Principal = { Service = "s3.amazonaws.com" }
-          Action    = "sqs:SendMessage"
-          Resource  = aws_sqs_queue.beacon_reader[stream].arn
-          Condition = {
-            ArnEquals    = { "aws:SourceArn" = "arn:aws:s3:::acme-beacon-telemetry" }
-            StringEquals = { "aws:SourceAccount" = "111122223333" }
-          }
-        },
-      ]
-    ])
-    error_message = "Only this bucket, in this account, may send to the queues."
-  }
-
-  assert {
-    condition = {
-      for queue in aws_s3_bucket_notification.this[0].queue : queue.filter_prefix => {
-        arn    = queue.queue_arn
-        events = queue.events
-      }
-      } == {
-      "beacon-prod/runtime/"   = { arn = aws_sqs_queue.beacon_reader["runtime"].arn, events = toset(["s3:ObjectCreated:*"]) }
-      "beacon-prod/inventory/" = { arn = aws_sqs_queue.beacon_reader["inventory"].arn, events = toset(["s3:ObjectCreated:*"]) }
-    }
-    error_message = "Every new object below each stream's prefix is announced on that stream's queue."
-  }
-
-  assert {
-    condition = output.beacon_reader_queue_urls == {
-      runtime   = aws_sqs_queue.beacon_reader["runtime"].url
-      inventory = aws_sqs_queue.beacon_reader["inventory"].url
-    }
-    error_message = "beacon_reader_queue_urls gives the provisioning script's --queue-url values."
-  }
-}
-
-run "queue_names_drop_characters_sqs_refuses" {
+run "writer_access_key_when_asked" {
   command = plan
 
   variables {
-    create_beacon_reader    = true
-    beacon_reader_user_name = "beacon.reader@acme"
+    create_writer_access_key = true
   }
 
   assert {
-    condition     = aws_sqs_queue.beacon_reader["runtime"].name == "beacon-reader-acme-runtime"
-    error_message = "IAM user names allow . and @, which SQS names do not."
-  }
-}
-
-run "no_queues_without_the_reader" {
-  command = apply
-
-  assert {
-    condition = (
-      length(aws_sqs_queue.beacon_reader) == 0
-      && length(aws_sqs_queue.beacon_reader_dead_letter) == 0
-      && length(aws_s3_bucket_notification.this) == 0
-      && output.beacon_reader_queue_urls == null
-    )
-    error_message = "Queues and the bucket notification exist only with the Beacon reader."
-  }
-}
-
-run "access_keys_when_asked" {
-  command = plan
-
-  variables {
-    create_beacon_reader = true
-    create_access_keys   = true
-  }
-
-  assert {
-    condition     = length(aws_iam_access_key.writer) == 1 && length(aws_iam_access_key.beacon_reader) == 1
-    error_message = "create_access_keys creates one key per user."
+    condition     = length(aws_iam_access_key.writer) == 1
+    error_message = "create_writer_access_key creates one key."
   }
 }
 
