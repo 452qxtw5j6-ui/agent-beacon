@@ -112,8 +112,10 @@ confidential: Beacon does not put rates in any event, but the file itself is pla
 - **A row replaces the catalog row whole.** Fields you leave out are unpublished, not
   inherited from the catalog, and are priced the way the catalog prices a missing rate: cache
   reads and cache writes at the row's input rate, one-hour writes at its five-minute write
-  rate. Those fallbacks are named in the report's `pricing.models[].fallbacks` and by
-  `beacon pricing show`.
+  rate. Reports name only fallbacks actually used for non-zero token counts in
+  `pricing.models[].fallbacks`; one-hour writes at an explicit one-hour rate do not use the
+  five-minute write fallback. `beacon pricing show` also lists unpublished rates and their
+  available fallbacks.
 - **Bands** apply to every token of a single request whose prompt (input plus cache read plus
   cache write) is above `above_tokens`, exactly as the catalog's bands do, and only to usage
   Beacon knows is one request (see [How the estimate is computed](/cli/token-usage#how-the-estimate-is-computed)).
