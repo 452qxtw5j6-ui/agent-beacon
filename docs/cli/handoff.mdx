@@ -21,7 +21,7 @@ Sessions come from each runtime's own local session store, not from Beacon's run
 |---------|---------------|-------------|
 | Claude Code | `~/.claude/projects` | `claude` |
 | Codex CLI | `$CODEX_HOME/sessions` when set; otherwise `~/.codex/sessions` | `codex` |
-| OpenCode | `~/.config/opencode` (SQLite and the legacy file store) | `opencode` |
+| OpenCode | `~/.local/share/opencode` (or `$XDG_DATA_HOME/opencode`, and `OPENCODE_DB` when set; SQLite and the legacy file store) | `opencode` |
 | Cline | `~/.cline/data` | `cline` |
 | Pi | `~/.pi/agent/sessions` (or under `PI_CODING_AGENT_DIR`) | `pi` |
 | Prime Agent | `~/.prime/agent`, both `sessions` and `session-artifacts` (or `PRIME_AGENT_CODING_AGENT_DIR`) | `prime` |
