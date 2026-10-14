@@ -48,7 +48,7 @@ created   /work/my-repo/.git/hooks/post-rewrite (calls beacon-post-rewrite)
 set       notes.rewriteRef = refs/notes/beacon
 ```
 
-- **post-commit** links the new commit, exactly as `beacon git link` would. It reads the local runtime log and writes a git note, typically in tens of milliseconds, and gives up after three seconds rather than hold a commit. It never prints, never touches the network, and never fails a commit.
+- **post-commit** links the new commit, exactly as `beacon git link` would. It reads the local runtime log and writes a git note, typically in tens of milliseconds, and gives up after three seconds rather than hold a commit, recording in the runtime log that it did ([see below](#hook-runs-that-run-out-of-time)). It never prints, never touches the network, and never fails a commit.
 - **post-rewrite** runs after `git commit --amend` and `git rebase` and tidies the note on each rewritten commit, folding the note git copied from the old commit into the one the post-commit hook just wrote.
 - **`notes.rewriteRef`** makes git copy a commit's links to the commit that replaces it when you amend or rebase.
 
@@ -86,7 +86,7 @@ Pass `--hooks-path` to install into that directory anyway.
 
 ## `beacon git status`
 
-Shows whether each hook is installed, reports an install that is broken (a hook calling a script that is gone, or the reverse), and says whether `notes.rewriteRef` is set. `--json` prints the same as JSON, with a top-level `installed` field.
+Shows whether each hook is installed, reports an install that is broken (a hook calling a script that is gone, or the reverse), and says whether `notes.rewriteRef` is set. The `overruns` line counts this repository's hook runs that [ran out of time](#hook-runs-that-run-out-of-time) in the last seven days, how many of them were cut short, and the most recent. `--json` prints the same as JSON, with a top-level `installed` field and the counts under `budget_overruns`.
 
 ## Sharing links with a team
 
@@ -218,6 +218,39 @@ match: >
   e.vcs.ref.head.name == "main" &&
   e.vcs.attribution.matched_files == e.vcs.attribution.changed_files
 ```
+
+## Hook runs that run out of time
+
+The hooks hold up a command a person is waiting on, so each gives up when its budget runs out: three seconds for post-commit and post-rewrite, ten for pre-push. Giving up is silent on the terminal, and a post-commit hook that gives up leaves the commit unlinked. So each run that runs out of time writes one `git.hook_budget_exceeded` event to the runtime log, with the same writer the link events use. Recording it spawns no git and touches no network.
+
+```json title="Example event (abridged)"
+{
+  "event": { "action": "git.hook_budget_exceeded", "category": "system", "kind": "beacon_system", "fidelity": "observed" },
+  "severity": "low",
+  "harness": { "name": "beacon" },
+  "repository": "/work/my-repo",
+  "vcs": {
+    "hook": {
+      "name": "post-commit",
+      "phase": "attribute",
+      "budget_ms": 3000,
+      "elapsed_ms": 3290,
+      "phase_elapsed_ms": 3250,
+      "git_spawns": 14,
+      "cut_short": true
+    }
+  },
+  "message": "post-commit hook ran out of time in attribute: 3.3s of its 3s budget, 14 git process(es); its work was cut short"
+}
+```
+
+- `vcs.hook.phase` is the step the hook was in when its time ran out. Post-commit runs `open_repository`, `attribute` (reading the runtime log and writing the note) and `record_link_event`; post-rewrite runs `open_repository` and `normalize_notes`; pre-push runs `open_repository`, `share_sessions` (with `--share-sessions`) and `push_notes`.
+- `vcs.hook.elapsed_ms` is the whole run and `vcs.hook.phase_elapsed_ms` the part of it spent in that phase, so a slow earlier step shows as the difference. Pre-push holds its share phase to six of its ten seconds, so a share phase that runs out records an elapsed time under the budget.
+- `vcs.hook.git_spawns` is how many git processes the run started. Each costs a few milliseconds on macOS and Linux, and can cost far more on a Windows machine that scans every new process.
+- `vcs.hook.cut_short` is true when running out of time left work undone: a commit left unlinked, a link event, note or share URL left unrecorded, or the notes ref left unpushed. It is false for a run whose last step finished after the deadline, which is recorded as `info` rather than `low`.
+- `repository` is empty when the hook ran out before it could resolve the repository.
+
+`beacon git status` counts these events for the repository, and [`beacon endpoint doctor`](/cli/endpoint-doctor#git_hook_budget) for every repository. A commit left unlinked can be linked with `beacon git link <commit>`.
 
 ## Note format
 

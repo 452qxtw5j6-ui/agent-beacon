@@ -79,6 +79,8 @@ var metadataOnlyKept = []string{
 	"user_agent.name", "user_agent.version",
 	"vcs.ref.head.revision", "vcs.ref.head.name", "vcs.ref.head.type",
 	"vcs.repository.url.full", "vcs.attribution.method",
+	// Beacon's own git hook timing record: the hook's name and the step it was in.
+	"vcs.hook.name", "vcs.hook.phase",
 	"gen_ai.agent.id", "gen_ai.agent.name", "gen_ai.agent.version",
 	"gen_ai.conversation.id",
 	"gen_ai.data_source.id",

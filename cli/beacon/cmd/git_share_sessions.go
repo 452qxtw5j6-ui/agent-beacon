@@ -169,6 +169,9 @@ type gitPushShareReport struct {
 	Shared  []string `json:"shared,omitempty"`
 	Noted   int      `json:"noted"`
 	Skipped string   `json:"skipped,omitempty"`
+	// OutOfTime is true when the uploads or the note writes ran past their deadline (not when the
+	// hook was cancelled).
+	OutOfTime bool `json:"out_of_time,omitempty"`
 }
 
 // gitShareCollector receives what the share phase of a push finds and uploads, as it happens, so
@@ -256,6 +259,7 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 	cancelUploads()
 	report.Shared = got.shared
 	report.Skipped = got.skipped
+	report.OutOfTime = timedOut && errors.Is(ctx.Err(), context.DeadlineExceeded)
 	shareErr := got.err
 	if timedOut && shareErr == nil && (got.notes == nil || len(got.shared) < got.subjects) {
 		shareErr = errors.New("ran out of time before every linked session was shared; the next push shares the rest")
@@ -270,6 +274,9 @@ func gitShareSessionsOnPush(parent context.Context, repo gitlink.Repo, remote, s
 	for sha := range got.notes {
 		changed, err := gitlink.UpdateNote(noteCtx, repo.Git, sha, func(note string) string { return gitlink.SetLinkURLs(note, got.urls) })
 		if err != nil {
+			if errors.Is(noteCtx.Err(), context.DeadlineExceeded) {
+				report.OutOfTime = true
+			}
 			if shareErr == nil {
 				shareErr = err
 			}
@@ -395,7 +402,8 @@ func gitShareFindAndUpload(ctx context.Context, c *gitShareCollector, repo gitli
 // gitShareAfterContext is a fresh context for work after the share phase: it gets what is left of
 // parent's deadline less keep (time a later step needs), or floor when that is less, so an upload
 // that overran cannot starve it and a share phase that returned at once leaves it the full budget.
-// It does not inherit parent's cancellation, only the time.
+// It does not inherit parent's cancellation, only the time and parent's values (among them the
+// hook's git spawn counter).
 func gitShareAfterContext(parent context.Context, keep, floor time.Duration) (context.Context, context.CancelFunc) {
 	budget := floor
 	if deadline, ok := parent.Deadline(); ok {
@@ -403,7 +411,7 @@ func gitShareAfterContext(parent context.Context, keep, floor time.Duration) (co
 			budget = remaining
 		}
 	}
-	return context.WithTimeout(context.Background(), budget)
+	return context.WithTimeout(context.WithoutCancel(parent), budget)
 }
 
 // readHookStdin reads what git passes a pre-push hook on stdin, bounded.

@@ -98,6 +98,7 @@ type VCSRefHeadInfo = asymptoteobserve.VCSRefHeadInfo
 type VCSRepositoryInfo = asymptoteobserve.VCSRepositoryInfo
 type VCSRepositoryURLInfo = asymptoteobserve.VCSRepositoryURLInfo
 type VCSAttributionInfo = asymptoteobserve.VCSAttributionInfo
+type VCSHookInfo = asymptoteobserve.VCSHookInfo
 type PolicyInfo = asymptoteobserve.PolicyInfo
 type PromptInfo = asymptoteobserve.PromptInfo
 type SystemContextInfo = asymptoteobserve.SystemContextInfo
