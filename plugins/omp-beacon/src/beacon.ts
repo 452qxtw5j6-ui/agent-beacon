@@ -16,9 +16,6 @@ const debugEnabled = process.env.BEACON_OMP_DEBUG === "1"
 // continuing, so this is the worst case Beacon can add to a tool call.
 const sendTimeoutMs = 2000
 
-// How deep into an event the serializer will walk before giving up.
-const maxDepth = 8
-
 // Oh My Pi's own event objects, narrowed to the fields Beacon reads.
 //
 // Declared here rather than imported from @oh-my-pi/pi-coding-agent on purpose. The installed file
@@ -270,12 +267,19 @@ function debugLog(message: string, extra?: unknown) {
   }
 }
 
-// safeClone turns an Oh My Pi event into something JSON.stringify accepts.
+// BEGIN shared/safe-clone
+// Generated from plugins/shared/safe-clone.ts by `bun run sync`. Edit that file, not this block:
+// `bun run check` fails when the two differ.
+
+// How deep into a payload the serializer will walk before giving up.
+const maxDepth = 8
+
+// safeClone turns a live runtime payload into something JSON.stringify accepts.
 //
-// The events carry live objects: AbortSignals on the session events, AgentMessage arrays holding
-// class instances, and tool inputs that are mutable by design. JSON.stringify throws on a circular
-// reference and on a bigint, and silently flattens an Error to {}, so each is handled here rather
-// than losing the whole payload to one bad field.
+// Runtimes hand plugins live objects, not plain data: AbortSignals, SDK class instances, parent
+// references, provider message objects, and tool inputs that are mutable by design. JSON.stringify
+// throws on a circular reference and on a bigint, and silently flattens an Error to {}, so each is
+// handled here rather than losing the whole payload to one bad field.
 //
 // Cycles are tracked along the current path and released on the way out, so an object that legibly
 // appears twice -- the same file path referenced from two places in one edit -- is kept both times.
@@ -308,6 +312,7 @@ function safeClone(value: unknown, depth = 0, seen = new WeakSet<object>()): unk
     seen.delete(value)
   }
 }
+// END shared/safe-clone
 
 // The most of the hook binary's reply that is read. The reply is one small object, {"recorded": n}.
 const maxReplyBytes = 4096

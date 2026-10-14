@@ -5,8 +5,8 @@
   "description": "Beacon endpoint telemetry plugin for OpenClaw Gateway",
   "type": "module",
   "scripts": {
-    "check": "bun build --no-bundle src/beacon.js >/dev/null && cmp src/beacon.js ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/beacon.js && cmp src/plugin.package.json ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/plugin.package.json && cmp src/openclaw.plugin.json ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/openclaw.plugin.json",
-    "sync": "cp src/beacon.js src/plugin.package.json src/openclaw.plugin.json ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/",
+    "check": "bun ../shared/sync-safe-clone.ts --check src/beacon.js && bun build --no-bundle src/beacon.js >/dev/null && cmp src/beacon.js ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/beacon.js && cmp src/plugin.package.json ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/plugin.package.json && cmp src/openclaw.plugin.json ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/openclaw.plugin.json",
+    "sync": "bun ../shared/sync-safe-clone.ts src/beacon.js && cp src/beacon.js src/plugin.package.json src/openclaw.plugin.json ../../cli/beacon/internal/endpoint/hooks/assets/openclaw/",
     "test": "bun test src/beacon.test.ts"
   },
   "exports": {

@@ -1,0 +1,12 @@
+{
+  "name": "@asymptote-labs/plugins-shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Source shared by the Beacon runtime plugins, written into each one by `bun run sync`",
+  "type": "module",
+  "scripts": {
+    "check": "bun build --no-bundle safe-clone.ts >/dev/null && bun sync-safe-clone.ts --check",
+    "sync": "bun sync-safe-clone.ts",
+    "test": "bun test"
+  }
+}

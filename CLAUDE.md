@@ -142,7 +142,8 @@ for module in terraform/*/; do (cd "$module" && terraform init -backend=false &&
 Run the managed runtime plugin/extension checks (each verifies the checked-in copy matches its embedded twin, then runs its tests):
 
 ```bash
-cd plugins/opencode-beacon && bun run check && bun test
+cd plugins/shared && bun run check && bun test
+cd ../opencode-beacon && bun run check && bun test
 cd ../cline-beacon && bun run check && bun test
 cd ../pi-beacon && bun run check && bun test
 cd ../omp-beacon && bun run check && bun test
@@ -155,6 +156,13 @@ After editing a plugin or extension source, run `bun run sync` in its directory 
 embedded copy under `cli/beacon/internal/endpoint/hooks/assets/`; a Go test fails if the two drift.
 `openclaw-beacon` syncs three files rather than one, because OpenClaw discovers a plugin as a
 directory: the entry plus the two manifests it is declared in.
+
+The payload serializer (`safeClone` and its `maxDepth`) has one source, `plugins/shared/safe-clone.ts`.
+Every plugin except OpenCode carries a generated copy between `// BEGIN shared/safe-clone` and
+`// END shared/safe-clone`, because each installs as one self-contained file and cannot import it.
+Edit only the shared file, then run `bun run sync` in `plugins/shared` to rewrite every plugin source
+and embedded copy (OpenClaw's `.js` copy has its two type annotations stripped). Each plugin's
+`bun run check` and `plugins/shared`'s tests fail when any copy differs.
 
 Run the lens sandbox browser tests (the real dashboard plus hostile fixture lenses; the hooks
 binary must be built first). In a cloud session with a preinstalled Chromium, set `CHROMIUM_PATH`
@@ -562,7 +570,7 @@ unpacked through Chrome's developer mode.
 
 `.github/workflows/ci.yml` runs these jobs on every pull request and on pushes to `main`:
 
-- `go-test` (macOS): `bun run check && bun test` in all seven `plugins/*` directories, then `make build-hooks-current`, then `go test ./...` in `cli/beacon`, `go test -race ./internal/endpoint/...`, `go test ./...` in `cli/beacon-hooks`, `collector-builder/exporter/beaconjsonexporter`, and `pkg/asymptoteobserve` (includes threat-rules pack conformance), then CLI help smoke checks that also assert removed commands stay unexposed.
+- `go-test` (macOS): `bun run check && bun test` in `plugins/shared` and all seven plugin directories, then `make build-hooks-current`, then `go test ./...` in `cli/beacon`, `go test -race ./internal/endpoint/...`, `go test ./...` in `cli/beacon-hooks`, `collector-builder/exporter/beaconjsonexporter`, and `pkg/asymptoteobserve` (includes threat-rules pack conformance), then CLI help smoke checks that also assert removed commands stay unexposed.
 - `linux-test` (ubuntu) and `windows-test` (windows-2025) rerun the Go suites per platform. The Windows job tests a measured package list rather than `./...`; the excluded packages are tracked in #318, and the scope must not be widened back to `./...`.
 - `typescript-sdk` (Node 20, 22, 24): `npm test`, `npm run check`, `npm run build`, `npm run pack:dry-run`, `npm run pack:smoke` in `packages/asymptote-sdk-js`.
 - `browser-extension` (Node 22, matrix over `chromium` and `msedge`): `npm run check`, `npm run test:unit`, `npm run build`, a check that the build is a loadable MV3 extension, `npm run lint:firefox` (the Firefox build plus `addons-linter --warnings-as-errors`), and the Playwright replay e2e running the real extension headless in that leg's browser (`BROWSER_CHANNEL`) against a local HTTPS replay server; the HTML report and traces upload on failure. Brave, Opera, Vivaldi and Arc have no Playwright channel; `BROWSER_EXECUTABLE` runs the same e2e against their binaries for the manual checklist in `docs/runtimes/browser-extension-chromium.mdx`.
