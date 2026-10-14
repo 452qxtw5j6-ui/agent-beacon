@@ -391,3 +391,34 @@ func TestFromEditFragmentsReturnsNothingForAnUnchangedSpan(t *testing.T) {
 		t.Fatalf("FromEditFragments = %q, want empty without a path", got)
 	}
 }
+
+// A whole-file Write diff carries the file's exact line boundaries: a terminating newline is not
+// an extra blank line, real trailing blank lines stay, and unterminated content gets the unified
+// diff EOF marker.
+func TestWholeFileWriteDiffPreservesFinalLineBoundaries(t *testing.T) {
+	const header = "--- a/result.txt\n+++ b/result.txt\n"
+	const eof = "\\ No newline at end of file"
+	for _, tc := range []struct{ name, before, after, want string }{
+		{"create terminated", "", "new\n", "@@ -0,0 +1,1 @@\n+new"},
+		{"create with trailing blank line", "", "new\n\n", "@@ -0,0 +1,2 @@\n+new\n+"},
+		{"create a lone newline", "", "\n", "@@ -0,0 +1,1 @@\n+"},
+		{"create unterminated", "", "new", "@@ -0,0 +1,1 @@\n+new\n" + eof},
+		{"replace both unterminated", "old", "new", "@@ -1,1 +1,1 @@\n-old\n" + eof + "\n+new\n" + eof},
+		{"remove final newline", "same\n", "same", "@@ -1,1 +1,1 @@\n-same\n+same\n" + eof},
+		{"add final newline", "same", "same\n", "@@ -1,1 +1,1 @@\n-same\n" + eof + "\n+same"},
+		{"replace trailing blank line", "old\n\n", "new", "@@ -1,2 +1,1 @@\n-old\n-\n+new\n" + eof},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := FromToolResponse("Write", map[string]interface{}{"file_path": "/repo/result.txt", "content": tc.after}, map[string]interface{}{"originalFile": tc.before})
+			if want := header + tc.want; got != want {
+				t.Fatalf("diff:\n%s\nwant:\n%s", got, want)
+			}
+		})
+	}
+}
+
+func TestEditFragmentsDoNotClaimEndOfFile(t *testing.T) {
+	if got := FromEditFragments("/repo/result.txt", "old", "new"); strings.Contains(got, "\\ No newline at end of file") {
+		t.Fatalf("partial edit claims EOF: %s", got)
+	}
+}
