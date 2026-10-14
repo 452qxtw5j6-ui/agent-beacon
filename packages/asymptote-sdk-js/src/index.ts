@@ -598,15 +598,20 @@ function finishResult<T>(result: T, span: Span, options?: ObserveOptions): unkno
 }
 
 async function* finishAsyncIterable(iterable: AsyncIterable<unknown>, span: Span): AsyncGenerator<unknown> {
+  let endedWithError = false;
   try {
     for await (const item of iterable) {
       yield item;
     }
     span.setStatus({ code: SpanStatusCode.OK });
-    span.end();
   } catch (error) {
+    endedWithError = true;
     endSpanWithError(span, error);
     throw error;
+  } finally {
+    // A consumer that breaks out early reaches only this block (via return()); end the span here
+    // with its status unset, since the stream neither completed nor failed.
+    if (!endedWithError) span.end();
   }
 }
 
