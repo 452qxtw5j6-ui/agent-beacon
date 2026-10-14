@@ -787,13 +787,9 @@ func traceFirstNonEmpty(values ...string) string {
 	return ""
 }
 
-// traceTruncate trims value and cuts it to limit bytes.
+// traceTruncate trims value and cuts it to at most limit bytes without splitting UTF-8.
 func traceTruncate(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit]
+	return TruncateUTF8(strings.TrimSpace(value), limit)
 }
 
 func traceRawString(raw map[string]interface{}, key string) string {
