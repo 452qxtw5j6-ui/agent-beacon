@@ -17,6 +17,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/auth"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/asymptote"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/lifecycle"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/managedprivacy"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/onboarding"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
@@ -270,6 +271,39 @@ func connectBrowserOpener(userMode bool) func(string) error {
 		cmd.Stdout, cmd.Stderr = nil, nil
 		return cmd.Start()
 	}
+}
+
+// cloudStatusLine is the Beacon Cloud line of `beacon endpoint status`, or "" when it has nothing
+// to say.
+//
+// A connected or half-connected endpoint always gets the line. An unconnected one gets it only on a
+// per-user install that sends nowhere else: a system install is an MDM or package rollout, often
+// forwarding to the customer's own S3, GCS or Falcon, and its hint, a per-user
+// `beacon endpoint connect`, fails there for want of a personal sign-in. Admins read that line as
+// a step left undone.
+func cloudStatusLine(status asymptote.ManagedIngestStatus, userMode, ownForwarder bool) string {
+	if !status.Enabled && status.Message == "" && (!userMode || ownForwarder) {
+		return ""
+	}
+	return managedIngestStatusLine(status)
+}
+
+// scriptForwarderStatusLine renders one package-helper forwarder for `beacon endpoint status`.
+func scriptForwarderStatusLine(status service.Status) string {
+	name := status.Label
+	switch status.Label {
+	case "com.beacon.endpoint.s3-forwarder":
+		name = "S3 forwarder"
+	case "com.beacon.endpoint.gcs-forwarder":
+		name = "GCS forwarder"
+	case "com.beacon.endpoint.falcon-forwarder":
+		name = "Falcon LogScale forwarder"
+	}
+	line := fmt.Sprintf("%s: loaded=%t running=%t", name, status.Loaded, status.Running)
+	if !status.Loaded && status.Message != "" {
+		line += " (" + status.Message + ")"
+	}
+	return line
 }
 
 // managedIngestStatusLine renders the human status line for `beacon endpoint status`.
