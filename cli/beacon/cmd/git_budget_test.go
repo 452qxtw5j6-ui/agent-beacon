@@ -122,11 +122,23 @@ func onlyBudgetEvent(t *testing.T, logPath string) schema.VCSHookInfo {
 	return *e.VCS.Hook
 }
 
-// postCommitFixture is a repository whose HEAD a session in the runtime log wrote.
-func postCommitFixture(t *testing.T) (root, top, logPath string) {
+// hookRepoRoot is the work tree as the hooks record it: gitlink's cleaned path, which on Windows
+// uses backslashes where `git rev-parse --show-toplevel` prints forward slashes.
+func hookRepoRoot(t *testing.T, root string) string {
+	t.Helper()
+	repo, err := gitlink.OpenRepo(context.Background(), gitlink.Git{Dir: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return repo.Root
+}
+
+// postCommitFixture is a repository whose HEAD a session in the runtime log wrote. repoRoot is
+// the work tree as the hooks record it.
+func postCommitFixture(t *testing.T) (root, repoRoot, logPath string) {
 	t.Helper()
 	root = gitCommandRepo(t)
-	top = mustGit(t, root, "rev-parse", "--show-toplevel")
+	top := mustGit(t, root, "rev-parse", "--show-toplevel")
 	logPath = filepath.Join(t.TempDir(), "runtime.jsonl")
 	if err := os.WriteFile(filepath.Join(root, "x.go"), []byte("package x\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -134,7 +146,7 @@ func postCommitFixture(t *testing.T) (root, top, logPath string) {
 	writeRuntimeEvent(t, logPath, top, "cur-1", "x.go")
 	mustGit(t, root, "add", "-A")
 	mustGit(t, root, "commit", "-q", "-m", "x")
-	return root, top, logPath
+	return root, hookRepoRoot(t, root), logPath
 }
 
 // A post-commit run inside its budget links the commit and records no budget event.
@@ -302,7 +314,7 @@ func appendBudgetEvent(t *testing.T, logPath, hook, repoRoot string, at time.Tim
 
 func TestGitStatusCountsRecentOverruns(t *testing.T) {
 	root := gitCommandRepo(t)
-	top := mustGit(t, root, "rev-parse", "--show-toplevel")
+	top := hookRepoRoot(t, root)
 	out, err := runGit(t, "status", "--cwd", root)
 	if err != nil || !strings.Contains(out, "overruns    none in the last 7 days\n") {
 		t.Fatalf("status without overruns: %v\n%s", err, out)
