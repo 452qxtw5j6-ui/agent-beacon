@@ -296,7 +296,7 @@ func ShowTrace(path, id string, query TraceQuery) (TraceShowResultV1, bool, erro
 	}
 	events := filterTraceEvents(agg.events, query.EventTypes)
 	total := len(events)
-	offset, limit := traceRange(query, total)
+	offset, limit := traceShowRange(query, total, func(i int) int { return events[i].Number })
 	end := offset - 1 + limit
 	if end > total {
 		end = total
@@ -444,6 +444,42 @@ func filterTraceEvents(events []TraceEventV1, eventTypes []string) []TraceEventV
 	return out
 }
 
+// traceShowRange keeps pagination in filtered coordinates, but around-event names
+// an original event number. If that event is filtered out, its insertion point
+// separates the matching events before and after it without adding an anchor slot.
+func traceShowRange(query TraceQuery, total int, numberAt func(int) int) (int, int) {
+	if query.AroundEvent <= 0 || len(query.EventTypes) == 0 {
+		return traceRange(query, total)
+	}
+	before, after := aroundContext(query)
+	anchor := sort.Search(total, func(i int) bool { return numberAt(i) >= query.AroundEvent })
+	start := anchor - before
+	if start < 0 {
+		start = 0
+	}
+	end := anchor
+	if anchor < total && numberAt(anchor) == query.AroundEvent {
+		end++
+	}
+	if after > total-end {
+		after = total - end
+	}
+	end += after
+	return start + 1, end - start
+}
+
+// aroundContext is how many events --around-event shows on each side, 3 unless set.
+func aroundContext(query TraceQuery) (before, after int) {
+	before, after = query.Before, query.After
+	if before <= 0 {
+		before = 3
+	}
+	if after <= 0 {
+		after = 3
+	}
+	return before, after
+}
+
 func traceRange(query TraceQuery, total int) (int, int) {
 	limit := normalizeLimit(query.Limit)
 	offset := query.Offset
@@ -455,13 +491,7 @@ func traceRange(query TraceQuery, total int) (int, int) {
 		limit = total
 	}
 	if query.AroundEvent > 0 {
-		before, after := query.Before, query.After
-		if before <= 0 {
-			before = 3
-		}
-		if after <= 0 {
-			after = 3
-		}
+		before, after := aroundContext(query)
 		offset = query.AroundEvent - before
 		if offset < 1 {
 			offset = 1
