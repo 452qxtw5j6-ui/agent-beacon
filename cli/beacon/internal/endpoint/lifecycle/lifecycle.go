@@ -253,7 +253,9 @@ type InstallResult struct {
 }
 
 type Status struct {
-	Version       string                        `json:"version"`
+	Version string `json:"version"`
+	// Edition is set only for a build that is not the default edition (see version.Edition).
+	Edition       string                        `json:"edition,omitempty"`
 	ConfigPath    string                        `json:"config_path"`
 	LogPath       string                        `json:"log_path"`
 	RuntimeLog    RuntimeLogSource              `json:"runtime_log"`
@@ -879,6 +881,7 @@ func buildStatus(requestedUserMode bool, effectiveCfg endpointconfig.Config, run
 	}
 	return Status{
 		Version:            version.GetVersion(),
+		Edition:            version.ReportedEdition(),
 		ConfigPath:         endpointconfig.ConfigPath(effectiveCfg.UserMode),
 		LogPath:            effectiveCfg.LogPath,
 		RuntimeLog:         runtimeLog,

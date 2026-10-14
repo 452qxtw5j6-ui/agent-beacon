@@ -18,6 +18,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/selfupdate"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/updatecheck"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
 
@@ -126,6 +127,10 @@ func requireRootForUpdater() error {
 }
 
 func runUpdateEnable(cmd *cobra.Command, args []string) error {
+	if !updatecheck.PublicReleases {
+		fmt.Fprintln(cmd.OutOrStdout(), notUpdatedFromPublicReleases)
+		return nil
+	}
 	if err := requireRootForUpdater(); err != nil {
 		return err
 	}

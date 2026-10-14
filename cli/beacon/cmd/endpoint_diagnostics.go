@@ -608,6 +608,9 @@ func writeInventorySnapshotEvents(cfg endpointconfig.Config, settings endpointco
 		// with nobody at the console from one for an unchanged inventory.
 		"user_scope": result.UserScope,
 	}
+	if edition := version.ReportedEdition(); edition != "" {
+		inventoryMeta["edition"] = edition
+	}
 	if previousDigest == "" {
 		inventoryMeta["change_reason"] = "initial"
 	} else if previousDigest != digest {
