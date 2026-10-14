@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
@@ -592,5 +594,36 @@ func TestEndpointEventWithoutAModelIsUntouched(t *testing.T) {
 	}
 	if _, ok := events[0]["gen_ai"]; ok {
 		t.Fatal("an event with no model gained a gen_ai block")
+	}
+}
+
+// The oversized fallback cuts the message to 1 KB; a cut through CJK text must not leave a
+// broken character for json.Marshal to turn into U+FFFD.
+func TestEndpointEventTruncatesMultiByteMessageOnACharacterBoundary(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
+	t.Setenv("BEACON_ENDPOINT_LOG", logPath)
+	raw := map[string]interface{}{}
+	for i := 0; i < 40; i++ {
+		raw["field"+strconv.Itoa(i)] = strings.Repeat("x", 4096)
+	}
+
+	logger := NewLoggerForPlatform("pre-tool", "test")
+	if err := logger.EndpointEvent("tool.invoked", "tool", "info", strings.Repeat("界", 2000), map[string]interface{}{"raw": raw}); err != nil {
+		t.Fatalf("EndpointEvent returned error: %v", err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event map[string]interface{}
+	if err := json.Unmarshal(data, &event); err != nil {
+		t.Fatal(err)
+	}
+	if event["field_truncated"] != true {
+		t.Fatalf("expected the oversized fallback to run, field_truncated = %#v", event["field_truncated"])
+	}
+	message, _ := event["message"].(string)
+	if len(message) > 1024 || strings.ContainsRune(message, utf8.RuneError) || !strings.HasSuffix(message, "界...[truncated]") {
+		t.Fatalf("message = %d bytes ending %q", len(message), message[len(message)-20:])
 	}
 }

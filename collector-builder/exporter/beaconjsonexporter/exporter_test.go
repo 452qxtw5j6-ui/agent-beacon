@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/asymptote-labs/agent-beacon/collector-builder/exporter/beaconjsonexporter/internal/beaconevent"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
@@ -2138,5 +2139,35 @@ func TestJSONLWriterCompactsRetainedContentBeforeFailing(t *testing.T) {
 	}
 	if written.Content.Bytes != len(long) {
 		t.Fatalf("content bytes = %d, want the original %d", written.Content.Bytes, len(long))
+	}
+}
+
+// The oversized fallback cuts the message to 1 KB; a cut through CJK text must not leave a
+// broken character for json.Marshal to turn into U+FFFD.
+func TestWriterTruncatesMultiByteMessageOnACharacterBoundary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.jsonl")
+	writer := jsonlWriter{path: path, maxEventBytes: 16 * 1024, rotateBytes: defaultRotateBytes, rotateArchives: defaultRotateArchives, redactSecrets: true}
+	event := newBeaconEvent("tool.invoked", "tool", "info", "test", time.Now())
+	event.Message = strings.Repeat("界", 2000)
+	event.Raw = map[string]interface{}{}
+	for i := 0; i < 40; i++ {
+		event.Raw["field"+strconv.Itoa(i)] = strings.Repeat("x", 4096)
+	}
+	if err := writer.append(event); err != nil {
+		t.Fatalf("append returned error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var written beaconEvent
+	if err := json.Unmarshal(data, &written); err != nil {
+		t.Fatal(err)
+	}
+	if !written.Truncated || written.Raw != nil {
+		t.Fatalf("expected the oversized fallback to run, truncated=%v raw=%d", written.Truncated, len(written.Raw))
+	}
+	if len(written.Message) > 1024 || strings.ContainsRune(written.Message, utf8.RuneError) || !strings.HasSuffix(written.Message, "界...[truncated]") {
+		t.Fatalf("message = %d bytes ending %q", len(written.Message), written.Message[len(written.Message)-20:])
 	}
 }
