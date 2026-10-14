@@ -100,11 +100,10 @@ Collector: grpc=true http=true
 Service: loaded=true running=true
 Harness: Claude Code  telemetry=enabled
 Last event: present
-Beacon Cloud: not connected (run `beacon endpoint connect`)
 Inventory heartbeat: scheduled every 6h0m0s; job loaded=true running=true; last emitted never
 ```
 
-`running=true` and `telemetry=enabled` are the lines that matter. Then run your agent as usual (see [Using it](#using-it)) and its events land in the runtime log. `Beacon Cloud: not connected` is expected, because a package install keeps everything on this machine.
+`running=true` and `telemetry=enabled` are the lines that matter. Then run your agent as usual (see [Using it](#using-it)) and its events land in the runtime log.
 
 ### If something looks wrong
 

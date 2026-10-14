@@ -54,6 +54,8 @@ var (
 	// helpers install, so tests can see whether an uninstall reaches them without touching
 	// /Library.
 	removeScriptForwarders = service.RemoveScriptForwarders
+	// scriptForwarderStatuses is the seam for reading those forwarders' state in GetStatus.
+	scriptForwarderStatuses = service.ScriptForwarderStatuses
 	// reconcileManagedForwarder is the seam for the Beacon Cloud forwarder reconcile, so tests can
 	// see whether Install reaches it without a connected endpoint or a service manager.
 	reconcileManagedForwarder = func(userMode bool, logPath string) (asymptote.ReconcileResult, error) {
@@ -268,6 +270,9 @@ type Status struct {
 	ManagedIngest asymptote.ManagedIngestStatus `json:"managed_ingest"`
 	// InventoryHeartbeat follows the requested mode, like ManagedIngest: each mode has its own job.
 	InventoryHeartbeat InventoryHeartbeatStatus `json:"inventory_heartbeat"`
+	// ScriptForwarders are the S3, GCS and Falcon forwarders the package helpers install, one entry
+	// per forwarder that is set up on this machine.
+	ScriptForwarders []service.Status `json:"script_forwarders,omitempty"`
 }
 
 type DestinationStatus struct {
@@ -893,6 +898,7 @@ func buildStatus(requestedUserMode bool, effectiveCfg endpointconfig.Config, run
 		Destinations:       destinationStatus(effectiveCfg),
 		ManagedIngest:      asymptote.Status(requestedUserMode, managedOpts),
 		InventoryHeartbeat: inventoryHeartbeatStatus(requestedUserMode, runtimeLog.RequestedLogPath),
+		ScriptForwarders:   scriptForwarderStatuses(),
 	}
 }
 

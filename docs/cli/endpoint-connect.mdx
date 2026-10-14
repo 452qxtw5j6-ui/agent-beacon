@@ -166,7 +166,7 @@ beacon endpoint disconnect
 
 ## Checking the connection
 
-`beacon endpoint status` prints one line for managed ingest: whether this endpoint is connected, organization and device identity, active privacy mode, forwarder state, credential validity, and disk-buffer size. `--json` exposes the same under `managed_ingest`.
+`beacon endpoint status` prints one line for managed ingest: whether this endpoint is connected, organization and device identity, active privacy mode, forwarder state, credential validity, and disk-buffer size. `--json` exposes the same under `managed_ingest`. A system install that was never connected, usually an MDM rollout, leaves the line out, as does any install that forwards to its own S3, GCS or Falcon LogScale; status lists those forwarders instead.
 
 ```text
 Beacon Cloud: connected to Beacon Test as device 807c6a11-…; forwarder loaded=true running=true; privacy Metadata only; credential valid
