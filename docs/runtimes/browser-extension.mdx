@@ -44,7 +44,7 @@ beacon endpoint status
 
 A content script running in the page's main world tees the streamed chat response, a per-site adapter parses it into a normalized turn, and the extension's service worker posts OTLP GenAI logs to the local collector. The `beaconjson` exporter converts those into endpoint events and writes them to the runtime JSONL log, alongside every other source.
 
-The extension never writes files and never contacts a remote endpoint. Delivery is queued in local extension storage and retried with backoff, so a turn survives the service worker being suspended mid-stream.
+The extension never writes files and never contacts a remote endpoint. Delivery is queued in local extension storage and retried with backoff, so a turn survives the service worker being suspended mid-stream and the collector being down. A queued turn is kept until it is delivered, for up to 24 hours; past 2,000 queued turns or 6 MiB, the oldest are dropped first.
 
 Events collected this way carry `harness.collection_method` of `otlp`, and a harness name of `claude_web` or `chatgpt_web`, so browser activity stays distinguishable from CLI agents in the runtime log and the dashboard.
 

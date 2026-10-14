@@ -180,8 +180,8 @@ How the Firefox build differs, all generated from `src/manifest.json` by
 
 Not yet verified on a real Firefox (no Firefox runs in CI): the event page's POST to
 `http://127.0.0.1:4318/v1/logs`, and the retry cadence. Chrome clamps `chrome.alarms` to about
-30 seconds; Firefox's clamp has not been measured. The retry code is the same on both, and the
-durable queue means delivery is eventual on either engine.
+30 seconds; Firefox's clamp has not been measured. The retry code and the queue's limits are the
+same on both engines.
 
 ## Retained content
 
@@ -305,11 +305,19 @@ dashboard), including interleaved sessions with no cross-contamination.
   stall between chunks could drop a turn. The durable delivery queue (in `chrome.storage`) protects
   everything *after* a turn is assembled, not during. Persisting partial assembler state is a
   future item.
-- **Delivery retry cadence.** Each POST has a ten-second deadline, so a collector that accepts
-  a connection but never responds cannot hold the queue indefinitely. Timed-out batches remain
-  durable and follow the existing retry limit. Retries use `chrome.alarms`, which MV3 clamps
-  to a ~30s minimum, so the first retry lands at ~30s rather than the computed sub-second backoff. Fine for a
-  local-loopback collector that is almost always reachable; the queue guarantees eventual delivery.
+- **Delivery retry cadence and queue limits.** Each POST has a ten-second deadline, so a collector
+  that accepts a connection but never responds cannot hold the queue indefinitely; a timed-out
+  batch is retried like any other failure. Retries back off from half a second, doubling to a
+  one-minute cap, and run on `chrome.alarms`, which MV3 clamps to a ~30s minimum, so a recovered
+  collector receives the backlog within about a minute. Batches are delivered oldest first, and
+  while the collector is down only the oldest batch is retried; newer ones wait behind it. Failed
+  attempts never drop a batch. A batch is dropped undelivered only when it is older than **24
+  hours**, or when the queue passes **2,000 batches** or **6 MiB** of envelopes, which drops the
+  oldest batches first (the byte cap keeps the queue inside `chrome.storage.local`'s 10 MiB
+  quota). Within those limits, a collector outage of any length (restarting during an install or
+  upgrade, not yet started after boot, crash-looping) loses nothing. The queue is re-checked each
+  time the service worker starts, because a browser restart or extension update can clear the
+  retry alarm.
 - **Capture depends on `window.fetch`.** Confirmed correct for claude.ai. Sites using XHR or a page
   service worker for streaming would need additional interception (deferred).
 - **Single capture path.** No DOM-scraping fallback yet; if a site changes its SSE wire format, the
