@@ -563,7 +563,31 @@ function finishResult<T>(result: T, span: Span, options?: ObserveOptions): unkno
     );
   }
   if (isAsyncIterable(result)) {
-    return finishAsyncIterable(result, span);
+    // A stream such as the Claude Agent SDK's Query carries controls (interrupt(), setModel(), ...)
+    // beside its iterator. Iteration goes through the traced iterator; every other read goes to
+    // the original stream, with functions bound to it so private-field methods keep working, and
+    // cached so repeated reads return the same function. The proxy targets the wrapper rather
+    // than the original, whose read-only properties would make a binding get trap invalid.
+    const iterator = finishAsyncIterable(result, span);
+    const methods = {
+      next: iterator.next.bind(iterator),
+      return: iterator.return.bind(iterator),
+      throw: iterator.throw.bind(iterator),
+    };
+    const controls = new Map<Function, Function>();
+    const stream: AsyncGenerator<unknown> = new Proxy(iterator, {
+      get(_target, key) {
+        if (key === Symbol.asyncIterator) return iteratorForStream;
+        if (key === "next" || key === "return" || key === "throw") return methods[key];
+        const value = Reflect.get(result, key, result);
+        if (typeof value !== "function" || key === "constructor") return value;
+        let control = controls.get(value);
+        if (!control) { control = value.bind(result); controls.set(value, control!); }
+        return control;
+      },
+    });
+    function iteratorForStream() { return stream; }
+    return stream;
   }
   if (!options?.ignoreOutput) {
     span.setAttribute("asymptote.observe.output.type", typeof result);
