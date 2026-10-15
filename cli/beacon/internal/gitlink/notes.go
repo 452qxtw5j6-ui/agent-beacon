@@ -103,10 +103,11 @@ func updateNoteOnce(ctx context.Context, g Git, commit string, update func(strin
 	}
 	defer func() {
 		// Best effort, and on a fresh context: a transaction that timed out must still not leave
-		// its working ref behind.
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// its working ref behind. Every ref deletion takes packed-refs.lock, which concurrent
+		// writers contend for, and git gives up on it after one second by default.
+		cleanup, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
-		_, _ = g.Run(cleanup, nil, "update-ref", "-d", txRef)
+		_, _ = g.Run(cleanup, nil, "-c", "core.packedRefsTimeout=5000", "update-ref", "-d", txRef)
 	}()
 
 	current, err := readNote(ctx, g, txRef, commit)

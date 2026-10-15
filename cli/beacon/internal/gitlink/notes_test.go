@@ -266,6 +266,30 @@ func TestAddLinksConcurrentWritersLoseNothing(t *testing.T) {
 	}
 }
 
+func TestAddLinksWaitsForPackedRefsLock(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("f", "1")
+	sha := r.commitAt("c", t0)
+	// Another writer's ref deletion holds packed-refs.lock for longer than git's default wait.
+	lock := filepath.Join(r.root, ".git", "packed-refs.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		time.Sleep(1500 * time.Millisecond)
+		_ = os.Remove(lock)
+	}()
+	if _, err := AddLinks(context.Background(), r.gitClient(), sha, []Link{{Harness: "codex", SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-released
+	if refs := r.git("for-each-ref", "--format=%(refname)", "refs/notes/"); refs != NotesRef {
+		t.Fatalf("leftover transaction refs:\n%s", refs)
+	}
+}
+
 func TestListLinked(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
