@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 )
@@ -181,5 +182,38 @@ func TestMarkReplyRecordedOncePerReplyAndSession(t *testing.T) {
 	}
 	if fresh, _ := a.MarkReplyRecorded("msg-2"); fresh {
 		t.Fatal("setting the model reset the recorded reply")
+	}
+}
+
+// Stale-session cleanup runs on every SessionStart and SessionEnd of the platform and removes
+// sessions older than two hours with no evaluations, which is every Factory session. A session's
+// reply marker has to survive it, or a Stop over an unchanged transcript records the reply again.
+func TestCleanupKeepsARecentReplyMarker(t *testing.T) {
+	_, cleanup := setupTestStateDir(t)
+	defer cleanup()
+
+	old := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	expired := time.Now().Add(-replyMarkerTTL - time.Hour).UTC().Format(time.RFC3339)
+	st := NewSessionState("seed", "cursor")
+	state := map[string]*SessionData{
+		"recent-reply":  {CreatedAt: old, LastReplyID: "m1", LastReplyAt: time.Now().UTC().Format(time.RFC3339)},
+		"expired-reply": {CreatedAt: old, LastReplyID: "m2", LastReplyAt: expired},
+		"no-reply":      {CreatedAt: old},
+	}
+	if err := st.saveStateFile(state); err != nil {
+		t.Fatal(err)
+	}
+
+	CleanupStaleForPlatform("cursor")
+
+	after := st.loadStateFile()
+	if after["recent-reply"] == nil {
+		t.Fatal("cleanup removed a session with a recent reply marker")
+	}
+	if after["expired-reply"] != nil || after["no-reply"] != nil {
+		t.Fatalf("cleanup kept stale sessions: %v", after)
+	}
+	if fresh, _ := NewSessionState("recent-reply", "cursor").MarkReplyRecorded("m1"); fresh {
+		t.Fatal("the reply was treated as new after cleanup")
 	}
 }
