@@ -265,3 +265,13 @@ func TestKiroStopReplyEndToEnd(t *testing.T) {
 		t.Fatalf("kiro agent.message = %#v, want one carrying assistant_response", messages)
 	}
 }
+
+// endpointEventsIfAny is endpointEvents for a log a hook may not have created at all.
+func endpointEventsIfAny(t *testing.T, logPath string) []map[string]interface{} {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if os.IsNotExist(err) || (err == nil && len(bytes.TrimSpace(data)) == 0) {
+		return nil
+	}
+	return endpointEvents(t, logPath)
+}
