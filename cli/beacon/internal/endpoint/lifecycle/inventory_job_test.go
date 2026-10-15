@@ -118,6 +118,190 @@ func TestReconcileInventoryJobSkipsUnsupportedWithoutError(t *testing.T) {
 	}
 }
 
+// The scheduled job runs without the installing shell's environment, so a per-user install
+// records the CODEX_HOME it resolved, as an absolute path, and the job inventories what Codex reads.
+// System mode and an unusable CODEX_HOME record nothing, leaving the job on ~/.codex.
+func TestInventoryJobEnvRecordsCodexHomeForUserInstalls(t *testing.T) {
+	work := t.TempDir()
+	codexHome := filepath.Join(work, "codex-home")
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.Stat(codexHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(work)
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("CLINE_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+
+	// Relative, so the job, which starts elsewhere, needs the absolute form.
+	t.Setenv("CODEX_HOME", "codex-home")
+	env := inventoryJobEnv(true)
+	got, err := os.Stat(env["CODEX_HOME"])
+	if len(env) != 1 || !filepath.IsAbs(env["CODEX_HOME"]) || err != nil || !os.SameFile(got, want) {
+		t.Fatalf("user mode env = %v, want CODEX_HOME as the absolute path of %s", env, codexHome)
+	}
+	if got := inventoryJobEnv(false); got != nil {
+		t.Fatalf("system mode env = %v, want none: root's environment is not the console user's", got)
+	}
+	t.Setenv("CODEX_HOME", filepath.Join(work, "missing"))
+	if got := inventoryJobEnv(true); got != nil {
+		t.Fatalf("env for a CODEX_HOME that does not exist = %v, want none", got)
+	}
+	t.Setenv("CODEX_HOME", "")
+	if got := inventoryJobEnv(true); got != nil {
+		t.Fatalf("env with CODEX_HOME unset = %v, want none", got)
+	}
+}
+
+// launchd and systemd start the job without the user's shell, so HERMES_HOME and the data-dir
+// suffix are recorded in it. HERMES_HOME is recorded as given, before any profile is applied, so a
+// later `hermes profile use` still reaches the job.
+func TestInventoryJobEnvRecordsHermesHomeForUserInstalls(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	work := t.TempDir()
+	t.Chdir(work)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("CLINE_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+
+	// Relative and not created yet: Hermes creates its home, so it is recorded anyway.
+	t.Setenv("HERMES_HOME", "hermes-data")
+	want := filepath.Join(cwd, "hermes-data")
+	if env := inventoryJobEnv(true); len(env) != 1 || env["HERMES_HOME"] != want {
+		t.Fatalf("user mode env = %v, want only HERMES_HOME=%s", env, want)
+	}
+	if env := inventoryJobEnv(false); env != nil {
+		t.Fatalf("system mode env = %v, want none: root's environment is not the console user's", env)
+	}
+
+	// A HERMES_HOME under a root with a sticky profile is still recorded as given.
+	root := filepath.Join(home, ".hermes")
+	if err := os.MkdirAll(filepath.Join(root, "profiles", "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "active_profile"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HERMES_HOME", "~/.hermes")
+	if env := inventoryJobEnv(true); env["HERMES_HOME"] != root {
+		t.Fatalf("user mode env = %v, want HERMES_HOME=%s, not the active profile", env, root)
+	}
+
+	t.Setenv("HERMES_HOME", " ")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "-dev")
+	if env := inventoryJobEnv(true); len(env) != 1 || env["HERMES_DATA_DIR_SUFFIX"] != "-dev" {
+		t.Fatalf("user mode env = %v, want only HERMES_DATA_DIR_SUFFIX=-dev", env)
+	}
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	if env := inventoryJobEnv(true); env != nil {
+		t.Fatalf("env with nothing set = %v, want none", env)
+	}
+}
+
+// Cline uses a trimmed, non-empty CLINE_DIR as is, so the job gets its absolute form whenever it is
+// set. It is recorded beside CODEX_HOME, not instead of it.
+func TestInventoryJobEnvRecordsClineDirForUserInstalls(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(work, "codex-home")
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("CLINE_DIR", " cline-state ")
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+
+	env := inventoryJobEnv(true)
+	if want := filepath.Join(cwd, "cline-state"); env["CLINE_DIR"] != want {
+		t.Fatalf("CLINE_DIR = %q, want %q", env["CLINE_DIR"], want)
+	}
+	if env["CODEX_HOME"] == "" || len(env) != 2 {
+		t.Fatalf("env = %v, want both CODEX_HOME and CLINE_DIR", env)
+	}
+	if got := inventoryJobEnv(false); got != nil {
+		t.Fatalf("system mode env = %v, want none", got)
+	}
+}
+
+// Gemini CLI uses a non-empty GEMINI_CLI_HOME as is, without requiring it to exist, so the job gets
+// its absolute form whenever it is set. It is recorded beside CODEX_HOME, not instead of it.
+func TestInventoryJobEnvRecordsGeminiCLIHomeForUserInstalls(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(work, "codex-home")
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("CLINE_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "gemini-home")
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+
+	env := inventoryJobEnv(true)
+	if want := filepath.Join(cwd, "gemini-home"); env["GEMINI_CLI_HOME"] != want {
+		t.Fatalf("GEMINI_CLI_HOME = %q, want %q", env["GEMINI_CLI_HOME"], want)
+	}
+	if env["CODEX_HOME"] == "" || len(env) != 2 {
+		t.Fatalf("env = %v, want both CODEX_HOME and GEMINI_CLI_HOME", env)
+	}
+	if got := inventoryJobEnv(false); got != nil {
+		t.Fatalf("system mode env = %v, want none", got)
+	}
+}
+
+// Claude Code uses a trimmed, non-empty CLAUDE_CONFIG_DIR as is, so the job gets its absolute form
+// whenever it is set. It is recorded beside CODEX_HOME, not instead of it.
+func TestInventoryJobEnvRecordsClaudeConfigDirForUserInstalls(t *testing.T) {
+	work := t.TempDir()
+	t.Chdir(work)
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	codexHome := filepath.Join(work, "codex-home")
+	if err := os.Mkdir(codexHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CODEX_HOME", codexHome)
+	t.Setenv("CLINE_DIR", "")
+	t.Setenv("GEMINI_CLI_HOME", "")
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", " claude-alt ")
+
+	env := inventoryJobEnv(true)
+	if want := filepath.Join(cwd, "claude-alt"); env["CLAUDE_CONFIG_DIR"] != want {
+		t.Fatalf("CLAUDE_CONFIG_DIR = %q, want %q", env["CLAUDE_CONFIG_DIR"], want)
+	}
+	if env["CODEX_HOME"] == "" || len(env) != 2 {
+		t.Fatalf("env = %v, want both CODEX_HOME and CLAUDE_CONFIG_DIR", env)
+	}
+	if got := inventoryJobEnv(false); got != nil {
+		t.Fatalf("system mode env = %v, want none", got)
+	}
+}
+
 func TestReconcileInventoryJobWritesWithoutLoadingWhenAsked(t *testing.T) {
 	testenv.SetHome(t, t.TempDir())
 	calls := installFakeInventoryJob(t, true)

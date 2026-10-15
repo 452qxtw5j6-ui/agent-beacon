@@ -45,7 +45,7 @@ it came from; pass `--project` for that too.
 
 ## Evaluate traces
 
-Preview selected traces and estimated Jev calls without a network request:
+Preview selected traces and estimated evaluator calls without a network request:
 
 ```bash
 beacon memory evaluations run --dry-run --limit 10
@@ -66,11 +66,16 @@ Useful flags:
 - `--since <rfc3339>` and `--until <rfc3339>` bound the trace window.
 - `--limit <n>` and `--page <n>` page through selected traces.
 - `--query <text>` or `-q <text>` searches trace text before evaluation.
+- `--evaluator <jev|subq>` selects the evaluator provider. It defaults to
+  `BEACON_EVALUATOR`, then `jev`.
 - `--jev-model <model>` selects the Jev model, such as `jev-latest` or a pinned version.
 - `--jev-endpoint <url>` overrides the TypeSafe System One endpoint.
 - `--jev-api-key <key>` overrides API key lookup.
-- `--jev-cost-per-trace <usd>` changes the dry-run cost estimate.
-- `--timeout <duration>` sets the Jev request timeout.
+- `--subq-model <model>`, `--subq-endpoint <url>` and `--subq-api-key <key>` are the
+  same settings for SubQ.
+- `--cost-per-trace <usd>` changes the dry-run cost estimate, for either evaluator.
+  The earlier name `--jev-cost-per-trace` still works but is deprecated.
+- `--timeout <duration>` sets the evaluator request timeout.
 - `--json` prints machine-readable output.
 
 Each Jev setting is resolved from the flag first, then the environment, then the
@@ -90,6 +95,28 @@ export BEACON_JEV_ENDPOINT=https://ai-gateway.vercel.sh/typesafe/v1/systemone
 export BEACON_JEV_MODEL=typesafe-ai/jev
 beacon memory evaluations run --limit 10
 ```
+
+### SubQ
+
+[SubQ's Decisions API](https://docs.subq.ai/endpoints/decisions-api/) is the same
+System One contract (`model`, `state` and typed `noul` questions, answered with
+probabilities), so Beacon sends it the identical request. Select it with
+`--evaluator subq` or `BEACON_EVALUATOR=subq`:
+
+```bash
+export SUBQ_API_KEY=...
+beacon memory evaluations run --evaluator subq --trace session:cursor:s1
+```
+
+Each SubQ setting resolves the same way as the Jev ones:
+
+- `--subq-api-key` defaults to `SUBQ_API_KEY`, then `BEACON_SUBQ_API_KEY`.
+- `--subq-endpoint` defaults to `BEACON_SUBQ_ENDPOINT`, then
+  `https://api.subq.ai/v1/systemone`.
+- `--subq-model` defaults to `BEACON_SUBQ_MODEL`, then `subq-snap-preview`.
+
+SubQ bills input tokens only; the token counts it reports are stored with the
+evaluation. Evaluations record their provider and endpoint as `subq:<endpoint>`.
 
 Each completed evaluation stores a `score`, the plain mean of the three rubric
 probabilities. A trace becomes a review candidate only when both hold:

@@ -273,7 +273,12 @@ func runEndpointStatus(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Println("Last event: present")
 	}
-	fmt.Println(managedIngestStatusLine(status.ManagedIngest))
+	for _, forwarder := range status.ScriptForwarders {
+		fmt.Println(scriptForwarderStatusLine(forwarder))
+	}
+	if line := cloudStatusLine(status.ManagedIngest, endpointUserMode(), len(status.ScriptForwarders) > 0); line != "" {
+		fmt.Println(line)
+	}
 	fmt.Println(inventoryHeartbeatStatusLine(status.InventoryHeartbeat))
 	return nil
 }

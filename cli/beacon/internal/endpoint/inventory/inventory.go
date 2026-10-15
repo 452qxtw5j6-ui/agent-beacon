@@ -15,7 +15,12 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"gopkg.in/yaml.v3"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/claudesession"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/clinesession"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/harness"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 )
 
 const (
@@ -263,22 +268,37 @@ func candidates(home, wd string) []candidate {
 	return out
 }
 
+// claudeCandidates resolves the user-scope files through CLAUDE_CONFIG_DIR, as Claude Code does.
+// Project and managed scope are unaffected.
 func claudeCandidates(home, wd string) []candidate {
-	return []candidate{
-		{runtime: "claude_code", path: filepath.Join(home, ".claude.json"), scope: ScopeUser, format: formatJSON, kind: KindNativeConfig, volatile: true},
-		{runtime: "claude_code", path: filepath.Join(home, ".claude", "settings.json"), scope: ScopeUser, format: formatJSON, kind: KindNativeConfig},
-		{runtime: "claude_code", path: filepath.Join(wd, ".claude", "settings.json"), scope: ScopeProject, format: formatJSON, kind: KindNativeConfig},
-		{runtime: "claude_code", path: "/Library/Application Support/ClaudeCode/managed-settings.json", scope: ScopeManaged, format: formatJSON, kind: KindManagedConfig},
+	items := []candidate{}
+	if state := claudesession.StateFile(home); state != "" {
+		items = append(items, candidate{runtime: "claude_code", path: state, scope: ScopeUser, format: formatJSON, kind: KindNativeConfig, volatile: true})
 	}
+	if dir := claudesession.ConfigDir(home); dir != "" {
+		items = append(items, candidate{runtime: "claude_code", path: filepath.Join(dir, "settings.json"), scope: ScopeUser, format: formatJSON, kind: KindNativeConfig})
+	}
+	return append(items,
+		candidate{runtime: "claude_code", path: filepath.Join(wd, ".claude", "settings.json"), scope: ScopeProject, format: formatJSON, kind: KindNativeConfig},
+		candidate{runtime: "claude_code", path: "/Library/Application Support/ClaudeCode/managed-settings.json", scope: ScopeManaged, format: formatJSON, kind: KindManagedConfig},
+	)
 }
 
+// codexCandidates resolves the user-scope files through CODEX_HOME, as Codex does, and leaves them
+// out when CODEX_HOME names something Codex itself would refuse to start with. Project scope is
+// always <wd>/.codex.
 func codexCandidates(home, wd string) []candidate {
-	return []candidate{
-		{runtime: "codex_cli", path: filepath.Join(home, ".codex", "config.toml"), scope: ScopeUser, format: formatTOML, kind: KindNativeConfig},
-		{runtime: "codex_cli", path: filepath.Join(home, ".codex", "hooks.json"), scope: ScopeUser, format: formatJSON, kind: KindHookConfig},
-		{runtime: "codex_cli", path: filepath.Join(wd, ".codex", "config.toml"), scope: ScopeProject, format: formatTOML, kind: KindNativeConfig},
-		{runtime: "codex_cli", path: filepath.Join(wd, ".codex", "hooks.json"), scope: ScopeProject, format: formatJSON, kind: KindHookConfig},
+	items := []candidate{}
+	if dir, err := codexsession.HomeDir(home); err == nil {
+		items = append(items,
+			candidate{runtime: "codex_cli", path: filepath.Join(dir, "config.toml"), scope: ScopeUser, format: formatTOML, kind: KindNativeConfig},
+			candidate{runtime: "codex_cli", path: filepath.Join(dir, "hooks.json"), scope: ScopeUser, format: formatJSON, kind: KindHookConfig},
+		)
 	}
+	return append(items,
+		candidate{runtime: "codex_cli", path: filepath.Join(wd, ".codex", "config.toml"), scope: ScopeProject, format: formatTOML, kind: KindNativeConfig},
+		candidate{runtime: "codex_cli", path: filepath.Join(wd, ".codex", "hooks.json"), scope: ScopeProject, format: formatJSON, kind: KindHookConfig},
+	)
 }
 
 func cursorCandidates(home, wd string) []candidate {
@@ -291,7 +311,7 @@ func cursorCandidates(home, wd string) []candidate {
 }
 
 func geminiCandidates(home string) []candidate {
-	return []candidate{{runtime: "gemini_cli", path: filepath.Join(home, ".gemini", "settings.json"), scope: ScopeUser, format: formatJSON, kind: KindNativeConfig}}
+	return []candidate{{runtime: "gemini_cli", path: harness.GeminiSettingsPath(home), scope: ScopeUser, format: formatJSON, kind: KindNativeConfig}}
 }
 
 func antigravityCandidates(home, wd string) []candidate {
@@ -329,11 +349,14 @@ func opencodeCandidates(home, wd string) []candidate {
 	}
 }
 
+// clineCandidates resolves the user plugin through CLINE_DIR, as Cline does. Project scope is
+// always <wd>/.cline.
 func clineCandidates(home, wd string) []candidate {
-	return []candidate{
-		{runtime: "cline", path: filepath.Join(home, ".cline", "plugins", "beacon.ts"), scope: ScopeUser, format: formatMetadataOnly, kind: KindPlugin},
-		{runtime: "cline", path: filepath.Join(wd, ".cline", "plugins", "beacon.ts"), scope: ScopeProject, format: formatMetadataOnly, kind: KindPlugin},
+	items := []candidate{}
+	if dir := clinesession.ClineDir(home); dir != "" {
+		items = append(items, candidate{runtime: "cline", path: filepath.Join(dir, "plugins", "beacon.ts"), scope: ScopeUser, format: formatMetadataOnly, kind: KindPlugin})
 	}
+	return append(items, candidate{runtime: "cline", path: filepath.Join(wd, ".cline", "plugins", "beacon.ts"), scope: ScopeProject, format: formatMetadataOnly, kind: KindPlugin})
 }
 
 // piCandidates covers both documented Pi extension locations.
@@ -475,8 +498,14 @@ func omoCandidates(home, wd string) []candidate {
 	return items
 }
 
+// hermesCandidates resolves config.yaml through HERMES_HOME and the active profile, as Hermes does,
+// and leaves it out when the active profile names one Hermes itself would refuse to start with.
 func hermesCandidates(home string) []candidate {
-	return []candidate{{runtime: "hermes", path: filepath.Join(home, ".hermes", "config.yaml"), scope: ScopeUser, format: formatYAML, kind: KindNativeConfig}}
+	dir, err := hermessession.HomeDir(home)
+	if err != nil {
+		return nil
+	}
+	return []candidate{{runtime: "hermes", path: filepath.Join(dir, "config.yaml"), scope: ScopeUser, format: formatYAML, kind: KindNativeConfig}}
 }
 
 func devinCandidates(home, wd string) []candidate {

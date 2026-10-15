@@ -34,6 +34,7 @@ func writeSharedEvent(t *testing.T, logPath, harness, session, url string) {
 }
 
 func TestGitHookPostCommitWritesAKnownShareURL(t *testing.T) {
+	relaxGitBudgets(t)
 	root := gitCommandRepo(t)
 	top := mustGit(t, root, "rev-parse", "--show-toplevel")
 	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
@@ -66,6 +67,7 @@ func TestGitHookPostCommitWritesAKnownShareURL(t *testing.T) {
 }
 
 func TestGitPrePushSharesLinkedSessions(t *testing.T) {
+	relaxGitBudgets(t)
 	t.Setenv(gitlink.HookStdinEnv, "1") // as Beacon's hook block runs it
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t)
@@ -219,6 +221,7 @@ func TestGitPrePushWithoutTheBlockLeavesStdinAloneAndSharesNothing(t *testing.T)
 // Pre-push sharing to a trace that already exists keeps the title set on it earlier (with --title
 // or a rename on beacon.sh) and its visibility.
 func TestGitPrePushKeepsAnExistingTracesTitle(t *testing.T) {
+	relaxGitBudgets(t)
 	root, remote := gitCommandTeam(t)
 	env := newShareEnv(t)
 	srv := newFakeShareServer(t)
@@ -255,9 +258,11 @@ func TestGitPrePushKeepsAnExistingTracesTitle(t *testing.T) {
 	}
 }
 
-// When the uploads run out of their deadline, the URLs of the uploads that finished are still
-// written into the notes: the note updates run on their own short context.
+// When the uploads' context ends before they finish, the URLs of the uploads that finished are
+// still written into the notes: the note updates run on their own context. The slow upload ends the
+// hook's context itself, so the test does not depend on how long reading the notes and stores takes.
 func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
+	relaxGitBudgets(t)
 	root, _ := gitCommandTeam(t)
 	env := newShareEnv(t)
 	srv := newFakeShareServer(t)
@@ -273,16 +278,18 @@ func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
 		},
 		events: shareFixtureEvents(env.projectDir),
 	})
-	prevUpload, prevBudget := gitShareUpload, gitShareUploadBudget
-	gitShareUploadBudget = 300 * time.Millisecond
-	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), gitShareBudget)
+	defer cancel()
+	prevUpload := gitShareUpload
+	gitShareUpload = func(uploadCtx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
 		if subject.session.ID == "sess-fast" {
 			return shareResult{SharedURL: "https://beacon.sh/s/fast01"}, subject, nil
 		}
-		<-ctx.Done() // the second upload uses up the deadline
-		return shareResult{}, subject, ctx.Err()
+		cancel() // the second upload outlasts the hook
+		<-uploadCtx.Done()
+		return shareResult{}, subject, uploadCtx.Err()
 	}
-	t.Cleanup(func() { gitShareUpload, gitShareUploadBudget = prevUpload, prevBudget })
+	t.Cleanup(func() { gitShareUpload = prevUpload })
 
 	old := mustGit(t, root, "rev-parse", "HEAD")
 	mustGit(t, root, "commit", "-q", "--allow-empty", "-m", "agent work")
@@ -292,14 +299,15 @@ func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), gitShareBudget)
-	defer cancel()
 	report, err := gitShareSessionsOnPush(ctx, repo, "origin", "refs/heads/main "+sha+" refs/heads/main "+old+"\n", "")
 	if err == nil {
 		t.Fatal("running out of time was not reported")
 	}
 	if report.Noted != 1 {
 		t.Fatalf("report %+v, want the note updated", report)
+	}
+	if report.OutOfTime {
+		t.Fatalf("report %+v: a cancelled hook is not one that ran out of time", report)
 	}
 	want := "beacon:claude_code/sess-fast https://beacon.sh/s/fast01\nbeacon:claude_code/sess-slow"
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
@@ -311,6 +319,7 @@ func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
 // ahead of one's own do not use up its slots. Each runtime's store is listed once per push and the
 // runtime log read once, however many links there are.
 func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
+	relaxGitBudgets(t)
 	root, _ := gitCommandTeam(t)
 	env := newShareEnv(t)
 	srv := newFakeShareServer(t)
@@ -353,7 +362,10 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := gitShareSessionsOnPush(context.Background(), repo, "origin", "refs/heads/main "+sha+" refs/heads/main "+old+"\n", ""); err != nil {
+	// The hook's deadline, as runGitHookPrePush passes it: the note writes get what it leaves.
+	ctx, cancel := context.WithTimeout(context.Background(), gitShareBudget)
+	defer cancel()
+	if _, err := gitShareSessionsOnPush(ctx, repo, "origin", "refs/heads/main "+sha+" refs/heads/main "+old+"\n", ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(uploaded) != 1 || uploaded[0] != shareTestSession {
@@ -372,7 +384,9 @@ func TestGitShareOnPushCapsOnlySessionsThatResolve(t *testing.T) {
 
 // The share phase is held to the clock: an upload that never returns, and ignores its context, does
 // not hold up the push. The notes still get the URLs of the uploads that finished, the notes ref is
-// pushed with its full reserve, and the hook returns within its budget.
+// pushed, and the hook returns within its production budget. The upload budget is short against
+// that budget but long enough for a slow runner to read the notes and stores before it, so the fast
+// upload lands.
 func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 	t.Setenv(gitlink.HookStdinEnv, "1")
 	root, remote := gitCommandTeam(t)
@@ -393,7 +407,7 @@ func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
 	prevUpload, prevBudget := gitShareUpload, gitShareUploadBudget
-	gitShareUploadBudget = 300 * time.Millisecond
+	gitShareUploadBudget = 3 * time.Second
 	gitShareUpload = func(ctx context.Context, _ *account.ShareClient, subject shareSubject, _ shareUploadOptions) (shareResult, shareSubject, error) {
 		if subject.session.ID == "sess-fast" {
 			return shareResult{SharedURL: "https://beacon.sh/s/fast01"}, subject, nil
@@ -417,7 +431,7 @@ func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 	if _, err := runGitStderr(t, &stderr, "hook", "pre-push", "--cwd", root, "origin", remote); err != nil {
 		t.Fatalf("pre-push: %v", err)
 	}
-	if elapsed := time.Since(start); elapsed > gitShareUploadBudget+gitShareNoteWriteBudget+gitShareNotesReserve {
+	if elapsed := time.Since(start); elapsed > gitShareBudget {
 		t.Fatalf("pre-push took %s, past its budget", elapsed)
 	}
 	if !strings.Contains(stderr.String(), "ran out of time") {
@@ -429,6 +443,15 @@ func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 	}
 	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
 		t.Fatalf("remote note %q: the notes ref was not pushed", note)
+	}
+	// The abandoned upload is recorded as the share phase running out of time, against the hook's
+	// production budget. The times are lower bounds only: the upload deadline cannot pass early.
+	hook := onlyBudgetEvent(t, gitRuntimeLogPath())
+	if hook.Name != "pre-push" || hook.Phase != "share_sessions" || !hook.CutShort || hook.BudgetMS != gitShareBudget.Milliseconds() {
+		t.Fatalf("overrun %+v, want pre-push cut short in share_sessions", hook)
+	}
+	if hook.PhaseElapsedMS < gitShareUploadBudget.Milliseconds() || hook.ElapsedMS < hook.PhaseElapsedMS || hook.GitSpawns < 1 {
+		t.Fatalf("overrun %+v, want the share phase to have run its %s upload budget", hook, gitShareUploadBudget)
 	}
 }
 

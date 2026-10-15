@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // The S3, GCS and Falcon forwarders are installed by the shell helpers the macOS package ships
@@ -86,4 +87,29 @@ func RestoreScriptForwarders() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// ScriptForwarderStatuses reports each package-helper forwarder whose LaunchDaemon is on disk, so
+// `beacon endpoint status` can show the forwarder a customer set up to send to their own S3, GCS
+// or Falcon LogScale. A forwarder that was never set up is left out.
+func ScriptForwarderStatuses() []Status {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	var statuses []Status
+	for _, label := range ScriptForwarderLabels {
+		if _, err := os.Stat(scriptForwarderPlistPath(label)); err != nil {
+			continue
+		}
+		status := Status{Label: label, Kind: string(KindLaunchd)}
+		out, err := runLaunchctlCommand("print", "system/"+label)
+		if err != nil {
+			status.Message = strings.TrimSpace(out)
+		} else {
+			status.Loaded = true
+			status.Running = strings.Contains(out, "state = running") || strings.Contains(out, "pid =")
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses
 }

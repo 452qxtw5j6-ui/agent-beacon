@@ -8,7 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/atomicfile"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/brewpath"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/asymptote"
 	endpointcollector "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/collector"
 	endpointconfig "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/config"
@@ -20,6 +22,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/sysacl"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
 
@@ -42,7 +45,7 @@ var (
 	// newInventoryJob and removeInventoryJob are the seams tests replace so Install, Uninstall
 	// and Repair can be exercised without touching launchd or systemd.
 	newInventoryJob = func(userMode bool, kind service.Kind) inventoryJobController {
-		return service.InventoryManager{UserMode: userMode, Kind: kind}
+		return service.InventoryManager{UserMode: userMode, Kind: kind, Env: inventoryJobEnv(userMode)}
 	}
 	removeInventoryJob = func(userMode bool) {
 		job := newInventoryJob(userMode, service.KindAuto)
@@ -53,6 +56,8 @@ var (
 	// helpers install, so tests can see whether an uninstall reaches them without touching
 	// /Library.
 	removeScriptForwarders = service.RemoveScriptForwarders
+	// scriptForwarderStatuses is the seam for reading those forwarders' state in GetStatus.
+	scriptForwarderStatuses = service.ScriptForwarderStatuses
 	// reconcileManagedForwarder is the seam for the Beacon Cloud forwarder reconcile, so tests can
 	// see whether Install reaches it without a connected endpoint or a service manager.
 	reconcileManagedForwarder = func(userMode bool, logPath string) (asymptote.ReconcileResult, error) {
@@ -127,6 +132,60 @@ func reconcileInventoryJobWith(job inventoryJobController, opts InventoryJobOpti
 		result.Loaded = true
 	}
 	return result, nil
+}
+
+// inventoryJobEnv is the environment written into a per-user inventory job. launchd and systemd
+// start the job without the user's shell environment, so a CODEX_HOME, HERMES_HOME, CLINE_DIR,
+// GEMINI_CLI_HOME or CLAUDE_CONFIG_DIR exported in a shell profile would not reach it and the
+// scheduled scan would inventory ~/.codex, ~/.hermes, ~/.cline, ~/.gemini or ~/.claude while the
+// runtime reads the moved directory. Each value is resolved now, from the install's shell, as its
+// runtime resolves it, and recorded as an absolute path so a relative value still means the
+// directory it named at install time:
+//   - CODEX_HOME must name an existing directory, as Codex requires; otherwise nothing is recorded.
+//   - HERMES_HOME is trimmed and expanded as Hermes does, and HERMES_DATA_DIR_SUFFIX is recorded as
+//     it is. HERMES_HOME is recorded before profiles are applied, so the job still follows a later
+//     `hermes profile use`.
+//   - CLINE_DIR is used whenever it is non-empty after trimming, as Cline uses it.
+//   - GEMINI_CLI_HOME is used whenever it is non-empty, as Gemini CLI uses it.
+//   - CLAUDE_CONFIG_DIR is used whenever it is non-empty after trimming, as Claude Code uses it.
+//
+// A variable that is unset records nothing, and the job falls back to the default as before.
+// System mode records nothing: this process's environment is root's, not the console user's.
+func inventoryJobEnv(userMode bool) map[string]string {
+	if !userMode {
+		return nil
+	}
+	env := map[string]string{}
+	if os.Getenv("CODEX_HOME") != "" {
+		if dir, err := codexsession.HomeDir(""); err == nil {
+			env["CODEX_HOME"] = dir
+		}
+	}
+	if dir, err := hermessession.HomeOverride(""); err == nil && dir != "" {
+		env["HERMES_HOME"] = dir
+	}
+	if suffix := os.Getenv("HERMES_DATA_DIR_SUFFIX"); suffix != "" {
+		env["HERMES_DATA_DIR_SUFFIX"] = suffix
+	}
+	if value := strings.TrimSpace(os.Getenv("CLINE_DIR")); value != "" {
+		if dir, err := filepath.Abs(value); err == nil {
+			env["CLINE_DIR"] = dir
+		}
+	}
+	if value := os.Getenv("GEMINI_CLI_HOME"); value != "" {
+		if dir, err := filepath.Abs(value); err == nil {
+			env["GEMINI_CLI_HOME"] = dir
+		}
+	}
+	if value := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); value != "" {
+		if dir, err := filepath.Abs(value); err == nil {
+			env["CLAUDE_CONFIG_DIR"] = dir
+		}
+	}
+	if len(env) == 0 {
+		return nil
+	}
+	return env
 }
 
 // inventoryEnabledFromConfigFile reads only the inventory_heartbeat.enabled key. A missing or
@@ -252,7 +311,9 @@ type InstallResult struct {
 }
 
 type Status struct {
-	Version       string                        `json:"version"`
+	Version string `json:"version"`
+	// Edition is set only for a build that is not the default edition (see version.Edition).
+	Edition       string                        `json:"edition,omitempty"`
 	ConfigPath    string                        `json:"config_path"`
 	LogPath       string                        `json:"log_path"`
 	RuntimeLog    RuntimeLogSource              `json:"runtime_log"`
@@ -265,6 +326,9 @@ type Status struct {
 	ManagedIngest asymptote.ManagedIngestStatus `json:"managed_ingest"`
 	// InventoryHeartbeat follows the requested mode, like ManagedIngest: each mode has its own job.
 	InventoryHeartbeat InventoryHeartbeatStatus `json:"inventory_heartbeat"`
+	// ScriptForwarders are the S3, GCS and Falcon forwarders the package helpers install, one entry
+	// per forwarder that is set up on this machine.
+	ScriptForwarders []service.Status `json:"script_forwarders,omitempty"`
 }
 
 type DestinationStatus struct {
@@ -844,7 +908,7 @@ func setAutoUpdateModeInConfigFile(path, mode string) error {
 	if info, err := os.Stat(path); err == nil {
 		perm = info.Mode().Perm()
 	}
-	return os.WriteFile(path, out, perm)
+	return atomicfile.Write(path, out, perm)
 }
 
 func GetStatus(userMode bool, logPath string) Status {
@@ -878,6 +942,7 @@ func buildStatus(requestedUserMode bool, effectiveCfg endpointconfig.Config, run
 	}
 	return Status{
 		Version:            version.GetVersion(),
+		Edition:            version.ReportedEdition(),
 		ConfigPath:         endpointconfig.ConfigPath(effectiveCfg.UserMode),
 		LogPath:            effectiveCfg.LogPath,
 		RuntimeLog:         runtimeLog,
@@ -889,6 +954,7 @@ func buildStatus(requestedUserMode bool, effectiveCfg endpointconfig.Config, run
 		Destinations:       destinationStatus(effectiveCfg),
 		ManagedIngest:      asymptote.Status(requestedUserMode, managedOpts),
 		InventoryHeartbeat: inventoryHeartbeatStatus(requestedUserMode, runtimeLog.RequestedLogPath),
+		ScriptForwarders:   scriptForwarderStatuses(),
 	}
 }
 
@@ -1084,7 +1150,7 @@ func restoreFile(path string, snapshot fileSnapshot) {
 	if mode == 0 {
 		mode = 0600
 	}
-	_ = os.WriteFile(path, snapshot.Data, mode)
+	_ = atomicfile.Write(path, snapshot.Data, mode)
 }
 
 func preflight(cfg endpointconfig.Config, startService bool, kind service.Kind) error {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 
 	endpointconfig "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/config"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sqliteuri"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/filelock"
 )
 
@@ -41,7 +43,7 @@ const (
 	// historyDerivationVersion covers everything computed from a stored line: trace keys, event
 	// numbers, types, summaries and search text. Bump it when that projection changes; the next
 	// catch-up recomputes it from the stored lines, so history survives the change.
-	historyDerivationVersion = 13 // 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split; 5: agent.response is an agent message; 6: the summary names its project; 7-11 were the sharing-staleness steps on a parallel branch; 12: sharing goes stale on activity after what a share covered (shared_through), ignoring a share's own events and events the share projection skips, and carries a refresh command; 13: redaction recognizes more credential shapes, so trace text and search text change
+	historyDerivationVersion = 14 // 14: trace labels preserve UTF-8 at byte limits; 2: trace events carry the event's policy block; 3: and its error; 4: usage carries the 1h cache-write split; 5: agent.response is an agent message; 6: the summary names its project; 7-11 were the sharing-staleness steps on a parallel branch; 12: sharing goes stale on activity after what a share covered (shared_through), ignoring a share's own events and events the share projection skips, and carries a refresh command; 13: redaction recognizes more credential shapes, so trace text and search text change
 
 	defaultHistoryRetentionDays = 90
 	// maxHistoryRetentionDays is 100 years: a retention this long or longer means nothing expires.
@@ -216,7 +218,7 @@ func openHistoryStore(create bool) (*historyStore, error) {
 			_ = f.Close()
 		}
 	}
-	db, err := sql.Open("sqlite", historyURI(path))
+	db, err := sql.Open("sqlite", sqliteuri.File(path, url.Values{"_pragma": {"busy_timeout(10000)", "journal_mode(WAL)", "synchronous(NORMAL)"}}))
 	if err != nil {
 		return nil, err
 	}
@@ -226,14 +228,6 @@ func openHistoryStore(create bool) (*historyStore, error) {
 		return nil, err
 	}
 	return store, nil
-}
-
-func historyURI(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = path
-	}
-	return "file:" + filepath.ToSlash(abs) + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 }
 
 func (s *historyStore) close() {

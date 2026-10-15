@@ -100,7 +100,8 @@ func Cost(r Rates, t Tokens, requestScoped bool) Estimate {
 	cacheWrite := set.CacheWrite
 	if cacheWrite <= 0 {
 		cacheWrite = set.Input
-		est.CacheWriteAtInputRate = t.CacheCreation > 0
+		est.CacheWriteAtInputRate = t.CacheCreation > t.CacheCreation1h ||
+			(t.CacheCreation1h > 0 && set.CacheWrite1h <= 0)
 	}
 	cacheWrite1h := set.CacheWrite1h
 	if cacheWrite1h <= 0 {

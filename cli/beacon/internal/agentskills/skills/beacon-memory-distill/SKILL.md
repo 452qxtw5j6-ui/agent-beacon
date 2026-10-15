@@ -2,7 +2,7 @@
 name: beacon-memory-distill
 description: Turn recorded agent sessions (Beacon traces from Claude Code, Cursor, Codex, OpenCode, and other harnesses) into reviewed, reusable project memory. Scores selected traces, reads the source trace behind each high-signal candidate, drafts a grounded lesson, and approves it only after the user confirms. Use when the user asks to "learn from", "remember", "save the lesson from", or "turn into memory" a recent session, fix, or debugging effort, or asks to review Beacon memory candidates.
 license: MIT
-compatibility: Requires the Beacon CLI (beacon) on PATH with endpoint capture installed. Scoring calls the configured Jev evaluator over the network (hosted TypeSafe by default) and needs TYPESAFE_API_KEY or BEACON_JEV_API_KEY; every other step is local.
+compatibility: Requires the Beacon CLI (beacon) on PATH with endpoint capture installed. Scoring calls the configured evaluator over the network (hosted TypeSafe Jev by default, or SubQ with --evaluator subq) and needs TYPESAFE_API_KEY or BEACON_JEV_API_KEY for Jev, or SUBQ_API_KEY or BEACON_SUBQ_API_KEY for SubQ; every other step is local.
 metadata:
   author: asymptote-labs
   homepage: https://docs.beacon.sh/concepts/cross-harness-memory
@@ -87,19 +87,24 @@ beacon memory evaluations run --dry-run --limit 10 --harness <name> --since <rfc
 Before the real run, tell the user plainly and **wait for an explicit yes**:
 
 - Each selected trace is sent, as a bounded and redacted projection, to the evaluator at
-  `BEACON_JEV_ENDPOINT` if that is set, otherwise to the hosted TypeSafe endpoint.
+  `BEACON_JEV_ENDPOINT` if that is set, otherwise to the hosted TypeSafe endpoint. With
+  `--evaluator subq` (or `BEACON_EVALUATOR=subq`) it goes to `BEACON_SUBQ_ENDPOINT`,
+  otherwise the hosted SubQ endpoint; name whichever applies.
 - It costs about the estimate the dry run printed.
 - Nothing is approved or written into memory by this step.
 
 Check for a key without printing it:
 
 ```bash
-test -n "${TYPESAFE_API_KEY:-}${BEACON_JEV_API_KEY:-}" && echo "evaluator key present" || echo "no evaluator key"
+test -n "${TYPESAFE_API_KEY:-}${BEACON_JEV_API_KEY:-}" && echo "Jev key present" || echo "no Jev key"
+test -n "${SUBQ_API_KEY:-}${BEACON_SUBQ_API_KEY:-}" && echo "SubQ key present" || echo "no SubQ key"
 ```
 
-With no key, stop and tell the user to export `TYPESAFE_API_KEY` (or point
+If only a SubQ key is present, add `--evaluator subq` to the dry run and the real run.
+
+With no key, stop and tell the user to export `TYPESAFE_API_KEY` or `SUBQ_API_KEY` (or point
 `BEACON_JEV_ENDPOINT` at their organization's compatible evaluator). Never ask them to
-paste a key into the chat, and never pass `--jev-api-key` on the command line. If the user
+paste a key into the chat, and never pass `--jev-api-key` or `--subq-api-key` on the command line. If the user
 or their organization does not allow external evaluation, or has no key and does not want
 one, skip Steps 3 and 4 and go to [Without an evaluator](#without-an-evaluator).
 
@@ -148,9 +153,8 @@ How to read what comes back:
   failed command followed by a different command that succeeded.
 - A `user_message` with `content.included` false, or only a hash, means Beacon kept
   metadata only. You cannot draft from a hash; say the trace was unreadable.
-- `--around-event` centres on the unfiltered event number. Combined with `--event-type`
-  it can return no events at all, so read a small unfiltered window around the number
-  and skip the `token_usage` and `session` rows yourself.
+- `--around-event` takes the original event number, also with `--event-type`, and
+  `--before` and `--after` count matching events.
 
 Work out, from the events themselves:
 

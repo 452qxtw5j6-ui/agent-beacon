@@ -15,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/atomicfile"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/dshsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/embedded"
 
@@ -173,6 +174,9 @@ func buildDoctorResult(status lifecycle.Status, generatedAt time.Time) doctorRes
 		if check, ok := doctorDshHookCaptureCheck(status.LogPath); ok {
 			checks = append(checks, check)
 		}
+	}
+	if check, ok := gitHookBudgetCheck(status.LogPath, generatedAt); ok {
+		checks = append(checks, check)
 	}
 	result := doctorResult{
 		Status:      aggregateCheckStatus(checks),
@@ -606,6 +610,9 @@ func writeInventorySnapshotEvents(cfg endpointconfig.Config, settings endpointco
 		// Metadata only (mode and hashes). It is what distinguishes a liveness heartbeat written
 		// with nobody at the console from one for an unchanged inventory.
 		"user_scope": result.UserScope,
+	}
+	if edition := version.ReportedEdition(); edition != "" {
+		inventoryMeta["edition"] = edition
 	}
 	if previousDigest == "" {
 		inventoryMeta["change_reason"] = "initial"
@@ -1580,6 +1587,10 @@ func planDoctorFixes(result doctorResult, status lifecycle.Status) doctorFixPlan
 			}
 		case "dsh_hook_capture":
 			addSkip(plannedAction{Action: "manual_fix", Target: check.Target, Message: check.Action})
+		// The budget is fixed, so there is nothing to repair; a commit the hook left unlinked is
+		// linked by hand.
+		case "git_hook_budget":
+			addSkip(plannedAction{Action: "manual_fix", Target: check.Target, Message: check.Action})
 		}
 	}
 	return plan
@@ -1732,7 +1743,7 @@ func restoreRepairFile(path string, snapshot repairFileSnapshot) error {
 	if mode == 0 {
 		mode = 0600
 	}
-	return os.WriteFile(path, snapshot.data, mode)
+	return atomicfile.Write(path, snapshot.data, mode)
 }
 
 func checkLogWritable(cfg endpointconfig.Config) diagnostics.Check {

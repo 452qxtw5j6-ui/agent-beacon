@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestRedactStringRedactsKnownSecretForms(t *testing.T) {
@@ -139,6 +140,7 @@ func TestRedactStringRedactsCommonCredentialFormats(t *testing.T) {
 		{"google", "AIzaSyA-abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345"},
 		{"jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"},
 		{"beacon device key", "bcn_device_abcdefgh_0123456789abcdef", "0123456789abcdef"},
+		{"beacon machine credential", "bcn_enfdev_abcdefgh_0123456789abcdef", "0123456789abcdef"},
 		{"rsa key", "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretbody\n-----END RSA PRIVATE KEY-----", "MIIEowIBAAKCAQEAsecretbody"},
 		{"openssh key cut short", "cat ~/.ssh/id_ed25519\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA", "b3BlbnNzaC1rZXktdjEAAAAA"},
 	}
@@ -358,5 +360,98 @@ func TestCleanStringWidensTheWindowWhenRedactionShrinksIt(t *testing.T) {
 	}
 	if len(got) > limit {
 		t.Fatalf("CleanString = %d bytes, want at most %d", len(got), limit)
+	}
+}
+
+func TestTruncateUTF8NeverSplitsACharacter(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		limit       int
+		want        string
+	}{
+		{"fits", "abc", 3, "abc"},
+		{"ascii cut", "abcdef", 4, "abcd"},
+		{"cut inside a 3-byte character backs up", strings.Repeat("界", 3), 7, strings.Repeat("界", 2)},
+		{"cut inside a 4-byte character backs up", "a😀b", 3, "a"},
+		{"cut exactly at a character boundary", strings.Repeat("界", 3), 6, strings.Repeat("界", 2)},
+		{"limit shorter than the first character", "界", 2, ""},
+		{"zero limit", "abc", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TruncateUTF8(tc.value, tc.limit); got != tc.want {
+				t.Fatalf("TruncateUTF8(%q, %d) = %q, want %q", tc.value, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTruncateStringNeverSplitsACharacter(t *testing.T) {
+	marked := strings.Repeat("a", 20) + strings.Repeat("界", 10)
+	for _, tc := range []struct {
+		name, value string
+		limit       int
+		want        string
+	}{
+		{"fits", "héllo", 6, "héllo"},
+		{"empty", "", 0, ""},
+		{"zero limit", "héllo", 0, ""},
+		{"limit 1 inside a 2-byte character", "é", 1, ""},
+		{"limit 1 keeps an ASCII byte", "aé", 1, "a"},
+		{"ascii unmarked", "abcdefgh", 4, "abcd"},
+		{"ascii marked", strings.Repeat("a", 40), 32, strings.Repeat("a", 17) + "...[truncated]"},
+		{"cut inside a 2-byte character backs up", "aéé", 4, "aé"},
+		{"cut inside a 3-byte character backs up", strings.Repeat("界", 3), 8, strings.Repeat("界", 2)},
+		{"cut inside a 4-byte character backs up", "😀😀", 7, "😀"},
+		{"cut at a character boundary", strings.Repeat("界", 3), 6, strings.Repeat("界", 2)},
+		// limit-15 = 25 falls one byte into the second 界, so the kept prefix backs up to 23 bytes.
+		{"marked cut backs up", marked, 40, strings.Repeat("a", 20) + "界...[truncated]"},
+		{"marked cut at a character boundary", marked, 41, strings.Repeat("a", 20) + "界界...[truncated]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := TruncateString(tc.value, tc.limit); got != tc.want {
+				t.Fatalf("TruncateString(%q, %d) = %q, want %q", tc.value, tc.limit, got, tc.want)
+			}
+		})
+	}
+}
+
+// Every cut position, including each byte inside 2-, 3- and 4-byte characters, on both sides of
+// the marker threshold, must stay within the limit and decode as valid UTF-8.
+func TestTruncateStringIsAlwaysValidUTF8WithinTheLimit(t *testing.T) {
+	values := []string{
+		strings.Repeat("abc", 40),
+		strings.Repeat("é", 60),
+		strings.Repeat("界", 40),
+		strings.Repeat("😀", 30),
+		strings.Repeat("aé界😀", 12),
+	}
+	for _, value := range values {
+		for limit := 0; limit <= len(value)+1; limit++ {
+			got := TruncateString(value, limit)
+			if len(got) > limit {
+				t.Fatalf("TruncateString(%q, %d) = %d bytes, over the limit", value, limit, len(got))
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("TruncateString(%q, %d) = %q, not valid UTF-8", value, limit, got)
+			}
+			if len(value) <= limit {
+				if got != value {
+					t.Fatalf("TruncateString(%q, %d) = %q, want the value unchanged", value, limit, got)
+				}
+				continue
+			}
+			kept, budget := got, limit
+			if limit >= 32 {
+				var ok bool
+				if kept, ok = strings.CutSuffix(got, "...[truncated]"); !ok {
+					t.Fatalf("TruncateString(%q, %d) = %q, want the truncation marker", value, limit, got)
+				}
+				budget = limit - 15
+			}
+			// The cut gives up only the bytes of the one character it would have split.
+			if !strings.HasPrefix(value, kept) || budget-len(kept) >= utf8.UTFMax {
+				t.Fatalf("TruncateString(%q, %d) kept %q, want the longest whole-character prefix", value, limit, kept)
+			}
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -355,6 +356,59 @@ func TestConfigureCodexEnablesPromptLogging(t *testing.T) {
 	}
 }
 
+// Codex reads config.toml from CODEX_HOME when it is set, so an install that wrote ~/.codex would
+// leave Codex without the exporter and discovery reporting a file Codex never reads.
+func TestCodexConfigFollowsCodexHome(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir())
+	codexHome := t.TempDir()
+	t.Setenv("CODEX_HOME", codexHome)
+	resolved, err := filepath.EvalSymlinks(codexHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(resolved, "config.toml")
+
+	written, err := ConfigureCodex(ConfigureOptions{Endpoint: "http://127.0.0.1:4317", UserMode: true})
+	if err != nil {
+		t.Fatalf("ConfigureCodex returned error: %v", err)
+	}
+	if written != want {
+		t.Fatalf("ConfigureCodex path = %q, want %q", written, want)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".codex")); !os.IsNotExist(err) {
+		t.Fatalf("ConfigureCodex touched ~/.codex with CODEX_HOME set: %v", err)
+	}
+	h := DiscoverCodex()
+	if h.ConfigPath != want || h.TelemetryStatus != TelemetryEnabled {
+		t.Fatalf("DiscoverCodex = path %q status %q, want %q enabled", h.ConfigPath, h.TelemetryStatus, want)
+	}
+}
+
+// Codex refuses to start when CODEX_HOME is not an existing directory, so Beacon must not quietly
+// configure ~/.codex instead, or create the directory and hide the mistake.
+func TestCodexConfigRefusesMissingCodexHome(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir())
+	missing := filepath.Join(home, "missing")
+	t.Setenv("CODEX_HOME", missing)
+
+	if _, err := ConfigureCodex(ConfigureOptions{Endpoint: "http://127.0.0.1:4317", UserMode: true}); err == nil {
+		t.Fatal("ConfigureCodex accepted a CODEX_HOME that does not exist")
+	}
+	for _, dir := range []string{missing, filepath.Join(home, ".codex")} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Fatalf("ConfigureCodex created %s: %v", dir, err)
+		}
+	}
+	h := DiscoverCodex()
+	if h.TelemetryStatus != TelemetryMissing || !strings.Contains(h.Message, "CODEX_HOME") {
+		t.Fatalf("DiscoverCodex = status %q message %q, want missing naming CODEX_HOME", h.TelemetryStatus, h.Message)
+	}
+}
+
 func TestDiscoverCodexDoesNotDetectConfigDirectoryOnly(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
@@ -678,6 +732,7 @@ func TestDiscoverCopilotCLIDetectsConfigFile(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
 	t.Setenv("PATH", t.TempDir())
+	t.Setenv("COPILOT_HOME", "")
 	configPath := filepath.Join(home, ".copilot", "config.json")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
 		t.Fatalf("mkdir copilot config dir: %v", err)
@@ -689,6 +744,33 @@ func TestDiscoverCopilotCLIDetectsConfigFile(t *testing.T) {
 	h := DiscoverCopilotCLI()
 	if !h.Detected {
 		t.Fatalf("DiscoverCopilotCLI did not detect config file: %#v", h)
+	}
+}
+
+// With COPILOT_HOME set, the config file that marks Copilot CLI as present is the one under it; a
+// stale ~/.copilot/config.json does not count.
+func TestDiscoverCopilotCLIDetectsConfigFileUnderCopilotHome(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir())
+	copilotHome := t.TempDir()
+	t.Setenv("COPILOT_HOME", copilotHome)
+	if err := os.WriteFile(filepath.Join(copilotHome, "config.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatalf("write copilot config: %v", err)
+	}
+	if h := DiscoverCopilotCLI(); !h.Detected {
+		t.Fatalf("DiscoverCopilotCLI did not detect $COPILOT_HOME/config.json: %#v", h)
+	}
+
+	t.Setenv("COPILOT_HOME", filepath.Join(copilotHome, "empty"))
+	if err := os.MkdirAll(filepath.Join(home, ".copilot"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".copilot", "config.json"), []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if h := DiscoverCopilotCLI(); h.Detected {
+		t.Fatalf("DiscoverCopilotCLI detected ~/.copilot/config.json with COPILOT_HOME pointing elsewhere: %#v", h)
 	}
 }
 
@@ -905,6 +987,7 @@ func clearCopilotEnv(t *testing.T) {
 func TestDiscoverClineDetectsConfigDirectoryWithoutAnExecutable(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
+	t.Setenv("CLINE_DIR", "")
 	t.Setenv("PATH", t.TempDir())
 	if err := os.MkdirAll(filepath.Join(home, ".cline"), 0755); err != nil {
 		t.Fatalf("mkdir cline config dir: %v", err)
@@ -926,6 +1009,7 @@ func TestDiscoverClineDetectsConfigDirectoryWithoutAnExecutable(t *testing.T) {
 }
 
 func TestDiscoverClineTelemetryStatusVariants(t *testing.T) {
+	t.Setenv("CLINE_DIR", "")
 	cases := []struct {
 		name    string
 		plugin  string
@@ -993,6 +1077,7 @@ func TestDiscoverClineDoesNotFallBackToAProjectPluginWhenHomeIsUnresolvable(t *t
 	// Windows.
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "")
+	t.Setenv("CLINE_DIR", "")
 
 	pluginPath := filepath.Join(work, ".cline", "plugins", "beacon.ts")
 	if err := os.MkdirAll(filepath.Dir(pluginPath), 0755); err != nil {
@@ -1014,5 +1099,144 @@ func TestDiscoverClineDoesNotFallBackToAProjectPluginWhenHomeIsUnresolvable(t *t
 	}
 	if !strings.Contains(h.Message, "could not be resolved") {
 		t.Errorf("Message = %q, want it to name the unresolved directory", h.Message)
+	}
+}
+
+// hermesDiscoverHome moves the home directory to a temporary one with no hermes executable on PATH,
+// clears every variable that moves Hermes's home, and returns Hermes's native root there.
+func hermesDiscoverHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "LocalAppData"))
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "LocalAppData", "hermes")
+	}
+	return filepath.Join(home, ".hermes")
+}
+
+const hermesBeaconHooksYAML = `hooks:
+  on_session_end:
+    - command: env BEACON_ENDPOINT_MODE=1 beacon-hooks --platform hermes session-end
+`
+
+func writeHermesConfigFixture(t *testing.T, dir, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Discovery reports the config.yaml Hermes reads: HERMES_HOME's, or the sticky profile's, rather
+// than a stale ~/.hermes/config.yaml.
+func TestDiscoverHermesFollowsHermesHomeAndActiveProfile(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		native := hermesDiscoverHome(t)
+		want := writeHermesConfigFixture(t, native, hermesBeaconHooksYAML)
+		h := DiscoverHermes()
+		if h.ConfigPath != want || !h.Detected || h.TelemetryStatus != TelemetryEnabled {
+			t.Fatalf("DiscoverHermes = path %q detected %v status %q, want %q detected and enabled", h.ConfigPath, h.Detected, h.TelemetryStatus, want)
+		}
+	})
+	t.Run("HERMES_HOME", func(t *testing.T) {
+		native := hermesDiscoverHome(t)
+		writeHermesConfigFixture(t, native, "model: stale\n")
+		dir := t.TempDir()
+		t.Setenv("HERMES_HOME", dir)
+		want := writeHermesConfigFixture(t, dir, hermesBeaconHooksYAML)
+		h := DiscoverHermes()
+		if h.ConfigPath != want || !h.Detected || h.TelemetryStatus != TelemetryEnabled {
+			t.Fatalf("DiscoverHermes = path %q detected %v status %q, want %q detected and enabled", h.ConfigPath, h.Detected, h.TelemetryStatus, want)
+		}
+	})
+	t.Run("active profile", func(t *testing.T) {
+		native := hermesDiscoverHome(t)
+		writeHermesConfigFixture(t, native, hermesBeaconHooksYAML)
+		profile := filepath.Join(native, "profiles", "work")
+		if err := os.MkdirAll(profile, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(native, "active_profile"), []byte("work\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h := DiscoverHermes()
+		want := filepath.Join(profile, "config.yaml")
+		if h.ConfigPath != want || !h.Detected || h.TelemetryStatus != TelemetryMissing {
+			t.Fatalf("DiscoverHermes = path %q detected %v status %q, want %q detected and missing: the default profile's hooks do not run in this profile", h.ConfigPath, h.Detected, h.TelemetryStatus, want)
+		}
+	})
+}
+
+// Hermes refuses to start when active_profile names a profile it cannot use; discovery says so
+// instead of reporting the default profile's config.
+func TestDiscoverHermesReportsUnusableActiveProfile(t *testing.T) {
+	native := hermesDiscoverHome(t)
+	writeHermesConfigFixture(t, native, hermesBeaconHooksYAML)
+	if err := os.WriteFile(filepath.Join(native, "active_profile"), []byte("gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := DiscoverHermes()
+	if h.TelemetryStatus != TelemetryMissing || !strings.Contains(h.Message, "active profile") || h.ConfigPath != "" {
+		t.Fatalf("DiscoverHermes = status %q message %q path %q, want missing naming the active profile", h.TelemetryStatus, h.Message, h.ConfigPath)
+	}
+}
+
+func TestGeminiSettingsHonorGeminiCLIHome(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("GEMINI_CLI_HOME", "")
+	if got, want := GeminiSettingsPath(home), filepath.Join(home, ".gemini", "settings.json"); got != want {
+		t.Fatalf("default path = %q, want %q", got, want)
+	}
+
+	geminiHome := t.TempDir()
+	t.Setenv("GEMINI_CLI_HOME", geminiHome)
+	want := filepath.Join(geminiHome, ".gemini", "settings.json")
+	written, err := ConfigureGemini(ConfigureOptions{Endpoint: "http://127.0.0.1:4317", UserMode: true})
+	if err != nil {
+		t.Fatalf("ConfigureGemini returned error: %v", err)
+	}
+	if written != want {
+		t.Fatalf("ConfigureGemini path = %q, want %q", written, want)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".gemini")); !os.IsNotExist(err) {
+		t.Fatalf("settings were also written under the OS home: %v", err)
+	}
+	if got := DiscoverGemini().ConfigPath; got != want {
+		t.Fatalf("DiscoverGemini config path = %q, want %q", got, want)
+	}
+}
+
+func TestClaudeConfigFollowsClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	config := filepath.Join(t.TempDir(), "claude-alt")
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+
+	written, err := ConfigureClaude(ConfigureOptions{Endpoint: "http://127.0.0.1:4317", UserMode: true})
+	if err != nil {
+		t.Fatalf("ConfigureClaude returned error: %v", err)
+	}
+	if want := filepath.Join(config, "settings.json"); written != want {
+		t.Fatalf("ConfigureClaude path = %q, want %q", written, want)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("~/.claude/settings.json must be left alone, stat err = %v", err)
+	}
+
+	h := DiscoverClaude()
+	if want := filepath.Join(config, "settings.json"); h.ConfigPath != want {
+		t.Fatalf("DiscoverClaude config path = %q, want %q", h.ConfigPath, want)
+	}
+	if h.TelemetryStatus != TelemetryEnabled {
+		t.Fatalf("DiscoverClaude status = %q (%s), want enabled", h.TelemetryStatus, h.Message)
 	}
 }

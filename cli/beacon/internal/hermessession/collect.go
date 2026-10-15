@@ -20,6 +20,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionwindow"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sqliteuri"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 	_ "modernc.org/sqlite"
 )
@@ -117,13 +118,6 @@ type Message struct {
 type MappedEvent struct {
 	SourceMessageID int64
 	Event           schema.Event
-}
-
-func DefaultDBPath() string {
-	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".hermes", "state.db")
-	}
-	return filepath.Join(os.TempDir(), "hermes", "state.db")
 }
 
 func DefaultStatePath() string {
@@ -549,16 +543,7 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	uriPath := filepath.ToSlash(path)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	u := url.URL{Scheme: "file", Path: uriPath}
-	q := u.Query()
-	q.Set("mode", "ro")
-	q.Set("_pragma", "busy_timeout(1000)")
-	u.RawQuery = q.Encode()
-	return sql.Open("sqlite", u.String())
+	return sql.Open("sqlite", sqliteuri.File(path, url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(1000)"}}))
 }
 
 // MapSession maps one session's new messages into endpoint events. It also returns the tool calls

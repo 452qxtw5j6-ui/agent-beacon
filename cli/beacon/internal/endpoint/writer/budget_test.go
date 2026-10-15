@@ -75,3 +75,69 @@ func TestSubBudgetIsBoundByItsParent(t *testing.T) {
 		t.Fatalf("refused flags first=%t second=%t", first.Refused(), second.Refused())
 	}
 }
+
+func replayBudgetEvent(callID string) schema.Event {
+	event := schema.NewEvent(schema.NewEventOptions{Action: "file.read", Harness: schema.HarnessInfo{Name: "claude_code"}, Message: "File read"})
+	event.Timestamp = "2026-10-13T12:00:00Z"
+	event.Session = &schema.SessionInfo{ID: "budget-replay"}
+	event.File = &schema.FileInfo{Path: "/repo/item.go"}
+	event.GenAI = &schema.GenAIInfo{Tool: &schema.GenAIToolInfo{Call: &schema.GenAIToolCallInfo{ID: callID}}}
+	return event
+}
+
+func TestBudgetSuppressedReplayFitsAnExhaustedBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.jsonl")
+	event := replayBudgetEvent("call-a")
+	if _, err := AppendEvent(event, Options{Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	budget := NewBudget(0)
+	if _, err := AppendEvent(event, Options{Path: path, Budget: budget}); err != nil {
+		t.Fatalf("zero-byte replay refused: %v", err)
+	}
+	if budget.Used() != 0 || budget.Refused() {
+		t.Fatalf("replay changed exhausted budget: used=%d refused=%t", budget.Used(), budget.Refused())
+	}
+}
+
+func TestBudgetSuppressedReplayLeavesRoomForNewTelemetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.jsonl")
+	first := replayBudgetEvent("call-a")
+	if _, err := AppendEvent(first, Options{Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A budget with exactly one event of space must survive a zero-byte replay.
+	budget := NewBudget(before.Size())
+	if _, err := AppendEvent(first, Options{Path: path, Budget: budget}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AppendEvent(replayBudgetEvent("call-b"), Options{Path: path, Budget: budget}); err != nil {
+		t.Fatalf("new telemetry blocked by replay: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() != 2*before.Size() || budget.Used() != after.Size()-before.Size() {
+		t.Fatalf("physical bytes before=%d after=%d budget=%d", before.Size(), after.Size(), budget.Used())
+	}
+}
+
+func TestBudgetReleasesParentAndChildOnFailedAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "runtime.jsonl")
+	if err := os.Mkdir(path, 0700); err != nil {
+		t.Fatal(err)
+	}
+	parent := NewBudget(1 << 20)
+	child := parent.Sub(1 << 20)
+	if _, err := AppendEvent(replayBudgetEvent("call-a"), Options{Path: path, Budget: child}); err == nil {
+		t.Fatal("writing to a directory unexpectedly succeeded")
+	}
+	if child.Used() != 0 || parent.Used() != 0 {
+		t.Fatalf("failed append left child=%d parent=%d charged", child.Used(), parent.Used())
+	}
+}

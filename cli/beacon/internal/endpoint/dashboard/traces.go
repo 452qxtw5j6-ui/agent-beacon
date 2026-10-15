@@ -198,9 +198,10 @@ func ReadTraceList(path string, query TraceQuery) (TraceListResultV1, error) {
 	if page <= 0 {
 		page = 1
 	}
-	start := (page - 1) * limit
-	if start > len(filtered) {
-		start = len(filtered)
+	// Clamp before multiplying: a valid positive page can overflow an int.
+	start := len(filtered)
+	if page-1 <= len(filtered)/limit {
+		start = (page - 1) * limit
 	}
 	end := start + limit
 	if end > len(filtered) {
@@ -295,7 +296,7 @@ func ShowTrace(path, id string, query TraceQuery) (TraceShowResultV1, bool, erro
 	}
 	events := filterTraceEvents(agg.events, query.EventTypes)
 	total := len(events)
-	offset, limit := traceRange(query, total)
+	offset, limit := traceShowRange(query, total, func(i int) int { return events[i].Number })
 	end := offset - 1 + limit
 	if end > total {
 		end = total
@@ -443,6 +444,42 @@ func filterTraceEvents(events []TraceEventV1, eventTypes []string) []TraceEventV
 	return out
 }
 
+// traceShowRange keeps pagination in filtered coordinates, but around-event names
+// an original event number. If that event is filtered out, its insertion point
+// separates the matching events before and after it without adding an anchor slot.
+func traceShowRange(query TraceQuery, total int, numberAt func(int) int) (int, int) {
+	if query.AroundEvent <= 0 || len(query.EventTypes) == 0 {
+		return traceRange(query, total)
+	}
+	before, after := aroundContext(query)
+	anchor := sort.Search(total, func(i int) bool { return numberAt(i) >= query.AroundEvent })
+	start := anchor - before
+	if start < 0 {
+		start = 0
+	}
+	end := anchor
+	if anchor < total && numberAt(anchor) == query.AroundEvent {
+		end++
+	}
+	if after > total-end {
+		after = total - end
+	}
+	end += after
+	return start + 1, end - start
+}
+
+// aroundContext is how many events --around-event shows on each side, 3 unless set.
+func aroundContext(query TraceQuery) (before, after int) {
+	before, after = query.Before, query.After
+	if before <= 0 {
+		before = 3
+	}
+	if after <= 0 {
+		after = 3
+	}
+	return before, after
+}
+
 func traceRange(query TraceQuery, total int) (int, int) {
 	limit := normalizeLimit(query.Limit)
 	offset := query.Offset
@@ -454,18 +491,12 @@ func traceRange(query TraceQuery, total int) (int, int) {
 		limit = total
 	}
 	if query.AroundEvent > 0 {
-		before, after := query.Before, query.After
-		if before <= 0 {
-			before = 3
-		}
-		if after <= 0 {
-			after = 3
-		}
+		before, after := aroundContext(query)
 		offset = query.AroundEvent - before
 		if offset < 1 {
 			offset = 1
 		}
-		limit = before + 1 + after
+		limit = min(before, total) + 1 + min(after, total)
 	}
 	if total == 0 {
 		return 1, 0
@@ -567,7 +598,7 @@ func traceSnippet(event TraceEventV1, query string) string {
 			continue
 		}
 		if query == "" || strings.Contains(strings.ToLower(candidate), strings.ToLower(strings.Fields(query)[0])) {
-			return truncateString(candidate, 240)
+			return asymptoteobserve.TruncateUTF8(strings.TrimSpace(candidate), 240)
 		}
 	}
 	return ""
@@ -646,14 +677,6 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
-}
-
-func truncateString(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	if len(value) <= limit {
-		return value
-	}
-	return value[:limit]
 }
 
 func valueOrEmpty[T any](value *T, render func(*T) string) string {

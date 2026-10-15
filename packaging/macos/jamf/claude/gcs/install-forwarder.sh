@@ -286,13 +286,30 @@ chmod 0644 "$CONFIG_TMP"
 } >"$ENV_TMP"
 chmod 0600 "$ENV_TMP"
 
-# Validate syntax with the same environment the launch daemon will receive.
-BEACON_GCS_BUCKET="$GCS_BUCKET" \
-BEACON_GCS_PREFIX="$GCS_PREFIX" \
-BEACON_GCS_STORAGE_CLASS="$GCS_STORAGE_CLASS" \
-BEACON_VECTOR_READ_FROM="$VECTOR_READ_FROM" \
-GOOGLE_APPLICATION_CREDENTIALS="$CREDENTIALS_PATH" \
-  "$VECTOR_BIN" validate --skip-healthchecks "$CONFIG_TMP" >/dev/null
+# Validate syntax with the same environment the launch daemon will receive. Vector's GCS sink
+# fetches an OAuth token while it validates, so a key Google does not accept yet fails here too.
+# Vector prints the reason on stdout; pass it on, because an exit code alone explains nothing.
+set +e
+validate_output="$(
+  BEACON_GCS_BUCKET="$GCS_BUCKET" \
+  BEACON_GCS_PREFIX="$GCS_PREFIX" \
+  BEACON_GCS_STORAGE_CLASS="$GCS_STORAGE_CLASS" \
+  BEACON_VECTOR_READ_FROM="$VECTOR_READ_FROM" \
+  GOOGLE_APPLICATION_CREDENTIALS="$CREDENTIALS_PATH" \
+    "$VECTOR_BIN" validate --skip-healthchecks "$CONFIG_TMP" 2>&1
+)"
+validate_status=$?
+set -e
+if [ "$validate_status" -ne 0 ]; then
+  printf '%s\n' "$validate_output" >&2
+  case "$validate_output" in
+    *"Invalid JWT Signature"*)
+      echo "Google rejected the service-account key. A new key takes up to a minute to start working, so wait and run this again; a deleted or disabled key never will." >&2
+      ;;
+  esac
+  echo "Vector rejected the GCS forwarder config; the installed forwarder was left unchanged." >&2
+  exit "$validate_status"
+fi
 
 cat >"$PLIST_TMP" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

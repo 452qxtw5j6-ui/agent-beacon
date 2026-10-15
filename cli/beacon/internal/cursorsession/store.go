@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sqliteuri"
 	"io/fs"
 	"net/url"
 	"os"
@@ -348,7 +349,7 @@ func (s *Store) readGlobalStorage(ref TraceRef) ([]Record, error) {
 	}
 	if summary := compactionSummary(composer); summary != nil {
 		used, limit := contextFromAny(composer, composer.Context, summary)
-		records = append(records, Record{Order: order, NativeID: "compaction:" + stringValue(summary["compacted_through_id"]), Type: "system_event", Subtype: "compaction", TimestampMS: ref.UpdatedAtUnixMS, ContextUsedTokens: used, ContextLimitTokens: limit, Data: summary})
+		records = append(records, Record{Order: 0, NativeID: "compaction:" + stringValue(summary["compacted_through_id"]), Type: "system_event", Subtype: "compaction", TimestampMS: ref.UpdatedAtUnixMS, ContextUsedTokens: used, ContextLimitTokens: limit, Data: summary})
 	}
 	return records, nil
 }
@@ -432,16 +433,7 @@ func openSQLiteReadOnly(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	uriPath := filepath.ToSlash(path)
-	if !strings.HasPrefix(uriPath, "/") {
-		uriPath = "/" + uriPath
-	}
-	u := url.URL{Scheme: "file", Path: uriPath}
-	q := u.Query()
-	q.Set("mode", "ro")
-	q.Set("_pragma", "busy_timeout(1000)")
-	u.RawQuery = q.Encode()
-	return sql.Open("sqlite", u.String())
+	return sql.Open("sqlite", sqliteuri.File(path, url.Values{"mode": {"ro"}, "_pragma": {"busy_timeout(1000)"}}))
 }
 
 func fileExists(path string) bool {

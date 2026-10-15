@@ -19,15 +19,15 @@ Sessions come from each runtime's own local session store, not from Beacon's run
 
 | Runtime | Session store | `--harness` |
 |---------|---------------|-------------|
-| Claude Code | `~/.claude/projects` | `claude` |
-| Codex CLI | `~/.codex/sessions` | `codex` |
-| OpenCode | `~/.config/opencode` (SQLite and the legacy file store) | `opencode` |
+| Claude Code | `~/.claude/projects` (`$CLAUDE_CONFIG_DIR/projects` when set) | `claude` |
+| Codex CLI | `$CODEX_HOME/sessions` when set; otherwise `~/.codex/sessions` | `codex` |
+| OpenCode | `~/.local/share/opencode` (or `$XDG_DATA_HOME/opencode`, and `OPENCODE_DB` when set; SQLite and the legacy file store) | `opencode` |
 | Cline | `~/.cline/data` | `cline` |
 | Pi | `~/.pi/agent/sessions` (or under `PI_CODING_AGENT_DIR`) | `pi` |
 | Prime Agent | `~/.prime/agent`, both `sessions` and `session-artifacts` (or `PRIME_AGENT_CODING_AGENT_DIR`) | `prime` |
 | Factory Droid | `~/.factory/sessions` | `droid` |
-| GitHub Copilot CLI | `~/.copilot/session-state` | `copilot` |
-| Hermes Agent | `~/.hermes/state.db` | `hermes` |
+| GitHub Copilot CLI | `$COPILOT_HOME/session-state` when set; otherwise `~/.copilot/session-state` | `copilot` |
+| Hermes Agent | `state.db` in the [Hermes home](/runtimes/hermes-agent#hermes-home-and-profiles): `$HERMES_HOME` or the active profile when set; otherwise `~/.hermes/state.db` (Windows: `%LOCALAPPDATA%/hermes/state.db`) | `hermes` |
 | DeepSeek Harness | `~/.dsh/sessions` (or under `DSH_HOME`) | `dsh` |
 | fx | `~/.fx/sessions` | `fx` |
 | Grok Build | `~/.grok/sessions` | `grok` |

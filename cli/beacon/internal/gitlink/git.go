@@ -70,7 +70,12 @@ func (g Git) run(ctx context.Context, stdin []byte, args ...string) ([]byte, err
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Start()
+	if err == nil {
+		countSpawn(ctx)
+		err = cmd.Wait()
+	}
+	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}

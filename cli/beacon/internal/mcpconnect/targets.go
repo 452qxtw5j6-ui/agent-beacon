@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/claudesession"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/harness"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 )
 
 // ServerName is the name Beacon registers the Beacon Cloud MCP server under in every harness.
@@ -147,7 +150,7 @@ func Targets() []Target {
 		},
 		{
 			Name: "gemini_cli", DisplayName: "Gemini CLI", Aliases: []string{"gemini", "gemini-cli"},
-			Automatic: true, format: formatJSON, path: homePath(".gemini", "settings.json"), container: []string{"mcpServers"},
+			Automatic: true, format: formatJSON, path: func(home string) (string, error) { return harness.GeminiSettingsPath(home), nil }, container: []string{"mcpServers"},
 			entry: func(url, tokenEnv string) ordered {
 				e := ordered{{"url", url}, {"type", "http"}}
 				if tokenEnv != "" {
@@ -234,7 +237,7 @@ func Targets() []Target {
 		{
 			Name: "hermes", DisplayName: "Hermes Agent", Aliases: []string{"hermes", "hermes-agent"},
 			manual: func(url string) string {
-				return "Add to ~/.hermes/config.yaml:\n" +
+				return "Add to " + hermesConfigHint() + ":\n" +
 					"mcp_servers:\n  " + ServerName + ":\n    url: " + url + "\n    headers:\n      Authorization: \"Bearer <token>\""
 			},
 		},
@@ -301,21 +304,34 @@ func homePath(parts ...string) func(string) (string, error) {
 	}
 }
 
-// claudeConfigPath is the file `claude mcp add --scope user` writes: ~/.claude.json, or
-// .claude.json inside CLAUDE_CONFIG_DIR when that is set.
+// claudeConfigPath is the file `claude mcp add --scope user` writes: claudesession.StateFile.
 func claudeConfigPath(home string) (string, error) {
-	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
-		return filepath.Join(dir, ".claude.json"), nil
+	path := claudesession.StateFile(home)
+	if path == "" {
+		return "", errors.New("home directory is empty")
 	}
-	return filepath.Join(home, ".claude.json"), nil
+	return path, nil
 }
 
-// codexConfigPath honors CODEX_HOME, as Codex does.
+// codexConfigPath resolves CODEX_HOME exactly as Codex and Beacon's session reader do.
 func codexConfigPath(home string) (string, error) {
-	if dir := strings.TrimSpace(os.Getenv("CODEX_HOME")); dir != "" {
-		return filepath.Join(dir, "config.toml"), nil
+	dir, err := codexsession.HomeDir(home)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(home, ".codex", "config.toml"), nil
+	return filepath.Join(dir, "config.toml"), nil
+}
+
+// hermesConfigHint names the config.yaml a plain `hermes` reads, resolved through HERMES_HOME and
+// the active profile as Hermes does. When that fails, it says why instead of naming a file Hermes
+// would not read.
+func hermesConfigHint() string {
+	home, _ := os.UserHomeDir()
+	dir, err := hermessession.HomeDir(home)
+	if err != nil {
+		return "config.yaml in your Hermes home (" + err.Error() + ")"
+	}
+	return filepath.Join(dir, "config.yaml")
 }
 
 // vscodeMCPPath is the user-profile mcp.json, next to the settings.json VS Code discovery uses.

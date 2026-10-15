@@ -221,7 +221,7 @@ Install Hermes Agent hooks at the user level:
 beacon endpoint hooks install --harness hermes
 ```
 
-Hermes hooks write `~/.hermes/config.yaml` and support user-level installs only.
+Hermes hooks write `config.yaml` in the Hermes home directory, which follows `HERMES_HOME` and the active profile (default `~/.hermes/config.yaml`; see [Hermes home and profiles](/runtimes/hermes-agent#hermes-home-and-profiles)), and support user-level installs only.
 
 Install Qwen Code hooks at the user level:
 

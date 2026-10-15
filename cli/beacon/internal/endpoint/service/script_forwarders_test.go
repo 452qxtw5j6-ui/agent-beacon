@@ -97,3 +97,24 @@ func TestRestoreScriptForwardersLoadsOnlyInstalledOnes(t *testing.T) {
 		t.Errorf("launchctl calls = %v, want %v", *calls, want)
 	}
 }
+
+func TestScriptForwarderStatusesReportsOnlyInstalledForwarders(t *testing.T) {
+	_, calls := scriptForwarderFixture(t, "com.beacon.endpoint.s3-forwarder")
+
+	statuses := ScriptForwarderStatuses()
+	if len(statuses) != 1 || statuses[0].Label != "com.beacon.endpoint.s3-forwarder" {
+		t.Fatalf("statuses = %+v, want only the installed S3 forwarder", statuses)
+	}
+	if statuses[0].Loaded || statuses[0].Running || statuses[0].Message == "" {
+		t.Errorf("status = %+v, want not loaded with launchctl's message", statuses[0])
+	}
+	if want := "print system/com.beacon.endpoint.s3-forwarder"; strings.Join(*calls, "|") != want {
+		t.Errorf("launchctl calls = %v, want %q", *calls, want)
+	}
+
+	runLaunchctlCommand = func(args ...string) (string, error) { return "\tstate = running\n\tpid = 42\n", nil }
+	statuses = ScriptForwarderStatuses()
+	if len(statuses) != 1 || !statuses[0].Loaded || !statuses[0].Running {
+		t.Errorf("statuses = %+v, want the S3 forwarder loaded and running", statuses)
+	}
+}

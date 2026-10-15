@@ -285,3 +285,94 @@ func boolString(v bool) string {
 	}
 	return "false"
 }
+
+func TestListUsesRecordedWorkspaceWhenIndexDoesNotNameIt(t *testing.T) {
+	for _, tc := range []struct{ name, cwd, indexed, want string }{
+		{"recorded hyphenated workspace", "/work/my-project", "", "/work/my-project"},
+		{"index remains authoritative", "/work/my-project", "/indexed/project", "/indexed/project"},
+		{"older record without cwd", "", "", filepath.FromSlash("/work/my/project")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			project := filepath.Join(root, "-work-my-project")
+			path := filepath.Join(project, "sess-1.jsonl")
+			row := map[string]interface{}{"type": "user", "sessionId": "sess-1", "uuid": "u1", "message": map[string]interface{}{"role": "user", "content": "Review the project."}}
+			if tc.cwd != "" {
+				row["cwd"] = tc.cwd
+			}
+			data, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, path, `{ "type":"file-history-snapshot", "snapshot":{} }`+"\n"+string(data)+"\n")
+			if tc.indexed != "" {
+				index, err := json.Marshal(map[string]interface{}{"version": 1, "entries": []interface{}{map[string]interface{}{"sessionId": "sess-1", "fullPath": path, "projectPath": tc.indexed}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeFile(t, filepath.Join(project, "sessions-index.json"), string(index))
+			}
+			store, err := NewStore(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			refs, err := store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(refs) != 1 || refs[0].ProjectPath != tc.want {
+				t.Fatalf("refs=%+v, want workspace %q", refs, tc.want)
+			}
+		})
+	}
+}
+
+func TestDefaultProjectsDirFollowsClaudeConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	got, err := DefaultProjectsDir()
+	if err != nil {
+		t.Fatalf("DefaultProjectsDir: %v", err)
+	}
+	if want := filepath.Join(home, ".claude", "projects"); got != want {
+		t.Fatalf("default projects dir = %q, want %q", got, want)
+	}
+
+	config := filepath.Join(t.TempDir(), "claude-alt")
+	t.Setenv("CLAUDE_CONFIG_DIR", config)
+	got, err = DefaultProjectsDir()
+	if err != nil {
+		t.Fatalf("DefaultProjectsDir with CLAUDE_CONFIG_DIR: %v", err)
+	}
+	if want := filepath.Join(config, "projects"); got != want {
+		t.Fatalf("projects dir with CLAUDE_CONFIG_DIR = %q, want %q", got, want)
+	}
+
+	// An explicit directory still wins over the environment.
+	explicit := t.TempDir()
+	store, err := NewStore(explicit)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if store.ProjectsDir != explicit {
+		t.Fatalf("explicit dir = %q, want %q", store.ProjectsDir, explicit)
+	}
+
+	// With no explicit directory the store reads sessions from the relocated config directory.
+	project := filepath.Join(config, "projects", "-tmp-repo")
+	writeFile(t, filepath.Join(project, "sess-1.jsonl"), userLine("sess-1", "u1", "ship it")+"\n")
+	store, err = NewStore("")
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	refs, err := store.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(refs) != 1 || refs[0].ID != "sess-1" {
+		t.Fatalf("List under CLAUDE_CONFIG_DIR = %+v, want sess-1", refs)
+	}
+}

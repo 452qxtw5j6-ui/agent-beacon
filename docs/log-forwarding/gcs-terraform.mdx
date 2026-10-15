@@ -1,0 +1,234 @@
+---
+title: "Google Cloud Storage with Terraform"
+description: "Create the Cloud Storage bucket and create-only service account for Beacon forwarding with Beacon's Terraform module."
+---
+
+Use this page if you manage Google Cloud with Terraform. It covers the Google Cloud side of GCS forwarding: the bucket, the service account your Macs upload with, and the values your rollout needs. When you finish, continue with your rollout guide from the step after its Google Cloud setup.
+
+The gcloud steps in the rollout guides create the same resources. Follow either one.
+
+## What you'll set up
+
+- **A new Cloud Storage bucket just for Beacon**, with uniform bucket-level access, public access prevention enforced, versioning, and optionally your Cloud KMS key. The module always creates its own bucket and does not manage existing ones.
+- **`beacon-endpoint-writer`**, a service account that can create objects below your Beacon prefix and can't list, read, or delete them.
+- **`beacon-endpoint-reader`**, a read-only service account for checking uploads.
+
+Every Mac's forwarder writes both of Beacon's logs to the bucket:
+
+```text
+gs://<bucket>/<prefix>/runtime/date=YYYY-MM-DD/<time>-<id>.jsonl
+gs://<bucket>/<prefix>/inventory/date=YYYY-MM-DD/<time>-<id>.jsonl
+```
+
+The module is in the Beacon repository at [`terraform/gcs`](https://github.com/asymptote-labs/agent-beacon/tree/main/terraform/gcs).
+
+## Before you start
+
+| You need | Why |
+| --- | --- |
+| Terraform 1.5 or later | Runs the module. |
+| Google provider 5.0 or later | Terraform installs it during `terraform init`. |
+| A Google Cloud project, and an identity that can enable APIs, create buckets and service accounts, and set bucket IAM | Used by `terraform apply`. Terraform reads Application Default Credentials (`gcloud auth application-default login`). |
+| gcloud, signed in as that identity | Creates the writer's key in step 3. |
+| Permission to create service-account keys | The packaged forwarder authenticates with a JSON key. If your organization policy blocks keys (`iam.disableServiceAccountKeyCreation`), Beacon's GCS forwarder can't run on your Macs. |
+| A bucket name nobody else uses | Bucket names are global across Google Cloud. |
+
+## 1. Add the module
+
+Pick a root prefix such as `beacon-prod`. Beacon adds `runtime/` and `inventory/` below it, so don't put either in the prefix.
+
+Create a `main.tf` in a new directory, or add these blocks to your existing configuration. Change the project, location, bucket name, and prefix:
+
+```hcl title="main.tf"
+provider "google" {
+  project = "acme-security"
+}
+
+module "beacon_gcs" {
+  source = "github.com/asymptote-labs/agent-beacon//terraform/gcs?ref=v1.3.38"
+
+  project       = "acme-security"
+  location      = "us-west1"
+  bucket_name   = "acme-beacon-telemetry"
+  prefix        = "beacon-prod"
+  create_reader = true
+}
+
+output "bucket_name" {
+  value = module.beacon_gcs.bucket_name
+}
+
+output "prefix" {
+  value = module.beacon_gcs.prefix
+}
+
+output "writer_email" {
+  value = module.beacon_gcs.writer_email
+}
+
+output "reader_email" {
+  value = module.beacon_gcs.reader_email
+}
+```
+
+`ref` pins the module to a Beacon release. The module first shipped in `v1.3.38`, and any later release tag works too.
+
+## 2. Create the bucket and service accounts
+
+```bash
+terraform init
+terraform apply
+```
+
+Review the plan and type `yes`. It's working when the apply ends with:
+
+```text
+Apply complete! Resources: 7 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+bucket_name = "acme-beacon-telemetry"
+prefix = "beacon-prod"
+reader_email = "beacon-endpoint-reader@acme-security.iam.gserviceaccount.com"
+writer_email = "beacon-endpoint-writer@acme-security.iam.gserviceaccount.com"
+```
+
+The module enables the Cloud Storage and IAM APIs on the project if they're off, and leaves them on if you destroy it later.
+
+Save the values as shell variables for the next steps. The rollout guides use the same names:
+
+```bash
+export GCP_PROJECT="acme-security"
+export BEACON_GCS_BUCKET="$(terraform output -raw bucket_name)"
+export BEACON_GCS_PREFIX="$(terraform output -raw prefix)"
+export BEACON_GCS_STORAGE_CLASS="STANDARD"
+export BEACON_GCS_WRITER_EMAIL="$(terraform output -raw writer_email)"
+export BEACON_GCS_WRITER="${BEACON_GCS_WRITER_EMAIL%%@*}"
+export BEACON_GCS_READER_EMAIL="$(terraform output -raw reader_email)"
+```
+
+## 3. Create the writer's key
+
+The module doesn't create keys by default, because Terraform would store the private key in its state file. Create the key with gcloud:
+
+```bash
+umask 077
+gcloud iam service-accounts keys create "./${BEACON_GCS_WRITER}.json" \
+  --project "$GCP_PROJECT" \
+  --iam-account "$BEACON_GCS_WRITER_EMAIL"
+```
+
+Deliver the JSON file to each Mac with your MDM's secret or file delivery, to a root-owned path outside Beacon's directories, with mode `0600`. Your rollout guide covers this step for your MDM. Then delete the local copy.
+
+## 4. Give the values to your rollout
+
+| Value | Jamf script parameter | `install-forwarder.sh` |
+| --- | --- | --- |
+| `bucket_name` | 4 | `BEACON_GCS_BUCKET` |
+| `prefix` | 5 | `BEACON_GCS_PREFIX` |
+| Storage class (`STANDARD`) | 6 | `BEACON_GCS_STORAGE_CLASS` |
+| Path of the key file on the Mac | 8 | `GOOGLE_APPLICATION_CREDENTIALS` |
+
+Then continue with your rollout:
+
+| Rollout | Continue at |
+| --- | --- |
+| Jamf Pro | [Claude with Jamf and GCS, step 2](/guides/jamf-gcs-mdm#2-deliver-the-writer-credential) |
+| Rippling | [Claude with Rippling and GCS, step 2](/guides/rippling-gcs-mdm#2-create-and-deliver-the-writer-credential), from "Use this endpoint path" |
+| One Mac without MDM | [macOS object storage forwarding](/guides/macos-object-storage-system), from "Install the JSON outside Beacon-managed directories" under Google Cloud Storage |
+| Linux | [`beacon endpoint gcs install-pack`](/cli/gcs) |
+
+## 5. Confirm delivery
+
+After the forwarder is running on a Mac, write a test event there:
+
+```bash
+sudo /opt/beacon/bin/beacon endpoint gcs validate --system
+```
+
+The forwarder uploads in batches, so allow up to five minutes. Then list the objects as the reader, because the writer can't list the bucket. Impersonating the reader needs `roles/iam.serviceAccountTokenCreator` on it; you can also list with your own identity if it can read the bucket.
+
+```bash
+gcloud storage ls "gs://${BEACON_GCS_BUCKET}/${BEACON_GCS_PREFIX}/runtime/**" \
+  --impersonate-service-account "$BEACON_GCS_READER_EMAIL"
+```
+
+## Options
+
+Set any of these in the `module "beacon_gcs"` block and run `terraform apply` again. Every input is described in [`variables.tf`](https://github.com/asymptote-labs/agent-beacon/blob/main/terraform/gcs/variables.tf).
+
+<AccordionGroup>
+  <Accordion title="Encrypt with your own Cloud KMS key">
+    ```hcl
+    kms_key_name = "projects/acme-security/locations/us-west1/keyRings/beacon/cryptoKeys/telemetry"
+    ```
+
+    The key becomes the bucket's default encryption. Cloud Storage encrypts with its own service agent, so the module grants that agent `roles/cloudkms.cryptoKeyEncrypterDecrypter` on the key. Set `grant_kms_to_storage_agent = false` if you manage the key's IAM elsewhere. The writer needs no KMS permission.
+  </Accordion>
+  <Accordion title="Delete old objects">
+    ```hcl
+    expiration_days = 365
+    ```
+
+    Objects below the prefix are deleted a year after upload. Versioning is on by default, so a deleted or replaced object stays recoverable for `noncurrent_version_expiration_days` (default 30). Set `versioning_enabled = false` to turn versioning off.
+  </Accordion>
+  <Accordion title="Create the writer's key with Terraform">
+    ```hcl
+    create_writer_key = true
+    ```
+
+    Read it with `terraform output -raw writer_private_key | base64 --decode > beacon-gcs-writer.json` after adding a matching `output` block. The private key is stored in Terraform state, so use this only when your state is encrypted and access is restricted.
+  </Accordion>
+  <Accordion title="Match your organization's naming">
+    - `writer_account_id` and `reader_account_id` rename the service accounts.
+    - `labels` labels the bucket.
+    - `enable_apis = false` skips enabling the APIs, for projects where they're managed elsewhere.
+  </Accordion>
+</AccordionGroup>
+
+## Outputs
+
+| Output | What it is |
+| --- | --- |
+| `bucket_name`, `prefix`, `storage_class` | The forwarder settings, also together as `forwarder_settings` |
+| `bucket_url` | `gs://<bucket>/<prefix>/` |
+| `writer_email` | The service account every Mac uploads as |
+| `reader_email` | The read-only service account, when `create_reader = true` |
+| `writer_private_key` | Only with `create_writer_key = true` |
+
+## Rotate the writer key
+
+Rotation happens outside Terraform. Create a new key, deliver it to every Mac, restart the forwarder, confirm a new object arrives, and then delete the old key. Your rollout guide has the exact commands under credential rotation.
+
+## Remove
+
+1. Remove the forwarder from your Macs. Uninstalling Beacon removes it.
+2. Run `terraform destroy`. Deleting the writer service account also deletes its keys. Destroy stops at a bucket that still holds objects. To delete the telemetry too, set `force_destroy = true`, run `terraform apply`, and then destroy.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="The bucket name is already taken">
+    Someone else, in any project, already has a bucket with that name. Choose another `bucket_name`.
+  </Accordion>
+  <Accordion title="Uploads fail with 403">
+    Check that the forwarder's bucket and prefix match the Terraform outputs exactly. The writer can only create objects below `<prefix>/`.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Claude with Jamf and GCS" icon="bucket" href="/guides/jamf-gcs-mdm">
+    Roll out Beacon with Jamf Pro and forward to Cloud Storage.
+  </Card>
+  <Card title="Claude with Rippling and GCS" icon="bucket" href="/guides/rippling-gcs-mdm">
+    Roll out Beacon with Rippling and forward to Cloud Storage.
+  </Card>
+  <Card title="AWS S3 with Terraform" icon="bucket" href="/log-forwarding/aws-s3-terraform">
+    The same setup for an S3 bucket.
+  </Card>
+  <Card title="Object storage forwarding" icon="chart-line" href="/guides/macos-object-storage-system">
+    Forward to S3, Cloud Storage, or both from one Mac.
+  </Card>
+</Columns>

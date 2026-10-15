@@ -25,6 +25,8 @@ beacon endpoint traces [command]
 
 The commands read local files only and do not contact the network.
 
+Plain-text list, search, and show metadata rows collapse line breaks, tabs, and other whitespace to single spaces so each result stays on one row. JSON output retains the original text, and show keeps multiline text and commands in its indented event details.
+
 ## Local history
 
 The runtime log rotates after about 60 MB, which is a day or two of activity on a busy machine. Without a local history, trace commands can only see what is still in the log.
@@ -108,10 +110,12 @@ All commands accept:
 
 | Flag | Description |
 |------|-------------|
-| `--offset <n>` | Start at this event number. Defaults to `1` |
+| `--offset <n>` | Start at this position in the filtered events. Defaults to `1` |
 | `--around-event <n>` | Center output around this event number |
 | `--before <n>` | Events before `--around-event`. Defaults to `3` |
 | `--after <n>` | Events after `--around-event`. Defaults to `3` |
+
+With `--event-type`, `--around-event` still takes the original event number, and `--before` and `--after` count matching events.
 
 ## Examples
 

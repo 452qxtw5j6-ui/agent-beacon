@@ -1,0 +1,239 @@
+---
+title: "AWS S3 with Terraform"
+description: "Create the S3 bucket and write-only IAM user for Beacon forwarding with Beacon's Terraform module."
+---
+
+Use this page if you manage AWS with Terraform. It covers the AWS side of S3 forwarding: the bucket, the identity your Macs upload with, and the values your rollout needs. When you finish, continue with your rollout guide from the step after its AWS setup.
+
+The AWS CLI steps in the rollout guides create the same resources. Follow either one.
+
+## What you'll set up
+
+- **A new S3 bucket just for Beacon**, with public access blocked, ACLs disabled, HTTPS required, default encryption (SSE-S3, or SSE-KMS with your key), and versioning. The module always creates its own bucket and does not manage existing ones.
+- **`beacon-endpoint-writer`**, an IAM user that can upload objects below your Beacon prefix and can't read or delete them.
+
+Every Mac's forwarder writes both of Beacon's logs to the bucket:
+
+```text
+s3://<bucket>/<prefix>/runtime/date=YYYY-MM-DD/<time>-<id>.jsonl.gz
+s3://<bucket>/<prefix>/inventory/date=YYYY-MM-DD/<time>-<id>.jsonl.gz
+```
+
+The module is in the Beacon repository at [`terraform/aws-s3`](https://github.com/asymptote-labs/agent-beacon/tree/main/terraform/aws-s3).
+
+## Before you start
+
+| You need | Why |
+| --- | --- |
+| Terraform 1.5 or later | Runs the module. |
+| AWS provider 5.0 or later | Terraform installs it during `terraform init`. |
+| An AWS identity that can create S3 buckets, IAM users, and IAM user policies | Used by `terraform apply`. |
+| The AWS CLI, signed in as that identity | Creates the writer's access key in step 3. |
+| A bucket name nobody else uses | S3 bucket names are global across all AWS accounts. |
+
+## 1. Add the module
+
+Pick a root prefix such as `beacon-prod`. Beacon adds `runtime/` and `inventory/` below it, so don't put either in the prefix.
+
+Create a `main.tf` in a new directory, or add these blocks to your existing configuration. Change the region, bucket name, and prefix:
+
+```hcl title="main.tf"
+provider "aws" {
+  region = "us-west-2"
+}
+
+module "beacon_s3" {
+  source = "github.com/asymptote-labs/agent-beacon//terraform/aws-s3?ref=v1.3.38"
+
+  bucket_name = "acme-beacon-telemetry"
+  prefix      = "beacon-prod"
+}
+
+output "bucket_name" {
+  value = module.beacon_s3.bucket_name
+}
+
+output "region" {
+  value = module.beacon_s3.region
+}
+
+output "prefix" {
+  value = module.beacon_s3.prefix
+}
+
+output "writer_user_name" {
+  value = module.beacon_s3.writer_user_name
+}
+```
+
+The bucket is created in the provider's region. `ref` pins the module to a Beacon release. The module first shipped in `v1.3.38`, and any later release tag works too.
+
+## 2. Create the bucket and writer
+
+```bash
+terraform init
+terraform apply
+```
+
+Review the plan and type `yes`. It's working when the apply ends with:
+
+```text
+Apply complete! Resources: 9 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+bucket_name = "acme-beacon-telemetry"
+prefix = "beacon-prod"
+region = "us-west-2"
+writer_user_name = "beacon-endpoint-writer"
+```
+
+Save the values as shell variables for the next steps. The rollout guides use the same names:
+
+```bash
+export BEACON_S3_BUCKET="$(terraform output -raw bucket_name)"
+export AWS_REGION="$(terraform output -raw region)"
+export BEACON_S3_PREFIX="$(terraform output -raw prefix)"
+export BEACON_S3_STORAGE_CLASS="STANDARD"
+export BEACON_S3_WRITER="$(terraform output -raw writer_user_name)"
+```
+
+## 3. Create the writer's access key
+
+The module doesn't create access keys by default, because Terraform would store the secret in its state file. Create the key with the AWS CLI:
+
+```bash
+aws iam create-access-key --user-name "$BEACON_S3_WRITER" --output json
+```
+
+AWS shows the secret only once. Store `AccessKeyId` and `SecretAccessKey` in your password manager or MDM secret store. The key starts with `AKIA` and doesn't expire, so the forwarder keeps uploading without anyone renewing a credential.
+
+## 4. Give the values to your rollout
+
+| Value | Fleet admin helper | Jamf script parameter | `install-forwarder.sh` |
+| --- | --- | --- | --- |
+| `bucket_name` | `BEACON_S3_BUCKET` | 4 | `BEACON_S3_BUCKET` |
+| `region` | `AWS_REGION` | 5 | `AWS_REGION` |
+| `prefix` | `BEACON_S3_PREFIX` | 6 | `BEACON_S3_PREFIX` |
+| Storage class (`STANDARD`) | `BEACON_S3_STORAGE_CLASS` | 7 | `BEACON_S3_STORAGE_CLASS` |
+| Access key from step 3 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Your Jamf secret injection | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
+
+Then continue with your rollout:
+
+| Rollout | Continue at |
+| --- | --- |
+| Fleet | [Beacon with Fleet and S3, step 3](/guides/fleet-s3-mdm#3-set-up-fleet) |
+| Jamf Pro | [Claude with Jamf and S3, Jamf policy setup](/guides/jamf-s3-mdm#jamf-policy-setup) |
+| One Mac without MDM | [macOS object storage forwarding](/guides/macos-object-storage-system), the `install-forwarder.sh` command under AWS S3 |
+| Linux | [`beacon endpoint s3 install-pack`](/cli/s3#beacon-endpoint-s3-install-pack) |
+
+## 5. Confirm delivery
+
+After the forwarder is running on a Mac, write a test event there:
+
+```bash
+sudo /opt/beacon/bin/beacon endpoint s3 validate --system
+```
+
+The forwarder uploads in batches, so allow up to five minutes. Then list the objects with your own AWS identity, because the writer can't read the bucket:
+
+```bash
+aws s3 ls "s3://${BEACON_S3_BUCKET}/${BEACON_S3_PREFIX}/runtime/" --recursive --region "$AWS_REGION"
+```
+
+## Options
+
+Set any of these in the `module "beacon_s3"` block and run `terraform apply` again. Every input is described in [`variables.tf`](https://github.com/asymptote-labs/agent-beacon/blob/main/terraform/aws-s3/variables.tf).
+
+<AccordionGroup>
+  <Accordion title="Encrypt with your own KMS key">
+    ```hcl
+    kms_key_arn = "arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+    ```
+
+    The bucket uses SSE-KMS with an S3 Bucket Key. The writer gets `kms:GenerateDataKey` on the key. The key's own policy must allow IAM policies in your account to grant access, which the default key policy does.
+  </Accordion>
+  <Accordion title="Delete old objects">
+    ```hcl
+    expiration_days = 365
+    ```
+
+    Objects below the prefix are deleted a year after upload. Versioning is on by default, so a deleted or replaced object stays recoverable for `noncurrent_version_expiration_days` (default 30). Set `versioning_enabled = false` to turn versioning off.
+  </Accordion>
+  <Accordion title="Create the access key with Terraform">
+    ```hcl
+    create_writer_access_key = true
+    ```
+
+    Terraform creates the writer's key. Read the secret with `terraform output -raw writer_secret_access_key` after adding a matching `output` block. The secret is stored in Terraform state, so use this only when your state is encrypted and access is restricted.
+  </Accordion>
+  <Accordion title="Match your organization's IAM rules">
+    - `writer_user_name` renames the writer.
+    - `iam_path` puts it under a path such as `/beacon/`.
+    - `permissions_boundary_arn` attaches a permissions boundary to it.
+    - `tags` tags every resource the module creates.
+  </Accordion>
+  <Accordion title="Drop the health-check permission">
+    ```hcl
+    allow_writer_healthcheck = false
+    ```
+
+    By default the writer also has `s3:ListBucket`, which the forwarder's startup check needs. Without it, uploads still work, but the forwarder logs a health-check error each time it starts. `s3:ListBucket` lets the writer see object names, never their contents.
+  </Accordion>
+</AccordionGroup>
+
+## Outputs
+
+| Output | What it is |
+| --- | --- |
+| `bucket_name`, `region`, `prefix`, `storage_class` | The forwarder settings, also together as `forwarder_settings` |
+| `writer_user_name`, `writer_user_arn` | The IAM user every Mac uploads as |
+| `writer_access_key_id`, `writer_secret_access_key` | Only with `create_writer_access_key = true` |
+
+## Rotate the writer key
+
+Rotation happens outside Terraform. IAM allows two keys per user, so the old key keeps working while you roll out the new one.
+
+1. Create a second key: `aws iam create-access-key --user-name "$BEACON_S3_WRITER"`.
+2. Give the new key to your rollout and rerun its forwarder setup on every Mac. In Fleet, update the two secret variables and rerun `beacon-configure-s3-forwarding.sh`.
+3. When every Mac has the new key, delete the old one: `aws iam delete-access-key --user-name "$BEACON_S3_WRITER" --access-key-id <old key id>`.
+
+## Remove
+
+1. Remove the forwarder from your Macs. Uninstalling Beacon removes it.
+2. Delete the access keys you created with the AWS CLI. IAM refuses to delete a user that still has keys:
+
+   ```bash
+   aws iam list-access-keys --user-name "$BEACON_S3_WRITER"
+   aws iam delete-access-key --user-name "$BEACON_S3_WRITER" --access-key-id <key id>
+   ```
+
+3. Run `terraform destroy`. It stops at a bucket that still holds objects. To delete the telemetry too, set `force_destroy = true`, run `terraform apply`, and then destroy.
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="BucketAlreadyExists">
+    Someone else, in any AWS account, already has a bucket with that name. Choose another `bucket_name`.
+  </Accordion>
+  <Accordion title="DeleteConflict: Cannot delete entity, must delete access keys first">
+    `terraform destroy` or a rename is trying to delete an IAM user that still has a key you created with the AWS CLI. Delete the key first. See [Remove](#remove).
+  </Accordion>
+  <Accordion title="Uploads fail with AccessDenied">
+    Check that the forwarder's bucket, region, and prefix match the Terraform outputs exactly. The writer can only upload below `<prefix>/`.
+  </Accordion>
+</AccordionGroup>
+
+## Related
+
+<Columns cols={2}>
+  <Card title="Beacon with Fleet and S3" icon="bucket" href="/guides/fleet-s3-mdm">
+    Roll out Beacon with Fleet and forward to S3.
+  </Card>
+  <Card title="Claude with Jamf and S3" icon="bucket" href="/guides/jamf-s3-mdm">
+    Roll out Beacon with Jamf Pro and forward to S3.
+  </Card>
+  <Card title="Google Cloud Storage with Terraform" icon="cloud" href="/log-forwarding/gcs-terraform">
+    The same setup for a Cloud Storage bucket.
+  </Card>
+</Columns>

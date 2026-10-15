@@ -8,12 +8,72 @@ import (
 	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
+	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve/filelock"
 )
 
 var stateMutex sync.Mutex
 
+// lockState serializes access to the platform's state file. Hooks run as separate processes, one per
+// event, so the in-process mutex is not enough: without the file lock two concurrent hooks read the same
+// state and the later write drops the earlier one's change. The lock is advisory, taken on a sibling
+// file so that replacing state.json never invalidates it. If the lock file cannot be opened the caller
+// proceeds without cross-process exclusion, as before, rather than failing a hook.
+func lockState(platform string) (unlock func()) {
+	stateMutex.Lock()
+	if err := config.EnsureStateDir(platform); err != nil {
+		return stateMutex.Unlock
+	}
+	file, err := os.OpenFile(filepath.Join(config.GetStateDir(platform), "state.json.lock"), os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return stateMutex.Unlock
+	}
+	held, err := filelock.Exclusive(file)
+	if err != nil {
+		_ = file.Close()
+		return stateMutex.Unlock
+	}
+	return func() {
+		_ = held.Release()
+		_ = file.Close()
+		stateMutex.Unlock()
+	}
+}
+
+// writeStateFile replaces path through a uniquely named temporary file, so concurrent writers never
+// share one and a reader never sees a partial file.
+func writeStateFile(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "state.json.*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
 const (
 	staleEvaluationTTLHours = 2
+	// replyMarkerTTL is how long a session's last recorded reply is remembered. A Stop that
+	// re-fires over an unchanged transcript after that writes the reply again, which costs one
+	// duplicate event rather than an unbounded state file.
+	replyMarkerTTL = 14 * 24 * time.Hour
 )
 
 // Evaluation represents a pending evaluation
@@ -29,7 +89,14 @@ type SessionData struct {
 	RepromptCount int          `json:"reprompt_count"`
 	Model         string       `json:"model,omitempty"`
 	PromptEmitted bool         `json:"prompt_emitted,omitempty"`
-	CreatedAt     string       `json:"created_at,omitempty"`
+	// LastReplyID names the last assistant reply a hook recorded for this session, so a reply read
+	// from a transcript that has not moved since the previous turn is not recorded twice.
+	LastReplyID string `json:"last_reply_id,omitempty"`
+	// LastReplyAt is when LastReplyID was recorded. Stale-session cleanup keeps a session whose
+	// reply marker is younger than replyMarkerTTL, so the dedupe outlives the two-hour evaluation
+	// window that every other session field is cleaned up on.
+	LastReplyAt string `json:"last_reply_at,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
 // SessionState manages session state
@@ -72,13 +139,7 @@ func (s *SessionState) saveStateFile(state map[string]*SessionData) error {
 		return err
 	}
 
-	// Write to temp file first, then rename (atomic)
-	tmpPath := s.stateFilePath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
-		return err
-	}
-
-	return os.Rename(tmpPath, s.stateFilePath)
+	return writeStateFile(s.stateFilePath, data)
 }
 
 func (s *SessionState) ensureSession(state map[string]*SessionData) {
@@ -93,8 +154,7 @@ func (s *SessionState) ensureSession(state map[string]*SessionData) {
 
 // SetModel stores the AI model name for this session
 func (s *SessionState) SetModel(model string) error {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -104,8 +164,7 @@ func (s *SessionState) SetModel(model string) error {
 
 // GetModel returns the AI model name for this session
 func (s *SessionState) GetModel() string {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	if sessionData, ok := state[s.sessionID]; ok {
@@ -115,8 +174,7 @@ func (s *SessionState) GetModel() string {
 }
 
 func (s *SessionState) HasPromptEmitted() bool {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	if sessionData, ok := state[s.sessionID]; ok {
@@ -126,8 +184,7 @@ func (s *SessionState) HasPromptEmitted() bool {
 }
 
 func (s *SessionState) SetPromptEmitted() error {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -136,8 +193,7 @@ func (s *SessionState) SetPromptEmitted() error {
 }
 
 func (s *SessionState) MarkPromptEmittedIfNeeded() (bool, error) {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -151,10 +207,28 @@ func (s *SessionState) MarkPromptEmittedIfNeeded() (bool, error) {
 	return true, nil
 }
 
+// MarkReplyRecorded records id as the session's last recorded assistant reply. It reports false,
+// and changes nothing, when id is already the last one recorded, so a caller writes a reply at
+// most once even when two Stop hooks of one session race.
+func (s *SessionState) MarkReplyRecorded(id string) (bool, error) {
+	defer lockState(s.platform)()
+
+	state := s.loadStateFile()
+	s.ensureSession(state)
+	if state[s.sessionID].LastReplyID == id {
+		return false, nil
+	}
+	state[s.sessionID].LastReplyID = id
+	state[s.sessionID].LastReplyAt = time.Now().UTC().Format(time.RFC3339)
+	if err := s.saveStateFile(state); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // AddEvaluation adds a new pending evaluation
 func (s *SessionState) AddEvaluation(evaluationID, filePath string) error {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -170,8 +244,7 @@ func (s *SessionState) AddEvaluation(evaluationID, filePath string) error {
 
 // GetPendingEvaluations returns pending evaluations for this session
 func (s *SessionState) GetPendingEvaluations() []Evaluation {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	if sessionData, ok := state[s.sessionID]; ok {
@@ -182,8 +255,7 @@ func (s *SessionState) GetPendingEvaluations() []Evaluation {
 
 // ClearEvaluations removes all evaluations for this session
 func (s *SessionState) ClearEvaluations() error {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -193,8 +265,7 @@ func (s *SessionState) ClearEvaluations() error {
 
 // GetRepromptCount returns the current re-prompt count
 func (s *SessionState) GetRepromptCount() int {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	if sessionData, ok := state[s.sessionID]; ok {
@@ -205,8 +276,7 @@ func (s *SessionState) GetRepromptCount() int {
 
 // IncrementRepromptCount increments and returns the re-prompt count
 func (s *SessionState) IncrementRepromptCount() (int, error) {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -220,8 +290,7 @@ func (s *SessionState) IncrementRepromptCount() (int, error) {
 
 // ResetRepromptCount resets the re-prompt count to 0
 func (s *SessionState) ResetRepromptCount() error {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
 	s.ensureSession(state)
@@ -231,8 +300,7 @@ func (s *SessionState) ResetRepromptCount() error {
 
 // CleanupStaleForPlatform removes stale evaluations for the given platform
 func CleanupStaleForPlatform(platform string) int {
-	stateMutex.Lock()
-	defer stateMutex.Unlock()
+	defer lockState(platform)()
 
 	stateFilePath := filepath.Join(config.GetStateDir(platform), "state.json")
 
@@ -267,7 +335,7 @@ func CleanupStaleForPlatform(platform string) int {
 		sessionData.Evaluations = freshEvals
 
 		// Mark empty sessions for removal only if they are stale
-		if len(freshEvals) == 0 && sessionData.RepromptCount == 0 {
+		if len(freshEvals) == 0 && sessionData.RepromptCount == 0 && !sessionData.hasRecentReplyMarker() {
 			createdAt, err := time.Parse(time.RFC3339, sessionData.CreatedAt)
 			if err != nil || createdAt.Before(cutoff) {
 				sessionsToRemove = append(sessionsToRemove, sessionID)
@@ -285,12 +353,18 @@ func CleanupStaleForPlatform(platform string) int {
 		config.EnsureStateDir(platform)
 		jsonData, err := json.MarshalIndent(state, "", "  ")
 		if err == nil {
-			tmpPath := stateFilePath + ".tmp"
-			if err := os.WriteFile(tmpPath, jsonData, 0644); err == nil {
-				os.Rename(tmpPath, stateFilePath)
-			}
+			_ = writeStateFile(stateFilePath, jsonData)
 		}
 	}
 
 	return removedCount
+}
+
+// hasRecentReplyMarker reports whether the session recorded a reply within replyMarkerTTL.
+func (d *SessionData) hasRecentReplyMarker() bool {
+	if d.LastReplyID == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, d.LastReplyAt)
+	return err == nil && time.Since(at) < replyMarkerTTL
 }

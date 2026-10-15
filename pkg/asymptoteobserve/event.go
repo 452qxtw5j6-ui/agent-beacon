@@ -570,12 +570,15 @@ type UserAgentInfo struct {
 // VCSInfo is version-control context in the OpenTelemetry VCS semantic convention shape
 // (vcs.ref.head.revision, vcs.ref.head.name, vcs.ref.head.type, vcs.repository.url.full).
 // Attribution is Beacon's own and has no semconv equivalent: on a session.commit_linked event it
-// records how the commit was matched to the session. Everything here is metadata -- identifiers and
-// counts, never file contents or commit messages -- so it survives metadata-only retention.
+// records how the commit was matched to the session. Hook is Beacon's own too: on a
+// git.hook_budget_exceeded event it records a git hook run that ran out of time. Everything here is
+// metadata -- identifiers, names and counts, never file contents or commit messages -- so it
+// survives metadata-only retention.
 type VCSInfo struct {
 	Ref         *VCSRefInfo         `json:"ref,omitempty"`
 	Repository  *VCSRepositoryInfo  `json:"repository,omitempty"`
 	Attribution *VCSAttributionInfo `json:"attribution,omitempty"`
+	Hook        *VCSHookInfo        `json:"hook,omitempty"`
 }
 
 type VCSRefInfo struct {
@@ -607,6 +610,22 @@ type VCSAttributionInfo struct {
 	Method       string `json:"method,omitempty"`
 	ChangedFiles int    `json:"changed_files,omitempty"`
 	MatchedFiles int    `json:"matched_files,omitempty"`
+}
+
+// VCSHookInfo is one run of a Beacon git hook that ran past its time budget. Name is the hook
+// (post-commit, post-rewrite, pre-push) and Phase the step it was in when its time ran out.
+// ElapsedMS is the whole run, PhaseElapsedMS the part of it spent in Phase, and GitSpawns how many
+// git processes the run started. CutShort is true when running out of time left the hook's work
+// undone (for post-commit, a commit left unlinked or a link event unrecorded); false means the
+// work finished, late.
+type VCSHookInfo struct {
+	Name           string `json:"name,omitempty"`
+	Phase          string `json:"phase,omitempty"`
+	BudgetMS       int64  `json:"budget_ms,omitempty"`
+	ElapsedMS      int64  `json:"elapsed_ms,omitempty"`
+	PhaseElapsedMS int64  `json:"phase_elapsed_ms,omitempty"`
+	GitSpawns      int64  `json:"git_spawns,omitempty"`
+	CutShort       bool   `json:"cut_short,omitempty"`
 }
 
 type HealthInfo struct {

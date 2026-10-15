@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -91,6 +92,17 @@ func AppendEvent(event schema.Event, opts Options) (string, error) {
 		}
 	}
 	if len(data) > opts.MaxBytes {
+		// Retained content is the next thing to go after raw, as in the hook adapter and the
+		// collector exporter. Each string is capped but their number is not (a multi-edit's
+		// arguments, a long todo list), and an error here makes a session sweep stop at the line
+		// and meet it again on every later sweep.
+		compactRetainedContent(&event)
+		data, err = json.Marshal(event)
+		if err != nil {
+			return "", err
+		}
+	}
+	if len(data) > opts.MaxBytes {
 		return "", fmt.Errorf("event exceeds maximum size after truncation: %d bytes", len(data))
 	}
 	// Stamped last, over the bytes that are actually about to be written, so the
@@ -109,16 +121,42 @@ func AppendEvent(event schema.Event, opts Options) (string, error) {
 		}
 	}
 	line := append(data, '\n')
-	if opts.Budget != nil && !opts.Budget.reserve(int64(len(line))) {
-		return "", ErrBudgetSpent
-	}
-	if err := appendJSONL(opts.Path, line, opts.RotateSize, opts.RotateArchives, opts.Guard); err != nil {
-		if opts.Budget != nil {
-			opts.Budget.release(int64(len(line)))
-		}
+	if err := appendJSONL(opts.Path, line, opts.RotateSize, opts.RotateArchives, opts.Guard, opts.Budget); err != nil {
 		return "", err
 	}
 	return opts.Path, nil
+}
+
+// compactRetainedContent drops an event's retained text and records that it did, so a reader can
+// still tell what the event was about and that its content was held back rather than never
+// captured. Mirrors the collector exporter's step of the same name.
+func compactRetainedContent(event *schema.Event) {
+	if event.File != nil {
+		event.File.Diff = ""
+	}
+	if event.Command != nil {
+		event.Command.Output = ""
+	}
+	if event.Prompt != nil {
+		event.Prompt.Text = ""
+	}
+	if event.GenAI != nil {
+		event.GenAI.Input = nil
+		event.GenAI.Output = nil
+		if event.GenAI.Tool != nil && event.GenAI.Tool.Call != nil {
+			event.GenAI.Tool.Call.Arguments = nil
+			event.GenAI.Tool.Call.Result = nil
+		}
+		// An event whose only gen_ai content was the turn text drops the object rather than
+		// writing "gen_ai":{}, as the exporter does.
+		if reflect.ValueOf(*event.GenAI).IsZero() {
+			event.GenAI = nil
+		}
+	}
+	if event.Content != nil {
+		event.Content.Included = false
+		event.Content.Truncated = true
+	}
 }
 
 // EnsureSystemLogWritable prepares a machine-wide runtime log so the people whose agent sessions
@@ -217,7 +255,7 @@ func SanitizeEvent(event schema.Event, maxBytes int) schema.Event {
 }
 
 // Keep this rotation and file-mode contract mirrored with the hook adapter and beaconjson exporter.
-func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int, guard *RetentionGuard) error {
+func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int, guard *RetentionGuard, budget *Budget) (err error) {
 	_, dirMode, _ := asymptoteobserve.RuntimeLogModes(path)
 	if err := os.MkdirAll(filepath.Dir(path), dirMode); err != nil {
 		return err
@@ -239,6 +277,18 @@ func appendJSONL(path string, line []byte, rotateBytes int64, rotateArchives int
 	defer held.Release()
 	if asymptoteobserve.IsDuplicateEndpointEvent(path, line, asymptoteobserve.EndpointDuplicateWindow) {
 		return nil
+	}
+	// A replay adds no bytes. Reserve only after the duplicate check under the
+	// existing log lock, so suppressed events cannot spend backfill capacity.
+	if budget != nil {
+		if !budget.reserve(int64(len(line))) {
+			return ErrBudgetSpent
+		}
+		defer func() {
+			if err != nil {
+				budget.release(int64(len(line)))
+			}
+		}()
 	}
 	if guard != nil {
 		// Decided under the lock, so no other Beacon writer can rotate between the check and the

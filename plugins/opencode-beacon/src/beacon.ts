@@ -173,9 +173,12 @@ export const BeaconEndpointPlugin = async ({ project, directory, worktree, clien
     const next = structuredClone(part)
     const delta = partDeltas.get(key)
     if ((next.type === "text" || next.type === "reasoning") && !next.text && delta) next.text = delta
+    if ((next.type === "text" || next.type === "reasoning") && typeof next.text === "string") partDeltas.set(key, next.text)
     if (next.type === "tool") {
       const status = next.state?.status
       if (status !== "completed" && status !== "error") return
+      // A failed tool never reaches tool.execute.after, which is what releases its arguments.
+      if (status === "error") activeCalls.delete(next.callID)
       if (status === "completed" && completedCalls.has(next.callID)) return
     } else if (next.type === "text" || next.type === "reasoning") {
       if (next.type === "text") {
@@ -327,8 +330,12 @@ export const BeaconEndpointPlugin = async ({ project, directory, worktree, clien
         }
       }
       if (type === "message.part.delta") {
+        if (properties?.field && properties.field !== "text") return
         const key = `${sid}:${properties?.messageID || ""}:${properties?.partID || ""}`
-        partDeltas.set(key, (partDeltas.get(key) || "") + (properties?.delta || ""))
+        const text = (partDeltas.get(key) || "") + (properties?.delta || "")
+        partDeltas.set(key, text)
+        const pending = pendingParts.get(key)
+        if (pending && (pending.part.type === "text" || pending.part.type === "reasoning")) pending.part.text = text
         return
       }
       if (type === "message.part.updated") {
@@ -603,7 +610,7 @@ export default {
     return async () => {
       controller.abort()
       await consuming
-      await Promise.all(registrations.map((item) => Promise.resolve(item.dispose?.()).catch(() => undefined)))
+      await Promise.all(registrations.map((item) => Promise.resolve().then(() => item.dispose?.()).catch(() => undefined)))
     }
   },
 }

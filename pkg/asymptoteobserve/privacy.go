@@ -2,9 +2,12 @@ package asymptoteobserve
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 const (
@@ -334,7 +337,7 @@ var redactionRules = concatRules([]redactionRule{
 	rule(`\b(AIza)[0-9A-Za-z_-]{35}`, "${1}"+redactedValue, nil, "AIza"),                                        // Google API key
 	rule(`\b(npm_)[A-Za-z0-9]{36}`, "${1}"+redactedValue, nil, "npm_"),                                          // npm
 	rule(`\b(hf_)[A-Za-z0-9]{30,}`, "${1}"+redactedValue, nil, "hf_"),                                           // Hugging Face
-	rule(`\b(bcn_(?:api|device|mcp)_)[A-Za-z0-9_-]{8,}`, "${1}"+redactedValue, nil, "bcn_"),                     // Beacon's own keys
+	rule(`\b(bcn_(?:api|device|mcp|enfdev)_)[A-Za-z0-9_-]{8,}`, "${1}"+redactedValue, nil, "bcn_"),              // Beacon's own keys
 	rule(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`, "${1}"+redactedValue, nil, "eyJ"), // JWT
 })
 
@@ -416,12 +419,12 @@ func redactString(value string, gated bool) string {
 	// repeated bare copies in the same retained prompt/output are also removed.
 	// This is common in model reasoning that quotes `token=value` and later
 	// refers to `value` by itself.
-	var assigned []string
+	assigned := map[string]struct{}{}
 	if text.holds(redactLabelNeedles) {
 		for _, match := range redactAssignedPattern().FindAllStringSubmatch(value, -1) {
 			copied := strings.Join(match[1:], "")
 			if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
-				assigned = append(assigned, copied)
+				assigned[copied] = struct{}{}
 			}
 		}
 	}
@@ -433,10 +436,35 @@ func redactString(value string, gated bool) string {
 	}
 	value = text.value
 	// Each copy is searched for and removed; none of it survives into the result.
-	for _, copied := range assigned {
-		value = strings.ReplaceAll(value, copied, redactedValue)
+	return replaceAssigned(value, assigned)
+}
+
+// replaceAssigned replaces every copy of each assigned value with redactedValue in one pass.
+// Replacing them one strings.ReplaceAll at a time scanned the text once per assignment, and both
+// grow with the text, so the cost was quadratic: Beacon Cloud redacts uploaded shared traces with
+// this function, where that let a small gzip body hold a core for minutes. The values are a set,
+// longest first, so where two start at the same byte the longer is removed whole.
+func replaceAssigned(value string, assigned map[string]struct{}) string {
+	if len(assigned) == 0 {
+		return value
 	}
-	return value
+	values := slices.SortedFunc(maps.Keys(assigned), func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(values))
+	for _, copied := range values {
+		pairs = append(pairs, copied, redactedValue)
+	}
+	return strings.NewReplacer(pairs...).Replace(value)
+}
+
+// IsSecretKeyName reports whether a structured field's name says its value is a credential, the
+// rule SanitizeMap applies, for callers that walk structured values of their own.
+func IsSecretKeyName(key string) bool {
+	return isSecretKeyName(key)
 }
 
 // redactGate answers whether text holds any of a set of needles, lower-casing it and searching for
@@ -528,14 +556,31 @@ var redactKeySuffixes = []string{
 	"privatekey", "authorization", "credential", "credentials", "cookie",
 }
 
+// TruncateUTF8 cuts value to at most limit bytes, backing up to the start of a character so a
+// multi-byte character is never split into invalid UTF-8.
+func TruncateUTF8(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if len(value) <= limit {
+		return value
+	}
+	for limit > 0 && !utf8.RuneStart(value[limit]) {
+		limit--
+	}
+	return value[:limit]
+}
+
+// TruncateString cuts value to at most limit bytes on a character boundary, marking the cut
+// when limit leaves room for the marker.
 func TruncateString(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
 	if limit < 32 {
-		return value[:limit]
+		return TruncateUTF8(value, limit)
 	}
-	return value[:limit-15] + "...[truncated]"
+	return TruncateUTF8(value, limit-15) + "...[truncated]"
 }
 
 // CleanString redacts before it truncates, so a cut can never leave part of a secret behind.

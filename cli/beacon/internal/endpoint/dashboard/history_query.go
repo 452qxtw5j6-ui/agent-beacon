@@ -187,9 +187,10 @@ func (s *historyStore) list(sourceID int64, query TraceQuery) (TraceListResultV1
 	if page <= 0 {
 		page = 1
 	}
-	start := (page - 1) * limit
-	if start > total {
-		start = total
+	// Clamp before multiplying: a valid positive page can overflow an int.
+	start := total
+	if page-1 <= total/limit {
+		start = (page - 1) * limit
 	}
 	summaries, err := s.summaries(`SELECT t.aggregate FROM traces t WHERE `+where+` ORDER BY t.updated_ns DESC, t.trace_key ASC LIMIT ? OFFSET ?`,
 		append(args, limit, start)...)
@@ -396,7 +397,7 @@ func (s *historyStore) show(sourceID int64, id string, query TraceQuery) (TraceS
 		return TraceShowResultV1{}, false, err
 	}
 	total := len(filtered)
-	offset, limit := traceRange(query, total)
+	offset, limit := traceShowRange(query, total, func(i int) int { return filtered[i].seq })
 	end := offset - 1 + limit
 	if end > total {
 		end = total

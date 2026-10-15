@@ -25,6 +25,7 @@ import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import {
   AnthropicInstrumentation,
   type AnthropicInstrumentationConfig,
@@ -113,6 +114,8 @@ interface SDKState {
   provider: NodeTracerProvider;
   mode: ExportMode;
   observeUrl?: string;
+  /** The options the active configuration was built from, to tell a repeat from a conflict. */
+  options: InitializeOptions;
 }
 
 type ClaudeAgentQueryFunction<T extends (...args: any[]) => any = (...args: any[]) => any> = T & {
@@ -162,6 +165,13 @@ export class Observe {
 export function initialize(options: InitializeOptions = {}): void {
   if (state) {
     if (options.instrumentModules) {
+      const ignored = changedOptions(state.options, options);
+      if (ignored.length > 0) {
+        console.warn(
+          `Asymptote Observe is already initialized; ignoring changed options: ${ignored.join(", ")}. ` +
+            "Call shutdown() before reinitializing with new options.",
+        );
+      }
       patch(options.instrumentModules);
       return;
     }
@@ -208,9 +218,9 @@ export function initialize(options: InitializeOptions = {}): void {
   });
   provider.register();
   if (instrumentations.length > 0) {
-    registerInstrumentations({ instrumentations });
+    registerInstrumentations({ instrumentations, tracerProvider: provider });
   }
-  state = { instrumentations, instrumentationsDisabled: !!options.disableInstrumentations, provider, mode: resolved.mode, observeUrl: resolved.observeUrl };
+  state = { instrumentations, instrumentationsDisabled: !!options.disableInstrumentations, provider, mode: resolved.mode, observeUrl: resolved.observeUrl, options };
 
   if (options.instrumentModules) {
     try {
@@ -222,6 +232,24 @@ export function initialize(options: InitializeOptions = {}): void {
       throw error;
     }
   }
+}
+
+// changedOptions names the options in next, other than instrumentModules, that differ from the
+// active configuration's. Repeating the same options, as the integration guides do in each module
+// they set up, is not a change. Plain objects (headers, resource attributes) compare by value;
+// exporters, processors and arrays of them compare by identity, since two distinct exporter
+// instances can look alike field by field.
+function changedOptions(active: InitializeOptions, next: InitializeOptions): string[] {
+  return (Object.keys(next) as (keyof InitializeOptions)[]).filter(name => {
+    if (name === "instrumentModules" || next[name] === undefined) return false;
+    const a = active[name];
+    const b = next[name];
+    return isPlainObject(a) && isPlainObject(b) ? !isDeepStrictEqual(a, b) : a !== b;
+  });
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 export function getTracer(name = DEFAULT_TRACER_NAME, version = SDK_VERSION): Tracer {
@@ -359,9 +387,15 @@ export async function flush(): Promise<void> {
 }
 
 export async function shutdown(): Promise<void> {
-  state?.instrumentations.forEach(instrumentation => instrumentation.disable());
-  await state?.provider.shutdown();
-  state = undefined;
+  const current = state;
+  if (!current) return;
+  current.instrumentations.forEach(instrumentation => instrumentation.disable());
+  try {
+    await current.provider.shutdown();
+  } finally {
+    // A stopped provider cannot resume exporting, even when its exporter rejects.
+    if (state === current) state = undefined;
+  }
 }
 
 export function isInitialized(): boolean {
@@ -475,15 +509,7 @@ function patchOpenLLMetryModules(modules: InstrumentModules): void {
   if (state?.instrumentationsDisabled) {
     return;
   }
-  let instrumentations: Instrumentation[];
-  if (state?.instrumentations.length) {
-    instrumentations = state.instrumentations;
-  } else {
-    instrumentations = initializeAsymptoteInstrumentations();
-    if (state) {
-      state.instrumentations = instrumentations;
-    }
-  }
+  const instrumentations = state ? state.instrumentations : initializeAsymptoteInstrumentations();
   manuallyInstrumentModules(instrumentations, modules);
 }
 
@@ -537,7 +563,31 @@ function finishResult<T>(result: T, span: Span, options?: ObserveOptions): unkno
     );
   }
   if (isAsyncIterable(result)) {
-    return finishAsyncIterable(result, span);
+    // A stream such as the Claude Agent SDK's Query carries controls (interrupt(), setModel(), ...)
+    // beside its iterator. Iteration goes through the traced iterator; every other read goes to
+    // the original stream, with functions bound to it so private-field methods keep working, and
+    // cached so repeated reads return the same function. The proxy targets the wrapper rather
+    // than the original, whose read-only properties would make a binding get trap invalid.
+    const iterator = finishAsyncIterable(result, span);
+    const methods = {
+      next: iterator.next.bind(iterator),
+      return: iterator.return.bind(iterator),
+      throw: iterator.throw.bind(iterator),
+    };
+    const controls = new Map<Function, Function>();
+    const stream: AsyncGenerator<unknown> = new Proxy(iterator, {
+      get(_target, key) {
+        if (key === Symbol.asyncIterator) return iteratorForStream;
+        if (key === "next" || key === "return" || key === "throw") return methods[key];
+        const value = Reflect.get(result, key, result);
+        if (typeof value !== "function" || key === "constructor") return value;
+        let control = controls.get(value);
+        if (!control) { control = value.bind(result); controls.set(value, control!); }
+        return control;
+      },
+    });
+    function iteratorForStream() { return stream; }
+    return stream;
   }
   if (!options?.ignoreOutput) {
     span.setAttribute("asymptote.observe.output.type", typeof result);
@@ -548,15 +598,20 @@ function finishResult<T>(result: T, span: Span, options?: ObserveOptions): unkno
 }
 
 async function* finishAsyncIterable(iterable: AsyncIterable<unknown>, span: Span): AsyncGenerator<unknown> {
+  let endedWithError = false;
   try {
     for await (const item of iterable) {
       yield item;
     }
     span.setStatus({ code: SpanStatusCode.OK });
-    span.end();
   } catch (error) {
+    endedWithError = true;
     endSpanWithError(span, error);
     throw error;
+  } finally {
+    // A consumer that breaks out early reaches only this block (via return()); end the span here
+    // with its status unset, since the stream neither completed nor failed.
+    if (!endedWithError) span.end();
   }
 }
 

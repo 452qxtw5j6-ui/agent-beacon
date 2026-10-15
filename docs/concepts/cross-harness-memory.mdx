@@ -29,7 +29,7 @@ The loop is:
    candidate as you do.
 5. Reuse approved memory through Beacon MCP or install it as an Agent Skill.
 
-This is deliberately review-gated. Jev probabilities help rank and classify traces;
+This is deliberately review-gated. Evaluator probabilities help rank and classify traces;
 they do not automatically rewrite instructions, install skills, or execute actions.
 
 ## Jev evaluation
@@ -62,6 +62,12 @@ The evaluator uses the hosted TypeSafe endpoint and `jev-latest` by default. Set
 `TYPESAFE_API_KEY` or `BEACON_JEV_API_KEY` for hosted evaluation, or pass
 `--jev-endpoint` / `BEACON_JEV_ENDPOINT` and `--jev-model` / `BEACON_JEV_MODEL`
 to target an internal compatible evaluator.
+
+SubQ's [Decisions API](https://docs.subq.ai/endpoints/decisions-api/) speaks the same
+System One contract, so `--evaluator subq` (or `BEACON_EVALUATOR=subq`) sends the same
+projection and questions to `https://api.subq.ai/v1/systemone` with `subq-snap-preview`,
+using `SUBQ_API_KEY` or `BEACON_SUBQ_API_KEY`. See
+[`beacon memory`](/cli/memory#subq) for its flags.
 
 ## Local storage and scope
 
@@ -125,9 +131,9 @@ install and publishing matrix.
 
 ## Privacy boundary
 
-- Hooks never call Jev.
-- Dry runs do not call Jev.
-- Jev calls are made only by the explicit `beacon memory evaluations run` command.
+- Hooks never call Jev or SubQ.
+- Dry runs do not call an evaluator.
+- Evaluator calls are made only by the explicit `beacon memory evaluations run` command.
 - Trace projections are bounded and redacted before being sent.
 - Candidate approval and skill installation are explicit CLI actions.
 - The dashboard's Memory page is read-only; review transitions and skill writes stay

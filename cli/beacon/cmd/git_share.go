@@ -118,15 +118,20 @@ func runGitNotesFetch(cmd *cobra.Command, args []string) error {
 
 // runGitHookPrePush is the pre-push hook. It never fails the push: sharing links is a courtesy to
 // teammates, and the person's code reaching the remote matters more. A failure is one line on
-// stderr, which git shows alongside its own output.
+// stderr, which git shows alongside its own output. A run that runs out of time, in the share phase
+// or the notes push, also records one git.hook_budget_exceeded event.
 func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 	if os.Getenv(gitlink.DisableEnv) == "0" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(cmd.Context(), gitShareBudget)
+	run, hookCtx, cancel := startGitHook(cmd.Context(), "pre-push", gitShareBudget)
 	defer cancel()
+	var repo gitlink.Repo
+	defer func() { finishGitHook(hookCtx, run, repo.Root) }()
+	ctx := hookCtx
+	run.Phase("open_repository")
 	repo, err := gitRepo(ctx)
-	if err != nil {
+	if run.Check(ctx, err); err != nil {
 		return nil
 	}
 	// A hook has no terminal to ask for credentials on; git's own push has already authenticated,
@@ -149,7 +154,12 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 			// notes), and the notes ref is then pushed with what is left of the hook's budget, never
 			// less than gitShareNotesReserve, so the links, with whatever URLs were recorded, still
 			// reach the remote in time.
-			if _, err := gitShareSessionsOnPush(ctx, repo, args[0], stdin, visibility); err != nil {
+			run.Phase("share_sessions")
+			report, err := gitShareSessionsOnPush(ctx, repo, args[0], stdin, visibility)
+			if report.OutOfTime {
+				run.RanOut(err != nil)
+			}
+			if err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "beacon: linked sessions were not all shared: %s\n", gitlink.ErrorSummary(err))
 			}
 			pushCtx, cancelPush := gitShareAfterContext(ctx, 0, gitShareNotesReserve)
@@ -157,7 +167,9 @@ func runGitHookPrePush(cmd *cobra.Command, args []string) error {
 			ctx = pushCtx
 		}
 	}
+	run.Phase("push_notes")
 	if _, err := gitPushNotes(ctx, repo, args[0]); err != nil {
+		run.Check(ctx, err)
 		fmt.Fprintf(cmd.ErrOrStderr(), "beacon: commit links were not shared with %s: %s\n", args[0], gitlink.ErrorSummary(err))
 	}
 	return nil

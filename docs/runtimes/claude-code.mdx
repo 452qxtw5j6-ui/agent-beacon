@@ -27,13 +27,13 @@ beacon endpoint hooks status --harness claude
 beacon endpoint hooks uninstall --harness claude
 ```
 
-User-level hooks are written to `~/.claude/settings.json`. Project-level hooks are written to `./.claude/settings.json`:
+User-level hooks are written to `~/.claude/settings.json`, or to `$CLAUDE_CONFIG_DIR/settings.json` when `CLAUDE_CONFIG_DIR` is set, as Claude Code reads it. Project-level hooks are written to `./.claude/settings.json`:
 
 ```bash title="User-level hooks are written to ~/.claude/settings.json. Project-level hooks are written to ./.claude/settings.json"
 beacon endpoint hooks install --harness claude --level project
 ```
 
-For backfill, Beacon can also read Claude Code's committed JSONL session files under `~/.claude/projects`:
+For backfill, Beacon can also read Claude Code's committed JSONL session files under `~/.claude/projects` (`$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set, as Claude Code does):
 
 ```bash title="Sync Claude Code session files"
 beacon endpoint claude status
@@ -41,6 +41,8 @@ beacon endpoint claude sync
 ```
 
 The sync path is local and offline. It appends mapped events to the runtime log with `harness.collection_method=poll`, so it can recover historical sessions or sessions that ran before hooks were installed, but it cannot hold, approve, deny, or delay tool calls. Use `beacon endpoint claude sync --print` to preview mapped events without writing the runtime log or advancing the cursor.
+
+Install, hook install, discovery, inventory, session sync, `beacon handoff`, `beacon mcp connect` and Beacon's skills install honor `CLAUDE_CONFIG_DIR` as Claude Code does: when it is set, `settings.json`, `.claude.json`, `skills` and `projects` are read and written there instead of `~/.claude` and `~/.claude.json`. The scheduled inventory job starts without your shell's environment, so a per-user `beacon endpoint install` or `repair` writes the `CLAUDE_CONFIG_DIR` it resolved into the job's launchd or systemd definition. If you change `CLAUDE_CONFIG_DIR` later, run `beacon endpoint repair` from a shell that has the new value. System-mode installs do not record it.
 
 ## Claude Code Cloud Agents
 
@@ -122,6 +124,7 @@ Managed-ingest privacy is a separate forwarding policy and does not switch off l
 | Area | Support |
 |------|---------|
 | Prompt telemetry | Supported when emitted through Claude Code OTLP or hooks |
+| Agent responses | Supported live. The `Stop` hook records the turn's final reply from the payload's `last_assistant_message` as `agent.message`, with the text in `gen_ai.output.messages`; nothing is written for a turn that ended without one. `beacon endpoint claude sync` also recovers every committed assistant message from transcripts |
 | Turn identity | Supported. Claude Code's `prompt.id` is kept as `prompt.id` on OTLP events; hook events after the prompt read the same id from the session transcript, and `beacon endpoint claude sync` reads it from `promptId`. The hook-recorded prompt itself takes its id from the OTLP `user_prompt` event, because the hook runs before Claude Code records the prompt |
 | Command, tool, and file telemetry | Supported through Claude Code OTLP with detailed tool inputs enabled. Command output requires hooks |
 | Token usage and cost | Supported through OTLP token and cost metrics, with per-model and per-session attribution |

@@ -13,6 +13,26 @@ afterEach(() => {
   delete (globalThis as any)[senderKey]
 })
 
+test.each(["synchronous", "asynchronous"])("disposes every V2 hook after a %s cleanup failure", async (kind) => {
+  const disposed: string[] = []
+  const register = async (name: string) => ({
+    dispose() {
+      disposed.push(name)
+      if (name === "prompt") {
+        if (kind === "synchronous") throw new Error("synthetic disposal failure")
+        return Promise.reject(new Error("synthetic disposal failure"))
+      }
+    },
+  })
+  const dispose = await BeaconDefinition.setup({
+    session: { hook: register },
+    tool: { hook: register },
+    event: { async *subscribe() {} },
+  } as any)
+  await expect(dispose()).resolves.toBeUndefined()
+  expect(disposed).toEqual(["prompt", "execute.before", "execute.after"])
+})
+
 async function plugin() {
   return BeaconEndpointPlugin({
     project: { id: "project-1" },
@@ -23,6 +43,44 @@ async function plugin() {
 }
 
 describe("BeaconEndpointPlugin", () => {
+  test.each(["text", "reasoning"])("keeps later %s deltas when idle flushes a pending snapshot", async (type) => {
+    const hooks = await plugin()
+    await hooks.event!({ event: { type: "message.updated", properties: { sessionID: "ses_stream", info: { id: "msg_stream", role: "assistant" } } } } as any)
+    await hooks.event!({ event: { type: "message.part.updated", properties: { sessionID: "ses_stream", part: { id: "part_stream", messageID: "msg_stream", type, text: "prefix", time: { start: 1 } } } } } as any)
+    await hooks.event!({ event: { type: "message.part.delta", properties: { sessionID: "ses_stream", messageID: "msg_stream", partID: "part_stream", field: "metadata", delta: "not text" } } } as any)
+    await hooks.event!({ event: { type: "message.part.delta", properties: { sessionID: "ses_stream", messageID: "msg_stream", partID: "part_stream", field: "text", delta: " suffix" } } } as any)
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "ses_stream" } } } as any)
+    await hooks["command.execute.before"]!({ sessionID: "ses_stream", command: "drain" }, {})
+    expect(payloads.filter(item => item.type === "message.part.updated")).toEqual([
+      expect.objectContaining({ part: expect.objectContaining({ type, text: "prefix suffix" }) }),
+    ])
+  })
+
+  test("keeps deltas accumulated before and after an empty pending snapshot", async () => {
+    const hooks = await plugin()
+    const delta = (text: string) => ({ event: { type: "message.part.delta", properties: { sessionID: "ses_stream", messageID: "msg_stream", partID: "part_stream", field: "text", delta: text } } })
+    await hooks.event!(delta("first") as any)
+    await hooks.event!({ event: { type: "message.part.updated", properties: { sessionID: "ses_stream", part: { id: "part_stream", messageID: "msg_stream", type: "text", text: "", time: { start: 1 } } } } } as any)
+    await hooks.event!(delta(" second") as any)
+    await hooks.event!({ event: { type: "message.updated", properties: { sessionID: "ses_stream", info: { id: "msg_stream", role: "assistant", time: { completed: 2 } } } } } as any)
+    await hooks["command.execute.before"]!({ sessionID: "ses_stream", command: "drain" }, {})
+    expect(payloads.filter(item => item.type === "message.part.updated")).toEqual([
+      expect.objectContaining({ part: expect.objectContaining({ text: "first second" }) }),
+    ])
+  })
+
+  test("prefers a completed authoritative snapshot over earlier deltas", async () => {
+    const hooks = await plugin()
+    await hooks.event!({ event: { type: "message.updated", properties: { sessionID: "ses_stream", info: { id: "msg_stream", role: "assistant" } } } } as any)
+    await hooks.event!({ event: { type: "message.part.updated", properties: { sessionID: "ses_stream", part: { id: "part_stream", messageID: "msg_stream", type: "text", text: "prefix", time: { start: 1 } } } } } as any)
+    await hooks.event!({ event: { type: "message.part.delta", properties: { sessionID: "ses_stream", messageID: "msg_stream", partID: "part_stream", field: "text", delta: " delta" } } } as any)
+    await hooks.event!({ event: { type: "message.part.updated", properties: { sessionID: "ses_stream", part: { id: "part_stream", messageID: "msg_stream", type: "text", text: "canonical complete", time: { start: 1, end: 2 } } } } } as any)
+    await hooks["command.execute.before"]!({ sessionID: "ses_stream", command: "drain" }, {})
+    expect(payloads.filter(item => item.type === "message.part.updated")).toEqual([
+      expect.objectContaining({ part: expect.objectContaining({ text: "canonical complete" }) }),
+    ])
+  })
+
   test("forwards prompts and correlated tool lifecycle payloads", async () => {
     const hooks = await plugin()
 
