@@ -69,23 +69,14 @@ func writeStateFile(path string, data []byte) error {
 }
 
 const (
-	staleEvaluationTTLHours = 2
+	staleSessionTTLHours = 2
 )
 
-// Evaluation represents a pending evaluation
-type Evaluation struct {
-	EvaluationID string `json:"evaluation_id"`
-	FilePath     string `json:"file_path"`
-	CreatedAt    string `json:"created_at"`
-}
-
-// SessionData represents data for a single session
+// SessionData represents data for a single session. Older state files also carry evaluations,
+// reprompt_count and model keys; they are ignored on load and dropped on the next save.
 type SessionData struct {
-	Evaluations   []Evaluation `json:"evaluations"`
-	RepromptCount int          `json:"reprompt_count"`
-	Model         string       `json:"model,omitempty"`
-	PromptEmitted bool         `json:"prompt_emitted,omitempty"`
-	CreatedAt     string       `json:"created_at,omitempty"`
+	PromptEmitted bool   `json:"prompt_emitted,omitempty"`
+	CreatedAt     string `json:"created_at,omitempty"`
 }
 
 // SessionState manages session state
@@ -134,32 +125,21 @@ func (s *SessionState) saveStateFile(state map[string]*SessionData) error {
 func (s *SessionState) ensureSession(state map[string]*SessionData) {
 	if state[s.sessionID] == nil {
 		state[s.sessionID] = &SessionData{
-			Evaluations:   []Evaluation{},
-			RepromptCount: 0,
-			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+			CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		}
 	}
 }
 
-// SetModel stores the AI model name for this session
-func (s *SessionState) SetModel(model string) error {
+// Register records the session so CleanupStaleForPlatform can remove its log if session-end never runs
+func (s *SessionState) Register() error {
 	defer lockState(s.platform)()
 
 	state := s.loadStateFile()
-	s.ensureSession(state)
-	state[s.sessionID].Model = model
-	return s.saveStateFile(state)
-}
-
-// GetModel returns the AI model name for this session
-func (s *SessionState) GetModel() string {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	if sessionData, ok := state[s.sessionID]; ok {
-		return sessionData.Model
+	if state[s.sessionID] != nil {
+		return nil
 	}
-	return ""
+	s.ensureSession(state)
+	return s.saveStateFile(state)
 }
 
 func (s *SessionState) HasPromptEmitted() bool {
@@ -196,79 +176,7 @@ func (s *SessionState) MarkPromptEmittedIfNeeded() (bool, error) {
 	return true, nil
 }
 
-// AddEvaluation adds a new pending evaluation
-func (s *SessionState) AddEvaluation(evaluationID, filePath string) error {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	s.ensureSession(state)
-
-	state[s.sessionID].Evaluations = append(state[s.sessionID].Evaluations, Evaluation{
-		EvaluationID: evaluationID,
-		FilePath:     filePath,
-		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
-	})
-
-	return s.saveStateFile(state)
-}
-
-// GetPendingEvaluations returns pending evaluations for this session
-func (s *SessionState) GetPendingEvaluations() []Evaluation {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	if sessionData, ok := state[s.sessionID]; ok {
-		return sessionData.Evaluations
-	}
-	return []Evaluation{}
-}
-
-// ClearEvaluations removes all evaluations for this session
-func (s *SessionState) ClearEvaluations() error {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	s.ensureSession(state)
-	state[s.sessionID].Evaluations = []Evaluation{}
-	return s.saveStateFile(state)
-}
-
-// GetRepromptCount returns the current re-prompt count
-func (s *SessionState) GetRepromptCount() int {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	if sessionData, ok := state[s.sessionID]; ok {
-		return sessionData.RepromptCount
-	}
-	return 0
-}
-
-// IncrementRepromptCount increments and returns the re-prompt count
-func (s *SessionState) IncrementRepromptCount() (int, error) {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	s.ensureSession(state)
-	state[s.sessionID].RepromptCount++
-	newCount := state[s.sessionID].RepromptCount
-	if err := s.saveStateFile(state); err != nil {
-		return 0, err
-	}
-	return newCount, nil
-}
-
-// ResetRepromptCount resets the re-prompt count to 0
-func (s *SessionState) ResetRepromptCount() error {
-	defer lockState(s.platform)()
-
-	state := s.loadStateFile()
-	s.ensureSession(state)
-	state[s.sessionID].RepromptCount = 0
-	return s.saveStateFile(state)
-}
-
-// CleanupStaleForPlatform removes stale evaluations for the given platform
+// CleanupStaleForPlatform removes stale sessions for the given platform
 func CleanupStaleForPlatform(platform string) int {
 	defer lockState(platform)()
 
@@ -288,28 +196,13 @@ func CleanupStaleForPlatform(platform string) int {
 		return 0
 	}
 
-	cutoff := time.Now().Add(-time.Duration(staleEvaluationTTLHours) * time.Hour)
-	removedCount := 0
+	cutoff := time.Now().Add(-time.Duration(staleSessionTTLHours) * time.Hour)
 	sessionsToRemove := []string{}
 
 	for sessionID, sessionData := range state {
-		var freshEvals []Evaluation
-		for _, eval := range sessionData.Evaluations {
-			createdAt, err := time.Parse(time.RFC3339, eval.CreatedAt)
-			if err != nil || createdAt.After(cutoff) {
-				freshEvals = append(freshEvals, eval)
-			} else {
-				removedCount++
-			}
-		}
-		sessionData.Evaluations = freshEvals
-
-		// Mark empty sessions for removal only if they are stale
-		if len(freshEvals) == 0 && sessionData.RepromptCount == 0 {
-			createdAt, err := time.Parse(time.RFC3339, sessionData.CreatedAt)
-			if err != nil || createdAt.Before(cutoff) {
-				sessionsToRemove = append(sessionsToRemove, sessionID)
-			}
+		createdAt, err := time.Parse(time.RFC3339, sessionData.CreatedAt)
+		if err != nil || createdAt.Before(cutoff) {
+			sessionsToRemove = append(sessionsToRemove, sessionID)
 		}
 	}
 
@@ -319,7 +212,7 @@ func CleanupStaleForPlatform(platform string) int {
 		os.Remove(config.GetSessionLogFile(platform, sessionID))
 	}
 
-	if removedCount > 0 || len(sessionsToRemove) > 0 {
+	if len(sessionsToRemove) > 0 {
 		config.EnsureStateDir(platform)
 		jsonData, err := json.MarshalIndent(state, "", "  ")
 		if err == nil {
@@ -327,5 +220,5 @@ func CleanupStaleForPlatform(platform string) int {
 		}
 	}
 
-	return removedCount
+	return len(sessionsToRemove)
 }

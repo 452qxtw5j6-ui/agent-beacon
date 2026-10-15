@@ -58,17 +58,12 @@ func runSessionStart(cmd *cobra.Command, args []string) {
 
 	cleaned := state.CleanupStaleForPlatform(platformFlag)
 	if cleaned > 0 {
-		logger.Info(fmt.Sprintf("Cleaned up %d stale evaluations", cleaned))
+		logger.Info(fmt.Sprintf("Cleaned up %d stale sessions", cleaned))
 	}
 
-	// Persist model name so post-tool can include it in evaluations
-	if model, ok := input["model"].(string); ok && model != "" {
-		st := state.NewSessionState(sessionID, platformFlag)
-		if err := st.SetModel(model); err != nil {
-			logger.Warn("Failed to persist session model", "model", model, "error", err.Error())
-		} else {
-			logger.Debug("Stored session model", "model", model)
-		}
+	// Recording the session lets a later sweep remove its log if session-end never runs
+	if err := state.NewSessionState(sessionID, platformFlag).Register(); err != nil {
+		logger.Warn("Failed to record session state", "error", err.Error())
 	}
 
 	logger.Info("Session initialized", "session_id", sessionID, "platform", platformFlag)

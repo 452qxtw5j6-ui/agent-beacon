@@ -2,10 +2,12 @@ package state
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 )
@@ -23,51 +25,46 @@ func setupTestStateDir(t *testing.T) (tmpDir string, cleanup func()) {
 	}
 }
 
-func TestSessionModelPersistsToDisk(t *testing.T) {
-	_, cleanup := setupTestStateDir(t)
-	defer cleanup()
-
-	st1 := NewSessionState("test-session", "cursor")
-	st1.SetModel("gpt-5.5")
-
-	st2 := NewSessionState("test-session", "cursor")
-	if got := st2.GetModel(); got != "gpt-5.5" {
-		t.Errorf("model = %q, want %q", got, "gpt-5.5")
-	}
-}
-
 func TestSessionStateIsolatedBySession(t *testing.T) {
 	_, cleanup := setupTestStateDir(t)
 	defer cleanup()
 
-	st1 := NewSessionState("session-a", "cursor")
-	st2 := NewSessionState("session-b", "cursor")
-
-	st1.SetModel("model-a")
-	st2.SetModel("model-b")
-
-	if got := st1.GetModel(); got != "model-a" {
-		t.Errorf("session-a model = %q, want model-a", got)
+	if err := NewSessionState("session-a", "cursor").SetPromptEmitted(); err != nil {
+		t.Fatalf("SetPromptEmitted: %v", err)
 	}
-	if got := st2.GetModel(); got != "model-b" {
-		t.Errorf("session-b model = %q, want model-b", got)
+
+	if !NewSessionState("session-a", "cursor").HasPromptEmitted() {
+		t.Error("session-a prompt_emitted = false, want true")
+	}
+	if NewSessionState("session-b", "cursor").HasPromptEmitted() {
+		t.Error("session-b prompt_emitted = true, want false")
 	}
 }
 
-func TestEvaluationsPersistToDisk(t *testing.T) {
-	_, cleanup := setupTestStateDir(t)
+// State files written by older hooks carry evaluations, reprompt_count and model keys. They must
+// still load, and the sweep must remove their stale sessions.
+func TestLegacyStateFileLoads(t *testing.T) {
+	tmpDir, cleanup := setupTestStateDir(t)
 	defer cleanup()
 
-	st1 := NewSessionState("test-session", "cursor")
-	st1.AddEvaluation("eval-1", "/path/to/file.go")
-
-	st2 := NewSessionState("test-session", "cursor")
-	evals := st2.GetPendingEvaluations()
-	if len(evals) != 1 || evals[0].EvaluationID != "eval-1" {
-		t.Fatalf("evaluations = %#v, want eval-1", evals)
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	stale := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	legacy := `{
+  "fresh": {"evaluations": [{"evaluation_id": "e1", "file_path": "/a.go", "created_at": "` + fresh + `"}], "reprompt_count": 2, "model": "gpt-5.5", "prompt_emitted": true, "created_at": "` + fresh + `"},
+  "stale": {"evaluations": [], "reprompt_count": 3, "model": "gpt-5.5", "created_at": "` + stale + `"}
+}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "state.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write legacy state: %v", err)
 	}
-	if evals[0].FilePath != "/path/to/file.go" {
-		t.Errorf("file path = %q, want /path/to/file.go", evals[0].FilePath)
+
+	if !NewSessionState("fresh", "cursor").HasPromptEmitted() {
+		t.Fatal("legacy session prompt_emitted = false, want true")
+	}
+	if got := CleanupStaleForPlatform("cursor"); got != 1 {
+		t.Fatalf("CleanupStaleForPlatform = %d, want 1 stale session removed", got)
+	}
+	if !NewSessionState("fresh", "cursor").HasPromptEmitted() {
+		t.Fatal("fresh legacy session lost by the sweep")
 	}
 }
 
@@ -76,7 +73,7 @@ func TestSessionStateFileLocation(t *testing.T) {
 	defer cleanup()
 
 	st := NewSessionState("test-session", "cursor")
-	st.SetModel("gpt-5.5")
+	st.SetPromptEmitted()
 
 	// Verify state.json was created in the expected location
 	stateFile := filepath.Join(tmpDir, "state.json")
@@ -98,23 +95,23 @@ func TestSessionStateSurfacesSaveFailure(t *testing.T) {
 	})
 
 	st := NewSessionState("test-session", "cursor")
-	if err := st.SetModel("gpt-5.5"); err == nil {
-		t.Fatal("SetModel returned nil, want save failure")
+	if err := st.SetPromptEmitted(); err == nil {
+		t.Fatal("SetPromptEmitted returned nil, want save failure")
 	}
 }
 
-// TestHelperProcessIncrement is not a test: it is the body of the child processes started by
+// TestHelperProcessRecord is not a test: it is the body of the child processes started by
 // TestStateIsSafeAcrossProcesses, which stand in for concurrent hook invocations.
-func TestHelperProcessIncrement(t *testing.T) {
+func TestHelperProcessRecord(t *testing.T) {
 	dir := os.Getenv("BEACON_STATE_HELPER_DIR")
 	if dir == "" {
 		t.Skip("helper process only")
 	}
 	config.CursorDir = dir
-	st := NewSessionState("shared-session", "cursor")
+	proc := os.Getenv("BEACON_STATE_HELPER_PROC")
 	for i := 0; i < 40; i++ {
-		if _, err := st.IncrementRepromptCount(); err != nil {
-			t.Fatalf("IncrementRepromptCount: %v", err)
+		if err := NewSessionState(fmt.Sprintf("session-%s-%d", proc, i), "cursor").SetPromptEmitted(); err != nil {
+			t.Fatalf("SetPromptEmitted: %v", err)
 		}
 	}
 }
@@ -129,8 +126,8 @@ func TestStateIsSafeAcrossProcesses(t *testing.T) {
 	var cmds []*exec.Cmd
 	var outputs []*bytes.Buffer
 	for i := 0; i < procs; i++ {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcessIncrement$")
-		cmd.Env = append(os.Environ(), "BEACON_STATE_HELPER_DIR="+dir)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcessRecord$")
+		cmd.Env = append(os.Environ(), "BEACON_STATE_HELPER_DIR="+dir, fmt.Sprintf("BEACON_STATE_HELPER_PROC=%d", i))
 		out := &bytes.Buffer{}
 		cmd.Stdout, cmd.Stderr = out, out
 		outputs = append(outputs, out)
@@ -145,8 +142,12 @@ func TestStateIsSafeAcrossProcesses(t *testing.T) {
 		}
 	}
 
-	if got, want := NewSessionState("shared-session", "cursor").GetRepromptCount(), procs*perProc; got != want {
-		t.Fatalf("reprompt count = %d, want %d: concurrent processes lost updates", got, want)
+	for i := 0; i < procs; i++ {
+		for j := 0; j < perProc; j++ {
+			if !NewSessionState(fmt.Sprintf("session-%d-%d", i, j), "cursor").HasPromptEmitted() {
+				t.Fatalf("session-%d-%d missing: concurrent processes lost updates", i, j)
+			}
+		}
 	}
 	if leftovers, _ := filepath.Glob(filepath.Join(dir, "state.json.*")); len(leftovers) > 0 {
 		for _, f := range leftovers {
