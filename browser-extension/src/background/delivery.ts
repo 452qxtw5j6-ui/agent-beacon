@@ -6,9 +6,10 @@
 // Retention policy: a queued batch is kept until it is delivered, until it is
 // older than MAX_QUEUE_AGE_MS, or until newer batches push it past the queue's
 // size caps (MAX_QUEUE_ITEMS, MAX_QUEUE_BYTES), which drop the oldest first.
-// Failed attempts never drop a batch on their own, so a collector that is down
+// A failed send never drops a batch on its own, so a collector that is down
 // for minutes (restarting during an install or upgrade, not yet started after
 // boot, crash-looping) loses nothing it comes back from within the age limit.
+// A batch the collector rejects (a non-retryable status) is dropped at once.
 
 import { ext } from '../shared/browser.js';
 import type { ChatTurn, Settings } from '../shared/types.js';
@@ -112,7 +113,10 @@ export async function flush(): Promise<void> {
         waiting.add(item.endpoint);
         continue;
       }
-      if (await post(item)) continue;
+      const outcome = await post(item);
+      // A batch the collector rejects outright would fail the same way forever
+      // and hold every later batch behind it, so it is dropped, not retried.
+      if (outcome !== 'retry') continue;
       item.attempts += 1;
       item.nextAttemptAt = Date.now() + retryDelay(item.attempts);
       remaining.push(item);
@@ -153,8 +157,16 @@ function itemBytes(item: QueueItem): number {
   return item.bytes;
 }
 
-async function post(item: QueueItem): Promise<boolean> {
-  if (!isAllowedEndpoint(item.endpoint)) return false;
+/**
+ * Statuses the OTLP/HTTP spec marks retryable. Any other non-2xx response
+ * rejects the batch itself, so sending it again cannot succeed.
+ */
+const RETRYABLE_STATUSES = new Set([429, 502, 503, 504]);
+
+type PostOutcome = 'sent' | 'retry' | 'rejected';
+
+async function post(item: QueueItem): Promise<PostOutcome> {
+  if (!isAllowedEndpoint(item.endpoint)) return 'rejected';
   try {
     const res = await fetch(item.endpoint, {
       method: 'POST',
@@ -166,14 +178,16 @@ async function post(item: QueueItem): Promise<boolean> {
       redirect: 'error',
       body: JSON.stringify(item.envelope),
     });
-    return res.ok;
+    if (res.ok) return 'sent';
+    return RETRYABLE_STATUSES.has(res.status) ? 'retry' : 'rejected';
   } catch {
-    return false;
+    // Connection refused, timed out or redirected: the collector may come back.
+    return 'retry';
   }
 }
 
 /** Backoff after the given number of failed sends: 0.5s, 1s, 2s, ... capped at a minute. */
-export function retryDelay(attempts: number): number {
+function retryDelay(attempts: number): number {
   return Math.min(250 * 2 ** attempts, MAX_RETRY_DELAY_MS);
 }
 

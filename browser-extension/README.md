@@ -310,12 +310,14 @@ dashboard), including interleaved sessions with no cross-contamination.
   batch is retried like any other failure. Retries back off from half a second, doubling to a
   one-minute cap, and run on `chrome.alarms`, which MV3 clamps to a ~30s minimum, so a recovered
   collector receives the backlog within about a minute. Batches are delivered oldest first, and
-  while the collector is down only the oldest batch is retried; newer ones wait behind it. Failed
-  attempts never drop a batch. A batch is dropped undelivered only when it is older than **24
-  hours**, or when the queue passes **2,000 batches** or **6 MiB** of envelopes, which drops the
-  oldest batches first (the byte cap keeps the queue inside `chrome.storage.local`'s 10 MiB
-  quota). Within those limits, a collector outage of any length (restarting during an install or
-  upgrade, not yet started after boot, crash-looping) loses nothing. The queue is re-checked each
+  while the collector is down only the oldest batch is retried; newer ones wait behind it. A
+  failed send (connection refused, timeout, or a retryable 429, 502, 503 or 504) never drops a
+  batch. A batch is dropped undelivered when the collector rejects it with any other status,
+  since sending it again cannot succeed, when it is older than **24 hours**, or when the queue
+  passes **2,000 batches** or **6 MiB** of envelopes, which drops the oldest batches first (the
+  byte cap keeps the queue inside `chrome.storage.local`'s 10 MiB quota). Within those limits, a
+  collector outage of any length (restarting during an install or upgrade, not yet started after
+  boot, crash-looping) loses nothing. The queue is re-checked each
   time the service worker starts, because a browser restart or extension update can clear the
   retry alarm.
 - **Capture depends on `window.fetch`.** Confirmed correct for claude.ai. Sites using XHR or a page

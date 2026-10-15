@@ -17,7 +17,7 @@ beforeEach(() => {
   api.get.mockImplementation(async () => ({ delivery_queue: structuredClone(queue) }));
   api.set.mockImplementation(async ({ delivery_queue }: { delivery_queue: StoredItem[] }) => { queue = structuredClone(delivery_queue); });
   api.alarm.mockClear();
-  send = vi.fn().mockResolvedValue({ ok: false });
+  send = vi.fn().mockResolvedValue({ ok: false, status: 503 });
   vi.stubGlobal('fetch', send);
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });

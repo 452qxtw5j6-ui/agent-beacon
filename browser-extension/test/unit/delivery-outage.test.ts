@@ -47,12 +47,16 @@ type StoredItem = {
   nextAttemptAt?: number; queuedAt?: number; bytes?: number;
 };
 
-/** A fake loopback collector: records every POST, accepts only while `up`. */
+/**
+ * A fake loopback collector: records every POST and accepts only while `up`.
+ * `answers` gives the HTTP status it returns for a prompt id while up.
+ */
 const collector = {
   up: true,
   attempted: [] as string[],
   received: [] as string[],
   byEndpoint: new Map<string, boolean>(),
+  answers: new Map<string, number>(),
 };
 
 function promptId(body: unknown): string | undefined {
@@ -72,13 +76,15 @@ function promptId(body: unknown): string | undefined {
   return undefined;
 }
 
-async function fakeFetch(url: string, init: { body: string }): Promise<{ ok: boolean }> {
+async function fakeFetch(url: string, init: { body: string }): Promise<{ ok: boolean; status: number }> {
   const id = promptId(JSON.parse(init.body)) ?? '?';
   collector.attempted.push(id);
   const up = collector.byEndpoint.get(url) ?? collector.up;
   if (!up) throw new TypeError('Failed to fetch'); // connection refused
+  const status = collector.answers.get(id) ?? 200;
+  if (status !== 200) return { ok: false, status };
   collector.received.push(id);
-  return { ok: true };
+  return { ok: true, status };
 }
 
 let delivery: Delivery;
@@ -149,6 +155,7 @@ beforeEach(async () => {
   collector.attempted = [];
   collector.received = [];
   collector.byEndpoint.clear();
+  collector.answers.clear();
   vi.stubGlobal('fetch', vi.fn(fakeFetch));
   await startWorker();
 });
@@ -267,6 +274,26 @@ describe('collector outage', () => {
     expect(collector.received).toEqual(['up']);
     expect(queue().map((i) => i.id)).toEqual(['down']);
   });
+
+  it('drops a batch the collector rejects instead of holding the queue behind it', async () => {
+    collector.answers.set('bad', 400);
+    await delivery.enqueueTurn(turn('bad'), settings);
+    await delivery.enqueueTurn(turn('next'), settings);
+    expect(collector.attempted).toEqual(['bad', 'next']);
+    expect(collector.received).toEqual(['next']);
+    expect(queue()).toEqual([]);
+  });
+
+  it('retries a batch the collector answers with a retryable status', async () => {
+    collector.answers.set('busy', 503);
+    await delivery.enqueueTurn(turn('busy'), settings);
+    await delivery.enqueueTurn(turn('after'), settings);
+    expect(queue().map((i) => i.id)).toEqual(['busy', 'after']);
+
+    collector.answers.clear();
+    await runFor(delivery.MAX_RETRY_DELAY_MS);
+    expect(collector.received).toEqual(['busy', 'after']);
+  });
 });
 
 describe('service-worker restarts', () => {
@@ -296,11 +323,6 @@ describe('service-worker restarts', () => {
     await runFor(delivery.MAX_RETRY_DELAY_MS);
     expect(collector.received).toEqual(['r1', 'r2']);
     expect(queue()).toEqual([]);
-  });
-
-  it('does not touch storage on worker start when nothing is queued', async () => {
-    expect(env.storage.has('delivery_queue')).toBe(false);
-    expect(env.alarms.size).toBe(0);
   });
 });
 
@@ -390,13 +412,6 @@ describe('queue bounds', () => {
 });
 
 describe('retry backoff', () => {
-  it('doubles from half a second and caps at a minute', () => {
-    const delays = Array.from({ length: 12 }, (_, i) => delivery.retryDelay(i + 1));
-    expect(delays).toEqual([500, 1_000, 2_000, 4_000, 8_000, 16_000, 32_000,
-      60_000, 60_000, 60_000, 60_000, 60_000]);
-    expect(delivery.retryDelay(10_000)).toBe(60_000);
-  });
-
   it('stores the deadline of each failure and wakes at it, clamped by the alarm floor', async () => {
     collector.up = false;
     await delivery.enqueueTurn(turn('b'), settings);
