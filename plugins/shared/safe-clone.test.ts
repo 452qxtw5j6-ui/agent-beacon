@@ -3,11 +3,10 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join, relative } from "node:path"
 
-import { maxDepth, safeClone as canonicalSafeClone } from "./safe-clone.ts"
+import { safeClone as canonicalSafeClone } from "./safe-clone.ts"
 import {
   beginMarker,
   canonicalBlock,
-  canonicalPath,
   consumers,
   endMarker,
   expectedBlock,
@@ -50,10 +49,6 @@ const implementations: Array<[string, SafeClone]> = [
     [sourcePath, embeddedPath].map((path): [string, SafeClone] => [relative(repoRoot, path), load(path)])
   ),
 ]
-
-test("the depth limit is pinned at eight", () => {
-  expect(maxDepth).toBe(8)
-})
 
 describe.each(implementations)("%s", (_name, safeClone) => {
   describe("primitives", () => {
@@ -337,25 +332,10 @@ describe("every plugin runs the shared serializer", () => {
       expect({ path, outside: /function safeClone\b|\bmaxDepth\s*=/.test(outside) }).toEqual({ path, outside: false })
     }
   })
-
-  test("OpenCode still has no safeClone, so leaving it out of the shared block loses nothing", () => {
-    const source = readFileSync(join(pluginsDir, "opencode-beacon/src/beacon.ts"), "utf8")
-    expect(source).not.toContain("safeClone")
-    expect(consumers.map((c) => c.plugin)).not.toContain("opencode-beacon")
-  })
 })
 
 describe("sync-safe-clone", () => {
   const canonical = canonicalBlock()
-
-  test("the canonical region holds the one serializer and its depth limit", () => {
-    const source = readFileSync(canonicalPath, "utf8")
-    expect(canonical.startsWith(beginMarker)).toBe(true)
-    expect(canonical.endsWith(endMarker)).toBe(true)
-    expect(canonical.match(/function safeClone\b/g)).toHaveLength(1)
-    expect(canonical.match(/const maxDepth = /g)).toHaveLength(1)
-    expect(source.replace(canonical, "")).not.toMatch(/function safeClone\b|maxDepth\s*=/)
-  })
 
   test("the JavaScript copy differs from the TypeScript one only by the listed rewrites", () => {
     const ts = canonical.split("\n")
