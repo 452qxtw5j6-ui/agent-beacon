@@ -157,3 +157,63 @@ func TestStateIsSafeAcrossProcesses(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkReplyRecordedOncePerReplyAndSession(t *testing.T) {
+	_, cleanup := setupTestStateDir(t)
+	defer cleanup()
+
+	a := NewSessionState("session-a", "cursor")
+	for i, want := range []bool{true, false} {
+		fresh, err := a.MarkReplyRecorded("msg-1")
+		if err != nil || fresh != want {
+			t.Fatalf("mark %d = %v, %v; want %v", i+1, fresh, err, want)
+		}
+	}
+	// A later reply is new, and a reply id is per session.
+	if fresh, _ := NewSessionState("session-a", "cursor").MarkReplyRecorded("msg-2"); !fresh {
+		t.Fatal("a new reply id was treated as already recorded")
+	}
+	if fresh, _ := NewSessionState("session-b", "cursor").MarkReplyRecorded("msg-2"); !fresh {
+		t.Fatal("another session's reply id suppressed this session's")
+	}
+	// The marker sits beside the other session data without disturbing it.
+	if err := a.SetPromptEmitted(); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, _ := a.MarkReplyRecorded("msg-2"); fresh {
+		t.Fatal("setting prompt_emitted reset the recorded reply")
+	}
+}
+
+// Stale-session cleanup runs on every SessionStart and SessionEnd of the platform and removes
+// sessions older than two hours, which is every Factory session. A session's
+// reply marker has to survive it, or a Stop over an unchanged transcript records the reply again.
+func TestCleanupKeepsARecentReplyMarker(t *testing.T) {
+	_, cleanup := setupTestStateDir(t)
+	defer cleanup()
+
+	old := time.Now().Add(-3 * time.Hour).UTC().Format(time.RFC3339)
+	expired := time.Now().Add(-replyMarkerTTL - time.Hour).UTC().Format(time.RFC3339)
+	st := NewSessionState("seed", "cursor")
+	state := map[string]*SessionData{
+		"recent-reply":  {CreatedAt: old, LastReplyID: "m1", LastReplyAt: time.Now().UTC().Format(time.RFC3339)},
+		"expired-reply": {CreatedAt: old, LastReplyID: "m2", LastReplyAt: expired},
+		"no-reply":      {CreatedAt: old},
+	}
+	if err := st.saveStateFile(state); err != nil {
+		t.Fatal(err)
+	}
+
+	CleanupStaleForPlatform("cursor")
+
+	after := st.loadStateFile()
+	if after["recent-reply"] == nil {
+		t.Fatal("cleanup removed a session with a recent reply marker")
+	}
+	if after["expired-reply"] != nil || after["no-reply"] != nil {
+		t.Fatalf("cleanup kept stale sessions: %v", after)
+	}
+	if fresh, _ := NewSessionState("recent-reply", "cursor").MarkReplyRecorded("m1"); fresh {
+		t.Fatal("the reply was treated as new after cleanup")
+	}
+}

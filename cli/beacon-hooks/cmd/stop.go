@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/state"
 )
 
 var stopCmd = &cobra.Command{
@@ -72,6 +73,11 @@ func runStop(cmd *cobra.Command, args []string) {
 	}
 
 	config.RotateLogIfNeededForPlatform(platformFlag)
+	st := state.NewSessionState(sessionID, platformFlag)
+	// Factory Droid's Stop payload carries no reply; its transcript does.
+	if platformFlag == "factory" {
+		emitFactoryTranscriptReply(logger, input, sessionID, transcriptPath, st)
+	}
 
 	elapsed := time.Since(start)
 	logger.Info("stop completed", "duration_ms", elapsed.Milliseconds())

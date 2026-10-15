@@ -64,11 +64,17 @@ func codexStatusFromRuntime(status runtimeStatus) CodexStatus {
 
 func installCodexHooks(path, binaryPath, logPath, configPath string) error {
 	prefix := endpointCommandPrefix("codex", binaryPath, logPath, configPath)
-	// Only the OS-user session context is hook-driven. Inventory used to ride SessionStart and
+	// Hooks supply only what Codex's OTLP export lacks: the OS-user session context, and the turn's
+	// final reply, which Codex's Stop payload carries as last_assistant_message and no span or log
+	// does. Both are dedicated commands rather than the generic ones, because OTLP already reports
+	// the session, prompts, tools and turn. Inventory used to ride SessionStart and
 	// UserPromptSubmit here; it is written by the scheduled inventory job now.
 	endpointHooks := map[string]settingsHookGroup{
 		"SessionStart": {Hooks: []settingsHookRef{
 			{Type: "command", Command: prefix + " codex-session-context", Timeout: 10},
+		}},
+		"Stop": {Hooks: []settingsHookRef{
+			{Type: "command", Command: prefix + " codex-assistant-response", Timeout: 10},
 		}},
 	}
 	return installSettingsEndpointHooks(path, "codex", endpointHooks)
