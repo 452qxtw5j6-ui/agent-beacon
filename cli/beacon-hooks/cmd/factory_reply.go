@@ -53,8 +53,9 @@ func factoryTranscriptReply(path string) (factoryReply, bool) {
 			Type    string `json:"type"`
 			ID      string `json:"id"`
 			Message *struct {
-				Role    string          `json:"role"`
-				Content json.RawMessage `json:"content"`
+				Role       string          `json:"role"`
+				Visibility string          `json:"visibility"`
+				Content    json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
 		if json.Unmarshal(line, &record) != nil {
@@ -65,6 +66,13 @@ func factoryTranscriptReply(path string) (factoryReply, bool) {
 			continue
 		}
 		if record.Message.Role != "assistant" {
+			return factoryReply{}, false
+		}
+		// A message hidden from one side of the conversation is not the reply: the session sync
+		// drops user_only messages and records llm_only ones as errors, and the live path must not
+		// call either the turn's answer. Refused rather than skipped, so an earlier message is not
+		// promoted in its place.
+		if v := record.Message.Visibility; v == "user_only" || v == "llm_only" {
 			return factoryReply{}, false
 		}
 		text, hasToolUse := factoryAssistantText(record.Message.Content)
