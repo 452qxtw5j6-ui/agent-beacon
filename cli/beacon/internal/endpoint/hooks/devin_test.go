@@ -102,7 +102,7 @@ func TestInstallDevinDesktopHooksUsesCascadeEvents(t *testing.T) {
 		t.Fatalf("read hooks: %v", err)
 	}
 	text := string(data)
-	for _, want := range []string{"pre_user_prompt", "post_write_code", "post_run_command", "post_mcp_tool_use", "post_read_code", "--platform devin-desktop", "prompt-submit", "post-tool"} {
+	for _, want := range []string{"pre_user_prompt", "post_write_code", "post_run_command", "post_mcp_tool_use", "post_read_code", "post_cascade_response", "--platform devin-desktop", "prompt-submit", "post-tool", "cascade-response"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Devin Desktop hooks missing %q:\n%s", want, text)
 		}
@@ -111,6 +111,52 @@ func TestInstallDevinDesktopHooksUsesCascadeEvents(t *testing.T) {
 		if strings.Contains(text, notWant) {
 			t.Fatalf("Devin Desktop hooks should not contain %q:\n%s", notWant, text)
 		}
+	}
+}
+
+func TestInstallDevinDesktopCascadeResponseHookIsIdempotentAndRemovable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	existing := `{"hooks":{"post_cascade_response":[{"command":"python3 mine.py","show_output":true}]}}`
+	if err := os.WriteFile(path, []byte(existing), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := installDevinDesktopHooks(path, "/tmp/beacon-hooks", "/tmp/runtime.jsonl", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var parsed struct {
+		Hooks map[string][]windsurfHookRef `json:"hooks"`
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	var beacon []windsurfHookRef
+	kept := false
+	for _, ref := range parsed.Hooks["post_cascade_response"] {
+		switch {
+		case strings.HasSuffix(ref.Command, " cascade-response"):
+			beacon = append(beacon, ref)
+		case ref.Command == "python3 mine.py":
+			kept = true
+		}
+	}
+	if len(beacon) != 1 || beacon[0].ShowOutput == nil || *beacon[0].ShowOutput {
+		t.Fatalf("post_cascade_response Beacon hooks = %#v, want one with show_output false", beacon)
+	}
+	if !kept {
+		t.Fatalf("the user's own post_cascade_response hook was not kept: %s", data)
+	}
+	if _, err := removeDevinDesktopEndpointHooks(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if strings.Contains(string(data), "cascade-response") || !strings.Contains(string(data), "python3 mine.py") {
+		t.Fatalf("uninstall should remove only Beacon's post_cascade_response hook: %s", data)
 	}
 }
 

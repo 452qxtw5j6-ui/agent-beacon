@@ -139,6 +139,8 @@ func installDevinDesktopHooks(path, binaryPath, logPath, configPath string) erro
 		"post_run_command":  {Command: prefix + " post-tool", ShowOutput: &hideOutput},
 		"post_mcp_tool_use": {Command: prefix + " post-tool", ShowOutput: &hideOutput},
 		"post_read_code":    {Command: prefix + " post-tool", ShowOutput: &hideOutput},
+		// The only Cascade hook that carries the agent's reply.
+		"post_cascade_response": {Command: prefix + " cascade-response", ShowOutput: &hideOutput},
 	}
 	for eventName, hook := range endpointHooks {
 		config.hooks[eventName] = mergeWindsurfEndpointHook(config.hooks[eventName], hook, "devin-desktop")

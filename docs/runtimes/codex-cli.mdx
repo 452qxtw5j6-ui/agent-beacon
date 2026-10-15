@@ -5,7 +5,7 @@ description: "Beacon support details for Codex CLI and Codex Desktop endpoint te
 
 ## Runtime overview
 
-Beacon supports Codex CLI runtime telemetry through local OTLP logs and one selective usage-bearing turn trace. Codex Desktop uses the same Codex OTLP configuration path through its app-server process, and Beacon records it as `codex_desktop` instead of merging it with `codex_cli`. A lightweight SessionStart hook records the local OS user for CLI token attribution.
+Beacon supports Codex CLI runtime telemetry through local OTLP logs and one selective usage-bearing turn trace. Codex Desktop uses the same Codex OTLP configuration path through its app-server process, and Beacon records it as `codex_desktop` instead of merging it with `codex_cli`. A lightweight SessionStart hook records the local OS user for CLI token attribution, and a Stop hook records each turn's final assistant reply, which Codex's OTLP export does not carry.
 
 ## Prerequisites
 
@@ -20,7 +20,7 @@ Before enabling Codex telemetry, make sure:
 
 ## Collection path
 
-Codex CLI exports local OpenTelemetry logs and traces to Beacon's localhost collector. Codex Desktop exports the same Codex semantic telemetry from `codex-app-server` when user-level `~/.codex/config.toml` enables OTLP. Beacon uses Codex semantic logs for session, prompt, approval, and tool-result events. For tokens it keeps only the completed `session_task.turn` span carrying `thread.id`, `turn.id`, model, and usage; hundreds of transport and internal spans remain suppressed. The CLI SessionStart hook writes a metadata-only `session.context` event; it never reads transcript content. Inventory is written by the scheduled inventory job, not by this hook.
+Codex CLI exports local OpenTelemetry logs and traces to Beacon's localhost collector. Codex Desktop exports the same Codex semantic telemetry from `codex-app-server` when user-level `~/.codex/config.toml` enables OTLP. Beacon uses Codex semantic logs for session, prompt, approval, and tool-result events. For tokens it keeps only the completed `session_task.turn` span carrying `thread.id`, `turn.id`, model, and usage; hundreds of transport and internal spans remain suppressed. The CLI SessionStart hook writes a metadata-only `session.context` event. The CLI Stop hook writes the turn's final reply from the payload's `last_assistant_message` as an `agent.message` event, and nothing for a turn that ended without one. Neither hook reads the transcript. Inventory is written by the scheduled inventory job, not by this hook.
 
 Use `--include-codex-spans` during install or repair only when you need every raw Codex span for troubleshooting. It is not required for token attribution.
 
@@ -92,24 +92,27 @@ Beacon detects Codex CLI through the `codex` executable and `$CODEX_HOME/config.
 `beacon endpoint install` writes Codex OTLP exporter tables to `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`).
 
 `beacon endpoint install --harness codex` installs the required user-level
-session context and inventory hooks with the OTLP configuration. To refresh
+session context and assistant response hooks with the OTLP configuration. To refresh
 them independently, run:
 
 ```bash
 beacon endpoint hooks install --harness codex
 ```
 
-The hook installer writes the metadata-only session context hook to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) or project `.codex/hooks.json`, depending on `--level`. A successful user-level install prints:
+The hook installer writes the session context (`SessionStart`) and assistant response (`Stop`) hooks to `$CODEX_HOME/hooks.json` (default `~/.codex/hooks.json`) or project `.codex/hooks.json`, depending on `--level`. A successful user-level install prints:
 
 ```text
 Codex CLI endpoint hooks installed: /Users/you/.codex/hooks.json
 ```
+
+Codex runs a non-managed hook only after you review and trust its exact definition. Run `/hooks` in Codex to trust the Beacon hooks after installing or upgrading; until then Codex skips them, and the assistant reply reaches the log only through `beacon endpoint codex sync`.
 
 ## Telemetry coverage
 
 | Area | Support |
 |------|---------|
 | Prompt telemetry | Supported when emitted through Codex semantic logs |
+| Agent responses | Supported live through the Stop hook (`last_assistant_message`, recorded as `agent.message`); Codex's OTLP export carries no response text. `beacon endpoint codex sync` also recovers every committed assistant message |
 | Turn identity | Supported. Codex's `turn_id` from hooks, `turn.id` from OTLP, and the turn bracket in `beacon endpoint codex sync` are promoted to `prompt.id` |
 | Command, tool, and file telemetry | Supported when emitted through Codex semantic logs |
 | Token usage | Supported per turn through a selective OTLP trace (input, output, cache read, cache creation, reasoning) |
