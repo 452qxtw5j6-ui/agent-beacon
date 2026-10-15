@@ -124,6 +124,7 @@ Managed-ingest privacy is a separate forwarding policy and does not switch off l
 | Area | Support |
 |------|---------|
 | Prompt telemetry | Supported when emitted through Claude Code OTLP or hooks |
+| Agent responses | Supported live. The `Stop` hook records the turn's final reply from the payload's `last_assistant_message` as `agent.message`, with the text in `gen_ai.output.messages`; nothing is written for a turn that ended without one. `beacon endpoint claude sync` also recovers every committed assistant message from transcripts |
 | Turn identity | Supported. Claude Code's `prompt.id` is kept as `prompt.id` on OTLP events; hook events after the prompt read the same id from the session transcript, and `beacon endpoint claude sync` reads it from `promptId`. The hook-recorded prompt itself takes its id from the OTLP `user_prompt` event, because the hook runs before Claude Code records the prompt |
 | Command, tool, and file telemetry | Supported through Claude Code OTLP with detailed tool inputs enabled. Command output requires hooks |
 | Token usage and cost | Supported through OTLP token and cost metrics, with per-model and per-session attribution |

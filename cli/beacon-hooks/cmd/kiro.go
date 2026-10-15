@@ -6,7 +6,6 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 	hookdiff "github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/diff"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/logging"
-	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
 // Kiro payload readers and tool taxonomy.
@@ -477,26 +476,11 @@ func kiroAssistantResponse(input map[string]interface{}) string {
 
 // emitKiroAssistantResponse records the agent's final reply as its own event.
 //
-// The shared stop command records that a turn finished; it does not record what the agent said,
-// because most runtimes do not tell it. Kiro does, on the same payload, and dropping it would
-// throw away the one piece of model output this runtime puts on a hook -- the half of a session
-// that prompt.submitted only covers the user's side of.
-//
-// Written in the OTel GenAI output-messages shape with the retention marker beside it, exactly as
-// the agent-thought command writes reasoning, so a reader that already understands one understands
-// the other. `agent.message` rather than `agent.reasoning`: this is the reply, not the thinking,
-// and it is the action the fx and Devin Cloud mappers already use for the same thing.
+// Kiro puts the reply on the Stop payload and nowhere else, so dropping it would throw away the one
+// piece of model output this runtime puts on a hook. The event's shape is emitAssistantMessage's,
+// shared with every other hook-side reply capture.
 func emitKiroAssistantResponse(logger *logging.Logger, input map[string]interface{}, sessionID string) {
-	text := kiroAssistantResponse(input)
-	if text == "" {
-		return
-	}
-	fields := sessionFields(sessionID, input)
-	fields["gen_ai"] = mergeNested(fields["gen_ai"], map[string]interface{}{
-		"output": map[string]interface{}{"messages": asymptoteobserve.TextOutputMessages(text)},
-	})
-	fields["content"] = retainedContentFields(text)
-	emitHookEvent(logger, "agent.message", "session", "info", "Agent response captured", input, fields)
+	emitAssistantMessage(logger, input, sessionFields(sessionID, input), kiroAssistantResponse(input))
 }
 
 // applyKiroToolResult attaches what the shared toolFieldsWithResponse cannot reach: the operation a
