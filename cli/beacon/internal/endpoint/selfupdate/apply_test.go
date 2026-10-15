@@ -21,9 +21,13 @@ import (
 
 // makeBeaconTarball builds a gzipped tar containing opt/beacon/bin/beacon as an
 // executable script that prints the given version, returning the bytes + sha256.
-func makeBeaconTarball(t *testing.T, version string) ([]byte, string) {
+func makeBeaconTarball(t *testing.T, version string, edition ...string) ([]byte, string) {
 	t.Helper()
-	script := "#!/bin/sh\necho \"beacon version " + version + " (test) built on test\"\n"
+	line := "beacon version " + version + " (test) built on test"
+	if len(edition) > 0 {
+		line += ", " + edition[0] + " edition"
+	}
+	script := "#!/bin/sh\necho \"" + line + "\"\n"
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
