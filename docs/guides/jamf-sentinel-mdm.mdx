@@ -322,12 +322,12 @@ On a pilot Mac, after all four policies and a new session in each agent:
 
 ```bash
 sudo /opt/beacon/bin/beacon endpoint status --system
-sudo /opt/beacon/bin/beacon endpoint hooks status --harness claude
-sudo /opt/beacon/bin/beacon endpoint hooks status --harness cursor
+/opt/beacon/bin/beacon endpoint hooks status --harness claude
+/opt/beacon/bin/beacon endpoint hooks status --harness cursor
 launchctl print system/com.beacon.endpoint.sentinel-forwarder
 ```
 
-`Service: loaded=true running=true` means the collector is up. Claude Code should say hooks are installed, and the settings path should be that person's `~/.claude/settings.json`. The forwarder print should show `state = running`.
+`Service: loaded=true running=true` means the collector is up. Run the two hooks checks as the person who is logged in. They read that person's home, the same place Policies 3 and 4 wrote: Claude Code should say hooks are installed at that person's `~/.claude/settings.json`, and Cursor at that person's `~/.cursor/hooks.json`. The forwarder print should show `state = running`.
 
 Write a known event after the forwarder is running, so Vector is already watching the end of the file:
 
