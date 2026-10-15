@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	hookconfig "github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
-	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/state"
 )
 
 func TestRunPreToolAllowsAndEmitsTelemetry(t *testing.T) {
@@ -950,19 +949,23 @@ func TestRunPromptSubmitIgnoresLegacyRetentionEnv(t *testing.T) {
 	}
 }
 
-func TestRunSessionStartStoresModel(t *testing.T) {
+// The state entry is what lets the stale sweep remove the session log when session-end never runs.
+func TestRunSessionStartRecordsSession(t *testing.T) {
 	setupHookConfigDirs(t)
 	platformFlag = "cursor"
 
-	out := runHookWithInput(t, runSessionStart, map[string]interface{}{
-		"conversation_id": "conv-model",
-		"model":           "gpt-5.5",
-	})
-	if len(out) != 0 {
-		t.Fatalf("session-start response = %#v, want empty response", out)
+	runHookWithInput(t, runSessionStart, map[string]interface{}{"conversation_id": "conv-start"})
+
+	data, err := os.ReadFile(filepath.Join(hookconfig.GetStateDir("cursor"), "state.json"))
+	if err != nil {
+		t.Fatalf("read state: %v", err)
 	}
-	if got := state.NewSessionState("conv-model", "cursor").GetModel(); got != "gpt-5.5" {
-		t.Fatalf("stored model = %q, want gpt-5.5", got)
+	var sessions map[string]json.RawMessage
+	if err := json.Unmarshal(data, &sessions); err != nil {
+		t.Fatalf("parse state: %v", err)
+	}
+	if _, ok := sessions["conv-start"]; !ok {
+		t.Fatalf("state = %s, want conv-start recorded", data)
 	}
 }
 
