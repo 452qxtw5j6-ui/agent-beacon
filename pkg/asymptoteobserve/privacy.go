@@ -160,7 +160,17 @@ func foldedRule(expr, replacement string, keep func(string) bool, needles ...str
 // per event, and most events never need most rules: compiling all of them up front cost every
 // hook run a few milliseconds before it had read its input.
 func lazyRule(expr, replacement string, keep func(string) bool, needles *redactNeedles) redactionRule {
-	return redactionRule{pattern: sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(expr) }), replacement: replacement, keep: keep, needles: needles}
+	return redactionRule{pattern: lazyPattern(expr), replacement: replacement, keep: keep, needles: needles}
+}
+
+// lazyPattern compiles expr the first time it is called.
+//
+// The rules whose pattern names a credential (redactLabel, redactFlag) are written as struct
+// literals around it rather than through lazyRule: static analysis reads a call whose argument is a
+// constant spelling out "password" as returning that password, and would then treat every string
+// redaction returns, and every hash of one, as a credential.
+func lazyPattern(expr string) func() *regexp.Regexp {
+	return sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(expr) })
 }
 
 // redactLabelWords are the words every redactLabel match ends in, lower-cased: each marker in its
@@ -315,12 +325,18 @@ var redactionRules = concatRules([]redactionRule{
 	// literal or a structure. The replacement is quoted the way the label is, so the text still
 	// parses where something decodes it again (string-encoded tool arguments do); null, true, false
 	// and nested objects or arrays are left for their own fields' rules.
-	lazyRule(`(?i)(\b`+redactLabel+`(?P<q>`+redactOpenQuote+`)\s*[:=]\s*)(?P<value>`+redactBare+`)`, "${1}${q}"+redactedValue+"${q}", isLiteralOrAuthScheme, redactQuotedLabelNeedles),
-	lazyRule(`(?i)(\b`+redactLabel+`\s*[:=]\s*)(?P<value>`+redactUnquoted+`)`, "${1}"+redactedValue, isAuthScheme, redactLabelNeedles),
+	{
+		pattern:     lazyPattern(`(?i)(\b` + redactLabel + `(?P<q>` + redactOpenQuote + `)\s*[:=]\s*)(?P<value>` + redactBare + `)`),
+		replacement: "${1}${q}" + redactedValue + "${q}", keep: isLiteralOrAuthScheme, needles: redactQuotedLabelNeedles,
+	},
+	{
+		pattern:     lazyPattern(`(?i)(\b` + redactLabel + `\s*[:=]\s*)(?P<value>` + redactUnquoted + `)`),
+		replacement: "${1}" + redactedValue, keep: isAuthScheme, needles: redactLabelNeedles,
+	},
 	// A command-line flag: `--password x`, `--token=x`, `--api-key x`, and quoted, the way agents
 	// usually write arguments: `--password "x y"`, `--token='x'`.
 }, quotedRules(quotedFlag, nil), []redactionRule{
-	lazyRule(`(?i)(`+redactFlag+`)([^\s"'-][^\s"']*)`, "${1}"+redactedValue, nil, redactFlagNeedles),
+	{pattern: lazyPattern(`(?i)(` + redactFlag + `)([^\s"'-][^\s"']*)`), replacement: "${1}" + redactedValue, needles: redactFlagNeedles},
 	// The password in a URL's userinfo: `postgres://user:pw@host`, `https://x-access-token:t@github.com`.
 	foldedRule(`(?i)(\b[a-z][a-z0-9+.-]*://[^/\s:@"'<>]+:)([^@/\s"'<>]+)(@)`, "${1}"+redactedValue+"${3}", nil, "://"),
 	// Credentials recognizable by their own shape, wherever they appear. The type prefix is public
