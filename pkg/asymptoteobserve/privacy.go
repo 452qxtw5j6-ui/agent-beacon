@@ -299,14 +299,16 @@ func TruncateUTF8(value string, limit int) string {
 	return value[:limit]
 }
 
+// TruncateString cuts value to at most limit bytes on a character boundary, marking the cut
+// when limit leaves room for the marker.
 func TruncateString(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}
 	if limit < 32 {
-		return value[:limit]
+		return TruncateUTF8(value, limit)
 	}
-	return value[:limit-15] + "...[truncated]"
+	return TruncateUTF8(value, limit-15) + "...[truncated]"
 }
 
 // CleanString redacts before it truncates, so a cut can never leave part of a secret behind.
