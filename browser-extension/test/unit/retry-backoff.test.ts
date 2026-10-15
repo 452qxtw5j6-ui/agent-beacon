@@ -17,7 +17,7 @@ beforeEach(() => {
   api.get.mockImplementation(async () => ({ delivery_queue: structuredClone(queue) }));
   api.set.mockImplementation(async ({ delivery_queue }: { delivery_queue: StoredItem[] }) => { queue = structuredClone(delivery_queue); });
   api.alarm.mockClear();
-  send = vi.fn().mockResolvedValue({ ok: false });
+  send = vi.fn().mockResolvedValue({ ok: false, status: 503 });
   vi.stubGlobal('fetch', send);
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
@@ -48,11 +48,11 @@ it('still delivers a legacy queue item without a persisted deadline', async () =
   expect(queue).toEqual([]);
 });
 
-it('keeps the existing maximum attempt limit for due failures', async () => {
+it('keeps a due failure queued past the former six-attempt limit', async () => {
   vi.setSystemTime(11_000);
   queue[0].attempts = 5;
   const { flush } = await import('../../src/background/delivery.js');
   await flush();
   expect(send).toHaveBeenCalledTimes(1);
-  expect(queue).toEqual([]);
+  expect(queue).toEqual([expect.objectContaining({ id: 'turn', attempts: 6, nextAttemptAt: 11_000 + 16_000 })]);
 });
