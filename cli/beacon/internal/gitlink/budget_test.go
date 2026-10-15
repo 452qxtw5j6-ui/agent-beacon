@@ -276,3 +276,16 @@ func TestScanBudgetOverruns(t *testing.T) {
 		t.Fatalf("an unrelated repository counted %+v", got)
 	}
 }
+
+// A busy runtime log rotates within the window, so an overrun in a rotated archive still counts.
+func TestScanBudgetOverrunsReadsRotatedArchives(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "runtime.jsonl")
+	since := budgetEpoch.Add(-7 * 24 * time.Hour)
+	writeBudgetEvent(t, logPath+".2", "post-commit", "/work/a", budgetEpoch.Add(-3*24*time.Hour), true)
+	writeBudgetEvent(t, logPath, "pre-push", "/work/a", budgetEpoch.Add(-time.Hour), false)
+
+	got := ScanBudgetOverruns(logPath, "/work/a", since)
+	if got.Count != 2 || got.CutShort != 1 || got.Last == nil || got.Last.Name != "pre-push" {
+		t.Fatalf("overruns across the live log and an archive: %+v (last %+v)", got, got.Last)
+	}
+}

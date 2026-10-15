@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
 	"github.com/asymptote-labs/agent-beacon/pkg/asymptoteobserve"
 )
 
@@ -172,19 +173,26 @@ type BudgetOverruns struct {
 	Last *BudgetOverrun `json:"last,omitempty"`
 }
 
-// ScanBudgetOverruns reads the git.hook_budget_exceeded events in the runtime log at logPath
-// recorded at or after since. repoRoot, when set, keeps only the events of that work tree. Only
-// the current log file is read, and only lines that mention the action are decoded; a log that
-// cannot be read counts nothing.
+// ScanBudgetOverruns reads the git.hook_budget_exceeded events recorded at or after since in the
+// runtime log at logPath and the rotated archives kept beside it, since a busy log rotates more
+// often than the window covers. repoRoot, when set, keeps only the events of that work tree. Only
+// lines that mention the action are decoded; a file that cannot be read counts nothing.
 func ScanBudgetOverruns(logPath, repoRoot string, since time.Time) BudgetOverruns {
 	summary := BudgetOverruns{Since: schema.FormatTimestamp(since)}
-	f, err := os.Open(logPath)
+	var lastAt time.Time
+	for _, path := range writer.RetainedLogPaths(logPath) {
+		scanBudgetOverrunFile(path, repoRoot, since, &summary, &lastAt)
+	}
+	return summary
+}
+
+func scanBudgetOverrunFile(path, repoRoot string, since time.Time, summary *BudgetOverruns, lastAt *time.Time) {
+	f, err := os.Open(path)
 	if err != nil {
-		return summary
+		return
 	}
 	defer f.Close()
 	marker := []byte(`"` + BudgetAction + `"`)
-	var lastAt time.Time
 	reader := bufio.NewReaderSize(f, 256*1024)
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -197,15 +205,15 @@ func ScanBudgetOverruns(logPath, repoRoot string, since time.Time) BudgetOverrun
 					if event.VCS.Hook.CutShort {
 						summary.CutShort++
 					}
-					if summary.Last == nil || !at.Before(lastAt) {
-						lastAt = at
+					if summary.Last == nil || !at.Before(*lastAt) {
+						*lastAt = at
 						summary.Last = &BudgetOverrun{Timestamp: event.Timestamp, Repository: event.Repository, VCSHookInfo: *event.VCS.Hook}
 					}
 				}
 			}
 		}
 		if err != nil {
-			return summary
+			return
 		}
 	}
 }

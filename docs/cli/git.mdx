@@ -221,7 +221,7 @@ match: >
 
 ## Hook runs that run out of time
 
-The hooks hold up a command a person is waiting on, so each gives up when its budget runs out: three seconds for post-commit and post-rewrite, ten for pre-push. Giving up is silent on the terminal, and a post-commit hook that gives up leaves the commit unlinked. So each run that runs out of time writes one `git.hook_budget_exceeded` event to the runtime log, with the same writer the link events use. Recording it spawns no git and touches no network.
+The hooks hold up a command a person is waiting on, so each gives up when its budget runs out: three seconds for post-commit and post-rewrite, ten for pre-push. Giving up is silent on the terminal, and a post-commit hook that gives up leaves the commit unlinked. So each run that runs out of time writes one `git.hook_budget_exceeded` event to the runtime log.
 
 ```json title="Example event (abridged)"
 {
