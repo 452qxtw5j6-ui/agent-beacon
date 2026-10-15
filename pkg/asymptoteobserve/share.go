@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -153,11 +154,11 @@ type ShareBatchResultV1 struct {
 	EventCount int `json:"event_count"`
 }
 
-var shareExternalIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`)
+var shareExternalIDPattern = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$`) })
 
 // ValidShareExternalID reports whether id is a well-formed external id.
 func ValidShareExternalID(id string) bool {
-	return shareExternalIDPattern.MatchString(id)
+	return shareExternalIDPattern().MatchString(id)
 }
 
 // ShareExternalID is the client-chosen id of a session's shared trace: `<harness>:<session-id>`
@@ -751,7 +752,7 @@ func scrubTyped[T any](s pathScrubber, input *T) *T {
 // ShareTitle is a one-line title of at most ShareTitleMaxRunes runes from prompt text, without the
 // handoff marker a resumed session's first prompt carries.
 func ShareTitle(text string) string {
-	if marker := handoffMarkerPattern.FindString(text); marker != "" {
+	if marker := handoffMarker(text); marker != "" {
 		text = strings.ReplaceAll(text, marker, " ")
 	}
 	text = strings.Join(strings.Fields(text), " ")

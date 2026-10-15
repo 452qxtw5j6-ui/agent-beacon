@@ -3,6 +3,8 @@ package asymptoteobserve
 import (
 	"fmt"
 	"regexp"
+	"strings"
+	"sync"
 )
 
 // HandoffInfo links a session to the session it was handed off from: the one whose brief
@@ -16,10 +18,15 @@ type HandoffInfo struct {
 // that whatever records the prompt can link the new session to the old one. It is a claim made in
 // prompt text, not a verified identity: anyone can type it, and a session.handoff event records that
 // the marker was observed, nothing more. A harness name may carry a hyphen, as devin-cli does.
+//
+// The patterns compile on first use: counted repetition compiles to one instruction per count, and
+// a hook process that never meets a marker should not pay for building them.
 var (
-	handoffMarkerPattern = regexp.MustCompile(`\[beacon-handoff from=([a-z0-9_-]{1,64}) session=([A-Za-z0-9._:\-]{1,200})\]`)
-	handoffHarnessChars  = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
-	handoffSessionChars  = regexp.MustCompile(`^[A-Za-z0-9._:\-]{1,200}$`)
+	handoffMarkerPattern = sync.OnceValue(func() *regexp.Regexp {
+		return regexp.MustCompile(`\[beacon-handoff from=([a-z0-9_-]{1,64}) session=([A-Za-z0-9._:\-]{1,200})\]`)
+	})
+	handoffHarnessChars = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[a-z0-9_-]{1,64}$`) })
+	handoffSessionChars = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[A-Za-z0-9._:\-]{1,200}$`) })
 )
 
 // HandoffMarker returns the marker naming harness's session sessionID, or "" when either value
@@ -27,7 +34,7 @@ var (
 // that parses back differently.
 func HandoffMarker(harness, sessionID string) string {
 	harness = NormalizeHarnessName(harness)
-	if !handoffHarnessChars.MatchString(harness) || !handoffSessionChars.MatchString(sessionID) {
+	if !handoffHarnessChars().MatchString(harness) || !handoffSessionChars().MatchString(sessionID) {
 		return ""
 	}
 	return fmt.Sprintf("[beacon-handoff from=%s session=%s]", harness, sessionID)
@@ -35,9 +42,23 @@ func HandoffMarker(harness, sessionID string) string {
 
 // ParseHandoffMarker finds the first handoff marker in text.
 func ParseHandoffMarker(text string) (HandoffInfo, bool) {
-	match := handoffMarkerPattern.FindStringSubmatch(text)
+	if !strings.Contains(text, handoffMarkerPrefix) {
+		return HandoffInfo{}, false
+	}
+	match := handoffMarkerPattern().FindStringSubmatch(text)
 	if match == nil {
 		return HandoffInfo{}, false
 	}
 	return HandoffInfo{SourceHarness: NormalizeHarnessName(match[1]), SourceSessionID: match[2]}, true
+}
+
+// handoffMarkerPrefix opens every handoff marker; text without it holds none.
+const handoffMarkerPrefix = "[beacon-handoff "
+
+// handoffMarker is the first handoff marker in text, or "".
+func handoffMarker(text string) string {
+	if !strings.Contains(text, handoffMarkerPrefix) {
+		return ""
+	}
+	return handoffMarkerPattern().FindString(text)
 }

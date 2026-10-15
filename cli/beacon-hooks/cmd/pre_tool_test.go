@@ -986,7 +986,7 @@ func TestRunSessionEndRemovesSessionLog(t *testing.T) {
 	}
 }
 
-func setupHookConfigDirs(t *testing.T) {
+func setupHookConfigDirs(t testing.TB) {
 	t.Helper()
 	tmp := t.TempDir()
 

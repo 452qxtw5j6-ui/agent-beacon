@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/config"
 	hookdiff "github.com/asymptote-labs/agent-beacon/cli/beacon-hooks/internal/diff"
@@ -207,7 +208,7 @@ const kimiAppendMode = "append"
 //
 // A successful command produces no such sentence, and its absence is deliberately not read as
 // "exited 0" -- see kimiExitCode.
-var kimiExitCodeMarker = regexp.MustCompile(`Command failed with exit code: (\d+)`)
+var kimiExitCodeMarker = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`Command failed with exit code: (\d+)`) })
 
 // kimiToolKindFor classifies a Kimi Code tool by name, and reports whether the name is known at
 // all.
@@ -379,7 +380,7 @@ func kimiResultText(input map[string]interface{}) string {
 // that has only just been launched and whose result is a task id. Those are different facts, and
 // writing 0 would make the second one indistinguishable from the first.
 func kimiExitCode(output string) (int, bool) {
-	matches := kimiExitCodeMarker.FindAllStringSubmatch(output, -1)
+	matches := kimiExitCodeMarker().FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
 		return 0, false
 	}

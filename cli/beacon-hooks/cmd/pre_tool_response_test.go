@@ -161,7 +161,7 @@ func mustJSON(t *testing.T, value interface{}) []byte {
 // runHookWithRawInput feeds stdin bytes as given and returns stdout as written, so a test can tell
 // no output from an empty object and can send a payload that is not JSON. The payloads here are
 // small, so writing before the hook runs fits in any pipe buffer.
-func runHookWithRawInput(t *testing.T, run func(cmd *cobra.Command, args []string), stdin []byte) []byte {
+func runHookWithRawInput(t testing.TB, run func(cmd *cobra.Command, args []string), stdin []byte) []byte {
 	t.Helper()
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
