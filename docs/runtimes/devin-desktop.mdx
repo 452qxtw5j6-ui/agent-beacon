@@ -52,6 +52,7 @@ beacon endpoint install --harness claude,codex,devin-desktop
 | Area | Support |
 |------|---------|
 | Prompt telemetry | Supported through Cascade prompt hooks |
+| Agent responses | Supported through the `post_cascade_response` hook. Cascade's `tool_info.response`, the Markdown of everything Cascade said since the last prompt, is recorded verbatim as an `agent.message` event in `gen_ai.output.messages`. Cascade writes that text itself, so it can include planner headings and one-line notes about actions it took around the answer |
 | Command, tool, and file telemetry | Supported for prompt, command, MCP tool, file read, and file write telemetry where Cascade/Windsurf hook payloads are available |
 | Local JSONL and dashboard | Supported |
 | MDM deployment | Supported for the endpoint agent. Devin Desktop hooks are installed separately in the logged-in user's context or project context |
