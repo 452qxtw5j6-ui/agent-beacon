@@ -104,6 +104,33 @@ func TestFactoryTranscriptReplyRefusesAnUnfinishedTurn(t *testing.T) {
 	}
 }
 
+// A message hidden from the user or from the model is never the reply, matching the session sync,
+// which drops user_only messages and records llm_only ones as errors. It is refused, not skipped,
+// so the visible message before it is not reported in its place.
+func TestFactoryTranscriptReplyRefusesHiddenMessages(t *testing.T) {
+	for _, visibility := range []string{"user_only", "llm_only"} {
+		t.Run(visibility, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "s.jsonl")
+			hidden, err := json.Marshal(map[string]interface{}{
+				"type": "message",
+				"id":   "hidden",
+				"message": map[string]interface{}{
+					"role":       "assistant",
+					"visibility": visibility,
+					"content":    []interface{}{factoryText("internal notice")},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeTranscript(t, path, append(factoryTurn("t1", "visible answer"), string(hidden))...)
+			if reply, ok := factoryTranscriptReply(path); ok {
+				t.Fatalf("reported %#v; a %s message is not the reply", reply, visibility)
+			}
+		})
+	}
+}
+
 // A record still being written is skipped, and the newest complete record decides.
 func TestFactoryTranscriptReplySkipsAPartialLastLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "s.jsonl")
