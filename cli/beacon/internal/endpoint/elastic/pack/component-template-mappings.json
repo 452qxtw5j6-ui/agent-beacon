@@ -147,7 +147,8 @@
               "properties": {
                 "ref": { "properties": { "head": { "properties": { "revision": { "type": "keyword" }, "name": { "type": "keyword" }, "type": { "type": "keyword" } } } } },
                 "repository": { "properties": { "url": { "properties": { "full": { "type": "keyword" } } } } },
-                "attribution": { "properties": { "method": { "type": "keyword" }, "changed_files": { "type": "long" }, "matched_files": { "type": "long" } } }
+                "attribution": { "properties": { "method": { "type": "keyword" }, "changed_files": { "type": "long" }, "matched_files": { "type": "long" } } },
+                "hook": { "properties": { "name": { "type": "keyword" }, "phase": { "type": "keyword" }, "budget_ms": { "type": "long" }, "elapsed_ms": { "type": "long" }, "phase_elapsed_ms": { "type": "long" }, "git_spawns": { "type": "long" }, "cut_short": { "type": "boolean" } } }
               }
             },
             "otel": {

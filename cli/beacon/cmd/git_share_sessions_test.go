@@ -306,6 +306,9 @@ func TestGitShareOnPushWritesFinishedURLsWhenUploadsRunOutOfTime(t *testing.T) {
 	if report.Noted != 1 {
 		t.Fatalf("report %+v, want the note updated", report)
 	}
+	if report.OutOfTime {
+		t.Fatalf("report %+v: a cancelled hook is not one that ran out of time", report)
+	}
 	want := "beacon:claude_code/sess-fast https://beacon.sh/s/fast01\nbeacon:claude_code/sess-slow"
 	if note := mustGit(t, root, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
 		t.Fatalf("note %q, want %q", note, want)
@@ -440,6 +443,15 @@ func TestGitPrePushAbandonsAnUploadThatNeverReturns(t *testing.T) {
 	}
 	if note := mustGit(t, remote, "notes", "--ref="+gitlink.NotesRef, "show", sha); note != want {
 		t.Fatalf("remote note %q: the notes ref was not pushed", note)
+	}
+	// The abandoned upload is recorded as the share phase running out of time, against the hook's
+	// production budget. The times are lower bounds only: the upload deadline cannot pass early.
+	hook := onlyBudgetEvent(t, gitRuntimeLogPath())
+	if hook.Name != "pre-push" || hook.Phase != "share_sessions" || !hook.CutShort || hook.BudgetMS != gitShareBudget.Milliseconds() {
+		t.Fatalf("overrun %+v, want pre-push cut short in share_sessions", hook)
+	}
+	if hook.PhaseElapsedMS < gitShareUploadBudget.Milliseconds() || hook.ElapsedMS < hook.PhaseElapsedMS || hook.GitSpawns < 1 {
+		t.Fatalf("overrun %+v, want the share phase to have run its %s upload budget", hook, gitShareUploadBudget)
 	}
 }
 

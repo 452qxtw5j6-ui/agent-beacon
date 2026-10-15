@@ -175,6 +175,9 @@ func buildDoctorResult(status lifecycle.Status, generatedAt time.Time) doctorRes
 			checks = append(checks, check)
 		}
 	}
+	if check, ok := gitHookBudgetCheck(status.LogPath, generatedAt); ok {
+		checks = append(checks, check)
+	}
 	result := doctorResult{
 		Status:      aggregateCheckStatus(checks),
 		Checks:      checks,
@@ -1583,6 +1586,10 @@ func planDoctorFixes(result doctorResult, status lifecycle.Status) doctorFixPlan
 				addSkip(plannedAction{Action: "manual_fix", Target: check.Target, Message: check.Action})
 			}
 		case "dsh_hook_capture":
+			addSkip(plannedAction{Action: "manual_fix", Target: check.Target, Message: check.Action})
+		// The budget is fixed, so there is nothing to repair; a commit the hook left unlinked is
+		// linked by hand.
+		case "git_hook_budget":
 			addSkip(plannedAction{Action: "manual_fix", Target: check.Target, Message: check.Action})
 		}
 	}

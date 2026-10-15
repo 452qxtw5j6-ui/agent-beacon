@@ -27,6 +27,7 @@ Doctor verifies:
 - Service definition: launchd plist on macOS, systemd unit on Linux
 - Configured harness telemetry and recent observed events
 - Whether DeepSeek Harness hooks are actually recording live events (`dsh_hook_capture`)
+- Whether Beacon's git hooks ran out of time recently (`git_hook_budget`)
 - Whether a real user's agent runtime points at the collector (system mode only)
 
 The runtime log itself can be missing before the first event is written. In that case, doctor reports a warning instead of a hard failure.
@@ -61,6 +62,18 @@ dsh_hook_capture: warn target=deepseek_harness (2 DeepSeek Harness session(s) ra
 Doctor cannot reproduce the sandbox, because running the hook command from doctor runs it outside `dsh`, where it succeeds. So the check compares evidence instead. It counts native sessions that DeepSeek wrote after the hooks were installed and more than a few minutes after the last event with `harness.collection_method=hook`. The live log and every rotated archive are searched for that event. Each of those sessions is one the live hooks did not capture. Once rotation has started discarding history, sessions older than the oldest retained event are not counted, because their hook events may have rotated out. Evidence doctor cannot read, such as a missing hooks file, is reported as a warning rather than a pass. The other cause is a `dsh` process that was already running when the hooks were installed and has not been restarted.
 
 This is a warning, not a failure. The sandbox mode is the operator's choice in `dsh`, and Beacon does not change it. `--fix` lists the check as a manual skip. See [Live hooks and the DeepSeek Harness sandbox](/runtimes/deepseek-harness#live-hooks-and-the-deepseek-harness-sandbox).
+
+### `git_hook_budget`
+
+This check appears only when one of Beacon's [git hooks](/cli/git#hook-runs-that-run-out-of-time) ran out of time in the last seven days, in any repository. It counts the `git.hook_budget_exceeded` events in the runtime log and names the most recent.
+
+```
+git_hook_budget: warn target=/work/my-repo (2 hook run(s) ran out of time in the last 7 days, 1 cut short;
+  last 2026-10-14T09:00:03Z: post-commit in attribute, 3.3s of 3s, cut short)
+  action="run `beacon git status` in the repository to see its overruns, and `beacon git link <commit>` to link a commit the hook left unlinked"
+```
+
+It warns when a run was cut short, because a commit may have been left unlinked; runs that only finished late are reported as ok. The budgets are fixed, so `--fix` lists the check as a manual skip.
 
 ## Fix mode
 

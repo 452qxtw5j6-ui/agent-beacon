@@ -162,6 +162,13 @@ Regenerate with `beacon rules fields --markdown > spec/threat-rules/FIELDS.md`.
 | `e.vcs.attribution.changed_files` | int |
 | `e.vcs.attribution.matched_files` | int |
 | `e.vcs.attribution.method` | string |
+| `e.vcs.hook.budget_ms` | int |
+| `e.vcs.hook.cut_short` | bool |
+| `e.vcs.hook.elapsed_ms` | int |
+| `e.vcs.hook.git_spawns` | int |
+| `e.vcs.hook.name` | string |
+| `e.vcs.hook.phase` | string |
+| `e.vcs.hook.phase_elapsed_ms` | int |
 | `e.vcs.ref.head.name` | string |
 | `e.vcs.ref.head.revision` | string |
 | `e.vcs.ref.head.type` | string |
