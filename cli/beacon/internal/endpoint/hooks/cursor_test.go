@@ -43,6 +43,43 @@ func TestInstallCursorHooksJSONPreservesNonBeaconHooks(t *testing.T) {
 	if !strings.Contains(text, `"afterAgentThought"`) || !strings.Contains(text, "agent-thought") {
 		t.Fatalf("afterAgentThought reasoning hook was not installed: %s", text)
 	}
+	var parsed struct {
+		Hooks map[string][]HookRef `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	responses := parsed.Hooks["afterAgentResponse"]
+	if len(responses) != 1 || !strings.HasSuffix(responses[0].Command, " agent-response") || !strings.Contains(responses[0].Command, "--platform cursor") {
+		t.Fatalf("afterAgentResponse hooks = %#v, want one Beacon agent-response command", responses)
+	}
+}
+
+func TestInstallCursorHooksJSONAgentResponseIsIdempotentAndRemovable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	existing := `{"version":1,"hooks":{"afterAgentResponse":[{"command":"echo mine"}]}}`
+	if err := os.WriteFile(path, []byte(existing), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := installCursorHooksJSON(path, "/tmp/beacon-hooks", "/tmp/runtime.jsonl", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), " agent-response"); n != 1 {
+		t.Fatalf("agent-response installed %d times after two installs, want 1: %s", n, data)
+	}
+	if _, err := removeEndpointHooks(path); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if strings.Contains(string(data), "agent-response") || !strings.Contains(string(data), "echo mine") {
+		t.Fatalf("uninstall should remove only Beacon's afterAgentResponse hook: %s", data)
+	}
 }
 
 func TestRemoveEndpointHooksPreservesOtherHooks(t *testing.T) {
