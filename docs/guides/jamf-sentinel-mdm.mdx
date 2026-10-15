@@ -39,7 +39,7 @@ flowchart LR
 | Permission to create a Data Collection Endpoint, deploy a Data Collection Rule, and register an app in Microsoft Entra ID | Step 2. The app needs the Monitoring Metrics Publisher role on that rule. |
 | A person logged in at the Mac when the harness policies run | Hook and OTLP settings are written into that person's home directory. |
 
-The Macs do not need Beacon installed beforehand. Jamf installs it in step 4.
+The Macs do not need Beacon installed beforehand. Jamf installs it in Policy 1.
 
 <Note>
   Claude Desktop chat is not part of this rollout. Beacon does not collect that app. Claude Code is the `claude` CLI and the Claude Code extension. Codex is the Codex CLI. Cursor is the Cursor app.
@@ -58,7 +58,7 @@ beacon endpoint install
 
 Check it with `beacon endpoint status` and `beacon endpoint doctor`. A fresh install reports one warning, `harness_observed`, until an agent actually runs. Start a new Claude Code or Codex session and the events are in `~/.beacon/endpoint/logs/runtime.jsonl`.
 
-Leave this Mac as it is. The pilot Macs get the package in step 4, and they forward a different log.
+Leave this Mac as it is. The pilot Macs get the package in Policy 1, and they forward a different log.
 
 ## 2. Prepare Sentinel
 
@@ -79,7 +79,7 @@ The pack contains the table schema, both Data Collection Rule templates, `vector
 
 Each Mac needs outbound HTTPS to `login.microsoftonline.com` and to the Data Collection Endpoint hostname. Nothing else.
 
-Beacon never stores the tenant ID, client secret, workspace ID, or ingestion URL. Those stay in the forwarder's environment file on the Mac, written in step 5.
+Beacon never stores the tenant ID, client secret, workspace ID, or ingestion URL. Those stay in the forwarder's environment file on the Mac, written by Policy 2.
 
 ## 3. Set up Jamf
 
@@ -254,9 +254,22 @@ chmod 0644 "$PLIST_PATH"
 . "$ENV_PATH"
 "$VECTOR_BIN" validate --skip-healthchecks "$CONFIG_PATH"
 
-launchctl bootout "system/$LABEL" >/dev/null 2>&1 || true
-launchctl bootstrap system "$PLIST_PATH"
-launchctl print "system/$LABEL"
+target="system/$LABEL"
+launchctl bootout "$target" >/dev/null 2>&1 || true
+attempts=0
+while launchctl print "$target" >/dev/null 2>&1; do
+  attempts=$((attempts + 1))
+  if [ "$attempts" -ge 65 ]; then
+    echo "Timed out waiting for $LABEL to stop" >&2
+    exit 1
+  fi
+  sleep 1
+done
+launchctl bootstrap system "$PLIST_PATH" >/dev/null 2>&1 || {
+  echo "Could not bootstrap $LABEL" >&2
+  exit 1
+}
+launchctl print "$target"
 ```
 
 Vector starts reading at the end of the log. Lines already in the file are not uploaded. That is what you want on a pilot: only activity from the moment forwarding starts.
