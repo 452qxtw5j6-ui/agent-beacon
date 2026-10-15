@@ -285,9 +285,10 @@ func TestWizardHasNoGlobalQuitKey(t *testing.T) {
 	}
 }
 
-// The confirm screen is where forwarding is authorized. It names the operator,
-// the destination, the capture mode, and how to opt out, change the mode, stop
-// sending, or delete the data.
+// The confirm screen is where forwarding is authorized. It names the signed-in
+// account, states that confirming installs Beacon and starts forwarding, and
+// names the operator, the destination, the capture mode, and how to opt out,
+// change the mode, stop sending, or delete the data.
 func TestConfirmScreenNamesWhatConfirmingStarts(t *testing.T) {
 	for mode, wantMode := range map[string]string{
 		"standard":      "Standard",
@@ -308,6 +309,8 @@ func TestConfirmScreenNamesWhatConfirmingStarts(t *testing.T) {
 
 		view := strings.Join(strings.Fields(model.View()), " ")
 		for _, want := range []string{
+			"Account: person@example.com",
+			"This installs Beacon and starts forwarding to beacon.sh.",
 			"Beacon Cloud is operated by Asymptote Labs, Inc.",
 			"Destination: Beacon Cloud",
 			"Capture mode: " + wantMode,

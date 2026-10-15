@@ -716,12 +716,19 @@ func (m wizardModel) View() string {
 	case confirmScreen:
 		title = "Ready to set up Beacon"
 		if m.result.Destination == DestinationAsymptote {
+			// The account is the identity this machine will enroll under. It has to
+			// be on this screen: confirming is what starts forwarding.
+			if m.options.Email != "" {
+				body = "Account: " + m.options.Email + "\n\n"
+			}
 			// Values share a column: "Destination:" is one character shorter than
 			// "Capture mode:", so it takes one more space.
-			body = "Beacon Cloud is operated by Asymptote Labs, Inc." +
+			body += "Beacon Cloud is operated by Asymptote Labs, Inc." +
 				"\n\n" +
 				"  Destination:       Beacon Cloud\n" +
 				"  Capture mode:      " + managedprivacy.Label(m.result.PrivacyMode) +
+				"\n\n" +
+				wizardWarn.Render("This installs Beacon and starts forwarding to beacon.sh.") +
 				"\n\n" +
 				"Turn off research and AI training any time in Beacon Cloud:\n" +
 				"click your profile picture (top right), then Settings.\n" +

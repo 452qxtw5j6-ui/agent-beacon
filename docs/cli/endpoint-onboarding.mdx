@@ -86,13 +86,14 @@ Change the mode later with `beacon endpoint connect --privacy-mode`. See
 [`beacon endpoint connect`](/cli/endpoint-connect#privacy-modes) for the exact contract.
 
 Confirming Beacon Cloud connects this endpoint in the same command, after the
-local install succeeds. The confirm screen names Asymptote Labs, Inc. as the
-operator, the destination, and the capture mode (Standard or Metadata only). It
-says how to turn off research and AI training in Beacon Cloud (profile picture,
-then Settings), how to change the capture mode (`beacon endpoint connect
---privacy-mode`), how to stop sending (`beacon endpoint disconnect`), and that
-deleting data is an email to privacy@asymptotelabs.ai. That screen is where
-forwarding is authorized. An endpoint that is already enrolled is not re-enrolled: enrollment
+local install succeeds. The confirm screen names the signed-in account and
+states that confirming installs Beacon and starts forwarding to beacon.sh. It
+also names Asymptote Labs, Inc. as the operator, the destination, and the
+capture mode (Standard or Metadata only). It says how to turn off research and
+AI training in Beacon Cloud (profile picture, then Settings), how to change the
+capture mode (`beacon endpoint connect --privacy-mode`), how to stop sending
+(`beacon endpoint disconnect`), and that deleting data is an email to
+privacy@asymptotelabs.ai. That screen is where forwarding is authorized. An endpoint that is already enrolled is not re-enrolled: enrollment
 rotates the device key, so a connected machine keeps the key it has and simply
 records the destination.
 
