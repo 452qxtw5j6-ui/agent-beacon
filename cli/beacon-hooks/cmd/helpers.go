@@ -83,7 +83,7 @@ func looksLikeCursorPayload(input map[string]interface{}) bool {
 		return true
 	}
 	switch getFirstStr(input, "hook_event_name", "hookEventName") {
-	case "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution", "beforeReadFile", "afterFileEdit", "afterAgentThought", "postToolUse", "postToolUseFailure", "preCompact", "subagentStart", "subagentStop":
+	case "beforeSubmitPrompt", "beforeShellExecution", "afterShellExecution", "beforeReadFile", "afterFileEdit", "afterAgentThought", "afterAgentResponse", "postToolUse", "postToolUseFailure", "preCompact", "subagentStart", "subagentStop":
 		return true
 	default:
 		return false
