@@ -199,6 +199,9 @@ jobs:
             cli/beacon-hooks
             collector-builder/exporter/beaconjsonexporter
             pkg/asymptoteobserve
+      - name: Check the plugins' shared serializer
+        working-directory: plugins/shared
+        run: bun run check && bun test
       - name: Check OpenCode plugin
         working-directory: plugins/opencode-beacon
         run: bun run check && bun test

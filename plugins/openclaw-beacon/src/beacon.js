@@ -18,9 +18,6 @@ const debugEnabled = process.env.BEACON_OPENCLAW_DEBUG === "1"
 // observe hooks: `before_tool_call` never waits at all (see dispatch below).
 const sendTimeoutMs = 2000
 
-// How deep into an event the serializer will walk before giving up.
-const maxDepth = 8
-
 // The hooks this plugin registers, and nothing else.
 //
 // OpenClaw publishes forty-one typed hooks. These ten are the ones that describe what the agent
@@ -121,22 +118,29 @@ function debugLog(message, extra) {
   }
 }
 
-// safeClone turns an OpenClaw hook payload into something JSON.stringify accepts.
+// BEGIN shared/safe-clone
+// Generated from plugins/shared/safe-clone.ts by `bun run sync`. Edit that file, not this block:
+// `bun run check` fails when the two differ.
+
+// How deep into a payload the serializer will walk before giving up.
+const maxDepth = 8
+
+// safeClone turns a live runtime payload into something JSON.stringify accepts.
 //
-// The payloads carry live objects: an AbortSignal on the tool context, provider message objects on
-// `llm_output`, and tool params that are mutable by design. JSON.stringify throws on a circular
-// reference and on a bigint, and silently flattens an Error to {}, so each is handled here rather
-// than losing the whole payload to one bad field.
+// Runtimes hand plugins live objects, not plain data: AbortSignals, SDK class instances, parent
+// references, provider message objects, and tool inputs that are mutable by design. JSON.stringify
+// throws on a circular reference and on a bigint, and silently flattens an Error to {}, so each is
+// handled here rather than losing the whole payload to one bad field.
 //
 // Cycles are tracked along the current path and released on the way out, so an object that legibly
-// appears twice -- the same file path referenced from two places in one patch -- is kept both
-// times. A WeakSet that never released would drop the second occurrence as if it were a cycle.
+// appears twice -- the same file path referenced from two places in one edit -- is kept both times.
+// A WeakSet that never released would drop the second occurrence as if it were a cycle.
 function safeClone(value, depth = 0, seen = new WeakSet()) {
   if (value === null) return null
   const kind = typeof value
   if (kind === "function" || kind === "symbol" || kind === "undefined") return undefined
   if (kind === "bigint") return String(value)
-  if (kind !== "object") return value
+  if (typeof value !== "object") return value
   if (depth >= maxDepth) return undefined
 
   if (seen.has(value)) return undefined
@@ -159,6 +163,7 @@ function safeClone(value, depth = 0, seen = new WeakSet()) {
     seen.delete(value)
   }
 }
+// END shared/safe-clone
 
 // sendToBeacon spawns the hook binary and writes one envelope to its stdin.
 //
