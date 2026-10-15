@@ -105,7 +105,7 @@ func inspectSkillRoot(root skillRoot, redaction string, co contentOptions) []Ski
 		ParserStatus: StatusNotFound,
 		Redaction:    redaction,
 	}
-	info, err := os.Stat(root.path)
+	info, err := statPath(root.path)
 	if err != nil {
 		base.Reason = errReason(err)
 		if !os.IsNotExist(err) {
@@ -119,7 +119,7 @@ func inspectSkillRoot(root skillRoot, redaction string, co contentOptions) []Ski
 		base.Reason = "path is not a directory"
 		return []Skill{base}
 	}
-	entries, err := os.ReadDir(root.path)
+	entries, err := readDirPath(root.path)
 	if err != nil {
 		base.ParserStatus = StatusUnreadable
 		base.Reason = errReason(err)
@@ -137,7 +137,7 @@ func inspectSkillRoot(root skillRoot, redaction string, co contentOptions) []Ski
 			continue
 		}
 		manifestPath := filepath.Join(root.path, entry.Name(), "SKILL.md")
-		if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+		if _, err := statPath(manifestPath); os.IsNotExist(err) {
 			continue
 		}
 		skills = append(skills, inspectSkillManifest(root, entry.Name(), manifestPath, redaction, co))
@@ -161,7 +161,7 @@ func inspectSkillManifest(root skillRoot, name, manifestPath, redaction string, 
 		ParserStatus:     StatusNotFound,
 		Redaction:        redaction,
 	}
-	info, err := os.Stat(manifestPath)
+	info, err := statPath(manifestPath)
 	if err != nil {
 		skill.Reason = errReason(err)
 		if !os.IsNotExist(err) {
@@ -176,7 +176,7 @@ func inspectSkillManifest(root skillRoot, name, manifestPath, redaction string, 
 		skill.Reason = "manifest path is a directory"
 		return skill
 	}
-	data, err := os.ReadFile(manifestPath)
+	data, err := readFilePath(manifestPath)
 	if err != nil {
 		skill.ParserStatus = StatusUnreadable
 		skill.Reason = errReason(err)

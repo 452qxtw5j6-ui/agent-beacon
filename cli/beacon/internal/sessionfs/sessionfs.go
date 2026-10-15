@@ -186,6 +186,18 @@ func (c *Confinement) check(op, path string, info fs.FileInfo) error {
 	return nil
 }
 
+// Confined reports whether reads of path go through an active confinement: one is active and path
+// lies inside its home. A caller that also reads paths outside the home (root-owned system
+// locations) uses this to read only those directly.
+func Confined(path string) bool {
+	c := active.Load()
+	if c == nil {
+		return false
+	}
+	_, ok := c.rel(path)
+	return ok
+}
+
 // Open opens a file or directory for reading.
 func Open(path string) (*os.File, error) {
 	c := active.Load()

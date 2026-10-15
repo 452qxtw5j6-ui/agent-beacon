@@ -32,6 +32,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/schema"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/sessionfs"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
 
@@ -566,6 +567,18 @@ func writeInventoryHeartbeat(cfg endpointconfig.Config, settings endpointconfig.
 	previous := state.LastSnapshotDigest
 	writeSnapshot := false
 	next := state
+	release := func() {}
+	if !scope.NoConsoleUser {
+		confined, err := confineInventoryScan(scope.HomeDir)
+		if err != nil {
+			// Never scan a home root does not own without the confinement; the liveness heartbeat
+			// still goes out.
+			fmt.Fprintf(os.Stderr, "warning: inventory scan skipped: %v\n", err)
+			scope = heartbeatScope{NoConsoleUser: true}
+		} else {
+			release = confined
+		}
+	}
 	if scope.NoConsoleUser {
 		inventoryResult = endpointinventory.Result{
 			GeneratedAt: now.Format(time.RFC3339),
@@ -580,6 +593,7 @@ func writeInventoryHeartbeat(cfg endpointconfig.Config, settings endpointconfig.
 			IncludeContents:  settings.IncludeContents,
 			MaxContentBytes:  settings.MaxContentBytes,
 		})
+		release()
 		digest = endpointinventory.SnapshotDigest(inventoryResult)
 		// Compare against the last digest for *this* home: a multi-user machine alternates
 		// console users, and a switch is not a change in anyone's inventory.
@@ -1858,4 +1872,27 @@ func syntheticEvent(destination string) schema.Event {
 	})
 	event.Destination = &schema.DestinationInfo{Type: destination, Mode: mode, Status: "configured"}
 	return event
+}
+
+// confineInventoryScan confines the inventory scan of home with sessionfs when this process is root
+// scanning a home it does not own -- the system job reading the console user's home. That user can
+// plant anything there: a symlink to a root-only file (whose content or hash would land in the
+// world-readable system log), a FIFO that hangs the job while it holds the inventory lock, or a
+// link to /dev/zero. Confined, those read as absent. It returns the release to call after the scan.
+func confineInventoryScan(home string) (func(), error) {
+	if strings.TrimSpace(home) == "" || os.Geteuid() != 0 {
+		return func() {}, nil
+	}
+	uid, err := sessionfs.OwnerUID(home)
+	if err != nil {
+		return nil, fmt.Errorf("could not read the owner of %s: %w", home, err)
+	}
+	if uid == 0 {
+		return func() {}, nil
+	}
+	confined, err := sessionfs.Confine(home, uid, sessionfs.Options{})
+	if err != nil {
+		return nil, err
+	}
+	return confined.Release, nil
 }
