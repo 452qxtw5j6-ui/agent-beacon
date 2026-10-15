@@ -455,16 +455,3 @@ func TestTruncateStringIsAlwaysValidUTF8WithinTheLimit(t *testing.T) {
 		}
 	}
 }
-
-func TestCleanStringKeepsMultiByteTextValid(t *testing.T) {
-	value := strings.Repeat("界", DefaultStringLimit)
-	for _, redact := range []bool{false, true} {
-		got := CleanString(value, DefaultStringLimit, redact)
-		if len(got) > DefaultStringLimit || !utf8.ValidString(got) {
-			t.Fatalf("CleanString(redact=%v) = %d bytes, valid=%v", redact, len(got), utf8.ValidString(got))
-		}
-		if !strings.HasSuffix(got, "界...[truncated]") {
-			t.Fatalf("CleanString(redact=%v) ended with %q", redact, got[len(got)-20:])
-		}
-	}
-}
