@@ -302,7 +302,7 @@ func TestConfirmScreenNamesWhatConfirmingStarts(t *testing.T) {
 			PresetDestination: DestinationAsymptote,
 			PresetPrivacyMode: mode,
 		})
-		model.width, model.height = 100, 40
+		model.width, model.height = 80, 24
 		model.screen = confirmScreen
 		model.result.Destination = DestinationAsymptote
 		model.result.PrivacyMode = mode
@@ -340,6 +340,43 @@ func TestConfirmScreenNamesWhatConfirmingStarts(t *testing.T) {
 	}
 	if strings.Contains(view, "install and connect") {
 		t.Fatalf("local confirm screen must not offer to connect: %s", view)
+	}
+}
+
+// bubbletea's alt-screen renderer keeps the last height lines of a frame. On a
+// default 80×24 terminal that used to drop the account and the operator line
+// while leaving "enter install and connect" on screen.
+func TestConfirmScreenFitsDefaultTerminal(t *testing.T) {
+	model := newWizardModel(WizardOptions{
+		SignedIn:          true,
+		Email:             "person@example.com",
+		OfferManaged:      true,
+		OfferAgentTools:   true,
+		PresetDestination: DestinationAsymptote,
+		PresetPrivacyMode: "standard",
+		BackfillDays:      30,
+	})
+	model.width, model.height = 80, 24
+	model.screen = confirmScreen
+	model.result.Destination = DestinationAsymptote
+	model.result.PrivacyMode = "standard"
+
+	view := model.View()
+	lines := strings.Split(view, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > 24 {
+		t.Fatalf("confirm screen is %d lines at 80 columns; an 80×24 terminal drops the top:\n%s", len(lines), view)
+	}
+	for _, want := range []string{
+		"Account: person@example.com",
+		"operated by Asymptote Labs",
+		"This installs Beacon and starts forwarding to beacon.sh.",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("80×24 confirm screen missing %q:\n%s", want, view)
+		}
 	}
 }
 

@@ -717,26 +717,22 @@ func (m wizardModel) View() string {
 		title = "Ready to set up Beacon"
 		if m.result.Destination == DestinationAsymptote {
 			// The account is the identity this machine will enroll under. It has to
-			// be on this screen: confirming is what starts forwarding.
+			// stay on screen: the alt-screen renderer drops lines above the terminal
+			// height, and a default 80×24 terminal is the one this view has to fit.
 			if m.options.Email != "" {
-				body = "Account: " + m.options.Email + "\n\n"
+				body = "Account: " + m.options.Email + "\n"
 			}
-			// Values share a column: "Destination:" is one character shorter than
-			// "Capture mode:", so it takes one more space.
-			body += "Beacon Cloud is operated by Asymptote Labs, Inc." +
-				"\n\n" +
-				"  Destination:       Beacon Cloud\n" +
-				"  Capture mode:      " + managedprivacy.Label(m.result.PrivacyMode) +
-				"\n\n" +
-				wizardWarn.Render("This installs Beacon and starts forwarding to beacon.sh.") +
-				"\n\n" +
-				"Turn off research and AI training any time in Beacon Cloud:\n" +
-				"click your profile picture (top right), then Settings.\n" +
-				"Change capture mode any time with `beacon endpoint connect --privacy-mode`.\n" +
-				"Stop sending any time with `beacon endpoint disconnect`.\n" +
+			body += "Beacon Cloud is operated by Asymptote Labs, Inc.\n" +
+				"Destination: Beacon Cloud\n" +
+				"Capture mode: " + managedprivacy.Label(m.result.PrivacyMode) + "\n" +
+				wizardWarn.Render("This installs Beacon and starts forwarding to beacon.sh.") + "\n" +
+				"Turn off research and AI training any time in Beacon Cloud: " +
+				"click your profile picture (top right), then Settings. " +
+				"Change capture mode any time with `beacon endpoint connect --privacy-mode`. " +
+				"Stop sending any time with `beacon endpoint disconnect`. " +
 				"To delete your data, email privacy@asymptotelabs.ai."
 			if m.options.BackfillDays > 0 {
-				body += "\n\n" + fmt.Sprintf("It also uploads your agent sessions from the last %d days, read from their session history on this machine.", m.options.BackfillDays)
+				body += fmt.Sprintf(" It also uploads your agent sessions from the last %d days, read from their session history on this machine.", m.options.BackfillDays)
 			}
 		} else {
 			label, _ := destinationCopy(m.result.Destination)
@@ -753,7 +749,7 @@ func (m wizardModel) View() string {
 			}
 		}
 		if m.options.OfferAgentTools {
-			body += "\n\nAgent tools: " + m.agentToolsSummary()
+			body += "\nAgent tools: " + m.agentToolsSummary()
 		}
 	}
 
