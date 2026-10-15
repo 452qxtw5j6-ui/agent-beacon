@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/claudesession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/integrations/cowork"
@@ -114,14 +115,18 @@ func DiscoverClaude() Harness {
 	h := Harness{Name: "claude_code", DisplayName: "Claude Code", Capability: "otel_env"}
 	detectExecutable(&h, "claude")
 	home, _ := os.UserHomeDir()
-	userConfig := filepath.Join(home, ".claude", "settings.json")
+	configDir := claudesession.ConfigDir(home)
+	userConfig := ""
+	if configDir != "" {
+		userConfig = filepath.Join(configDir, "settings.json")
+	}
 	managedConfig := "/Library/Application Support/ClaudeCode/managed-settings.json"
 	if fileExists(managedConfig) {
 		h.ConfigPath = managedConfig
 		status, msg := claudeStatus(managedConfig)
 		h.TelemetryStatus = status
 		h.Message = msg
-	} else if fileExists(userConfig) {
+	} else if userConfig != "" && fileExists(userConfig) {
 		h.ConfigPath = userConfig
 		status, msg := claudeStatus(userConfig)
 		h.TelemetryStatus = status
@@ -131,7 +136,7 @@ func DiscoverClaude() Harness {
 		h.TelemetryStatus = TelemetryMissing
 		h.Message = "Claude settings file was not found"
 	}
-	if !h.Detected && dirExists(filepath.Join(home, ".claude")) {
+	if !h.Detected && configDir != "" && dirExists(configDir) {
 		h.Detected = true
 	}
 	return h
@@ -373,7 +378,7 @@ func ConfigureClaude(opts ConfigureOptions) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(home, ".claude", "settings.json")
+	path := filepath.Join(claudesession.ConfigDir(home), "settings.json")
 	settings := map[string]interface{}{}
 	if data, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(data, &settings)

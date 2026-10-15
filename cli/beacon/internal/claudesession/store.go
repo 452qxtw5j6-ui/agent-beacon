@@ -47,7 +47,40 @@ type Stats struct {
 	FirstError  error
 }
 
+// ConfigDir is Claude Code's config directory: a trimmed, non-empty CLAUDE_CONFIG_DIR, as Claude
+// Code resolves it, otherwise <home>/.claude. settings.json, skills and projects live under it.
+// It is empty when CLAUDE_CONFIG_DIR is unset and home is empty, rather than a relative ".claude"
+// that would name a project's directory.
+func ConfigDir(home string) string {
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		return dir
+	}
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude")
+}
+
+// StateFile is Claude Code's user state file, the one `claude mcp add --scope user` writes:
+// <home>/.claude.json, or .claude.json inside CLAUDE_CONFIG_DIR when that is set. Unlike the
+// config directory's other files it sits beside .claude, not in it, by default. Empty under the
+// same condition as ConfigDir.
+func StateFile(home string) string {
+	if dir := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); dir != "" {
+		return filepath.Join(dir, ".claude.json")
+	}
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude.json")
+}
+
+// DefaultProjectsDir is where Claude Code keeps session transcripts: <config dir>/projects.
 func DefaultProjectsDir() (string, error) {
+	if strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")) != "" {
+		// No home directory is needed when the config directory is named outright.
+		return filepath.Join(ConfigDir(""), "projects"), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
@@ -55,7 +88,7 @@ func DefaultProjectsDir() (string, error) {
 	if strings.TrimSpace(home) == "" {
 		return "", errors.New("home directory is empty")
 	}
-	return filepath.Join(home, ".claude", "projects"), nil
+	return filepath.Join(ConfigDir(home), "projects"), nil
 }
 
 func NewStore(dir string) (*Store, error) {

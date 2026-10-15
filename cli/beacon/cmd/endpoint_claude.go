@@ -20,7 +20,7 @@ var endpointClaudeCmd = &cobra.Command{
 	Long: `Collect endpoint telemetry from Claude Code's local session transcripts.
 
 Beacon's normal Claude Code integration uses hooks and OpenTelemetry for live capture.
-This command reads Claude's committed JSONL session files under ~/.claude/projects so
+This command reads Claude's committed JSONL session files under $CLAUDE_CONFIG_DIR/projects (default ~/.claude/projects) so
 historical sessions and sessions that ran without Beacon hooks can still be represented
 in the local endpoint log. Every emitted event is marked harness.collection_method=poll:
 Beacon sees what Claude already wrote, so nothing here can hold or deny a tool call.`,
@@ -65,7 +65,7 @@ func init() {
 
 	for _, c := range []*cobra.Command{endpointClaudeSyncCmd, endpointClaudeStatusCmd} {
 		f := c.Flags()
-		f.StringVar(&endpointClaudeOpts.projectsDir, "projects-dir", "", "Claude projects directory (default ~/.claude/projects)")
+		f.StringVar(&endpointClaudeOpts.projectsDir, "projects-dir", "", "Claude projects directory (default $CLAUDE_CONFIG_DIR/projects, else ~/.claude/projects)")
 		f.StringVar(&endpointClaudeOpts.statePath, "state", "", "Collector cursor file (default ~/.beacon/endpoint/state/claude.json)")
 		f.BoolVar(&endpointOpts.jsonOutput, "json", false, "Print the result as JSON")
 		f.BoolVar(&endpointOpts.userMode, "user", true, "Use per-user endpoint paths")
