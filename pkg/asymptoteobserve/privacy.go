@@ -2,7 +2,9 @@ package asymptoteobserve
 
 import (
 	"encoding/json"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -176,7 +178,7 @@ var redactionRules = concatRules([]redactionRule{
 	{regexp.MustCompile(`\b(AIza)[0-9A-Za-z_-]{35}`), "${1}" + redactedValue, nil},                                         // Google API key
 	{regexp.MustCompile(`\b(npm_)[A-Za-z0-9]{36}`), "${1}" + redactedValue, nil},                                           // npm
 	{regexp.MustCompile(`\b(hf_)[A-Za-z0-9]{30,}`), "${1}" + redactedValue, nil},                                           // Hugging Face
-	{regexp.MustCompile(`\b(bcn_(?:api|device|mcp|enfdev)_)[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil},                      // Beacon's own keys
+	{regexp.MustCompile(`\b(bcn_(?:api|device|mcp|enfdev)_)[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil},               // Beacon's own keys
 	{regexp.MustCompile(`\b(eyJ)[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`), "${1}" + redactedValue, nil}, // JWT
 })
 
@@ -242,21 +244,46 @@ func RedactString(value string) string {
 	// repeated bare copies in the same retained prompt/output are also removed.
 	// This is common in model reasoning that quotes `token=value` and later
 	// refers to `value` by itself.
-	var assigned []string
+	assigned := map[string]struct{}{}
 	for _, match := range redactAssignedPattern.FindAllStringSubmatch(value, -1) {
 		copied := strings.Join(match[1:], "")
 		if len(copied) >= 8 && copied != redactedValue && !isAuthScheme(copied) {
-			assigned = append(assigned, copied)
+			assigned[copied] = struct{}{}
 		}
 	}
 	for _, rule := range redactionRules {
 		value = rule.apply(value)
 	}
 	// Each copy is searched for and removed; none of it survives into the result.
-	for _, copied := range assigned {
-		value = strings.ReplaceAll(value, copied, redactedValue)
+	return replaceAssigned(value, assigned)
+}
+
+// replaceAssigned replaces every copy of each assigned value with redactedValue in one pass.
+// Replacing them one strings.ReplaceAll at a time scanned the text once per assignment, and both
+// grow with the text, so the cost was quadratic: Beacon Cloud redacts uploaded shared traces with
+// this function, where that let a small gzip body hold a core for minutes. The values are a set,
+// longest first, so where two start at the same byte the longer is removed whole.
+func replaceAssigned(value string, assigned map[string]struct{}) string {
+	if len(assigned) == 0 {
+		return value
 	}
-	return value
+	values := slices.SortedFunc(maps.Keys(assigned), func(a, b string) int {
+		if len(a) != len(b) {
+			return len(b) - len(a)
+		}
+		return strings.Compare(a, b)
+	})
+	pairs := make([]string, 0, 2*len(values))
+	for _, copied := range values {
+		pairs = append(pairs, copied, redactedValue)
+	}
+	return strings.NewReplacer(pairs...).Replace(value)
+}
+
+// IsSecretKeyName reports whether a structured field's name says its value is a credential, the
+// rule SanitizeMap applies, for callers that walk structured values of their own.
+func IsSecretKeyName(key string) bool {
+	return isSecretKeyName(key)
 }
 
 // isSecretKeyName reports whether a structured field's name says its value is a credential:
