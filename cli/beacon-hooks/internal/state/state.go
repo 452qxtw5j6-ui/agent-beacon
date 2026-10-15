@@ -85,7 +85,10 @@ type SessionData struct {
 	RepromptCount int          `json:"reprompt_count"`
 	Model         string       `json:"model,omitempty"`
 	PromptEmitted bool         `json:"prompt_emitted,omitempty"`
-	CreatedAt     string       `json:"created_at,omitempty"`
+	// LastReplyID names the last assistant reply a hook recorded for this session, so a reply read
+	// from a transcript that has not moved since the previous turn is not recorded twice.
+	LastReplyID string `json:"last_reply_id,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
 // SessionState manages session state
@@ -190,6 +193,24 @@ func (s *SessionState) MarkPromptEmittedIfNeeded() (bool, error) {
 		return false, nil
 	}
 	state[s.sessionID].PromptEmitted = true
+	if err := s.saveStateFile(state); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MarkReplyRecorded records id as the session's last recorded assistant reply. It reports false,
+// and changes nothing, when id is already the last one recorded, so a caller writes a reply at
+// most once even when two Stop hooks of one session race.
+func (s *SessionState) MarkReplyRecorded(id string) (bool, error) {
+	defer lockState(s.platform)()
+
+	state := s.loadStateFile()
+	s.ensureSession(state)
+	if state[s.sessionID].LastReplyID == id {
+		return false, nil
+	}
+	state[s.sessionID].LastReplyID = id
 	if err := s.saveStateFile(state); err != nil {
 		return false, err
 	}

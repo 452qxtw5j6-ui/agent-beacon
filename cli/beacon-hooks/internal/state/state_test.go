@@ -156,3 +156,30 @@ func TestStateIsSafeAcrossProcesses(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkReplyRecordedOncePerReplyAndSession(t *testing.T) {
+	_, cleanup := setupTestStateDir(t)
+	defer cleanup()
+
+	a := NewSessionState("session-a", "cursor")
+	for i, want := range []bool{true, false} {
+		fresh, err := a.MarkReplyRecorded("msg-1")
+		if err != nil || fresh != want {
+			t.Fatalf("mark %d = %v, %v; want %v", i+1, fresh, err, want)
+		}
+	}
+	// A later reply is new, and a reply id is per session.
+	if fresh, _ := NewSessionState("session-a", "cursor").MarkReplyRecorded("msg-2"); !fresh {
+		t.Fatal("a new reply id was treated as already recorded")
+	}
+	if fresh, _ := NewSessionState("session-b", "cursor").MarkReplyRecorded("msg-2"); !fresh {
+		t.Fatal("another session's reply id suppressed this session's")
+	}
+	// The marker sits beside the other session data without disturbing it.
+	if err := a.SetModel("m"); err != nil {
+		t.Fatal(err)
+	}
+	if fresh, _ := a.MarkReplyRecorded("msg-2"); fresh {
+		t.Fatal("setting the model reset the recorded reply")
+	}
+}
