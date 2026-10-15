@@ -6,6 +6,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -1098,6 +1099,93 @@ func TestDiscoverClineDoesNotFallBackToAProjectPluginWhenHomeIsUnresolvable(t *t
 	}
 	if !strings.Contains(h.Message, "could not be resolved") {
 		t.Errorf("Message = %q, want it to name the unresolved directory", h.Message)
+	}
+}
+
+// hermesDiscoverHome moves the home directory to a temporary one with no hermes executable on PATH,
+// clears every variable that moves Hermes's home, and returns Hermes's native root there.
+func hermesDiscoverHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "LocalAppData"))
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "LocalAppData", "hermes")
+	}
+	return filepath.Join(home, ".hermes")
+}
+
+const hermesBeaconHooksYAML = `hooks:
+  on_session_end:
+    - command: env BEACON_ENDPOINT_MODE=1 beacon-hooks --platform hermes session-end
+`
+
+func writeHermesConfigFixture(t *testing.T, dir, content string) string {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Discovery reports the config.yaml Hermes reads: HERMES_HOME's, or the sticky profile's, rather
+// than a stale ~/.hermes/config.yaml.
+func TestDiscoverHermesFollowsHermesHomeAndActiveProfile(t *testing.T) {
+	t.Run("unset", func(t *testing.T) {
+		native := hermesDiscoverHome(t)
+		want := writeHermesConfigFixture(t, native, hermesBeaconHooksYAML)
+		h := DiscoverHermes()
+		if h.ConfigPath != want || !h.Detected || h.TelemetryStatus != TelemetryEnabled {
+			t.Fatalf("DiscoverHermes = path %q detected %v status %q, want %q detected and enabled", h.ConfigPath, h.Detected, h.TelemetryStatus, want)
+		}
+	})
+	t.Run("HERMES_HOME", func(t *testing.T) {
+		native := hermesDiscoverHome(t)
+		writeHermesConfigFixture(t, native, "model: stale\n")
+		dir := t.TempDir()
+		t.Setenv("HERMES_HOME", dir)
+		want := writeHermesConfigFixture(t, dir, hermesBeaconHooksYAML)
+		h := DiscoverHermes()
+		if h.ConfigPath != want || !h.Detected || h.TelemetryStatus != TelemetryEnabled {
+			t.Fatalf("DiscoverHermes = path %q detected %v status %q, want %q detected and enabled", h.ConfigPath, h.Detected, h.TelemetryStatus, want)
+		}
+	})
+	t.Run("active profile", func(t *testing.T) {
+		native := hermesDiscoverHome(t)
+		writeHermesConfigFixture(t, native, hermesBeaconHooksYAML)
+		profile := filepath.Join(native, "profiles", "work")
+		if err := os.MkdirAll(profile, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(native, "active_profile"), []byte("work\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		h := DiscoverHermes()
+		want := filepath.Join(profile, "config.yaml")
+		if h.ConfigPath != want || !h.Detected || h.TelemetryStatus != TelemetryMissing {
+			t.Fatalf("DiscoverHermes = path %q detected %v status %q, want %q detected and missing: the default profile's hooks do not run in this profile", h.ConfigPath, h.Detected, h.TelemetryStatus, want)
+		}
+	})
+}
+
+// Hermes refuses to start when active_profile names a profile it cannot use; discovery says so
+// instead of reporting the default profile's config.
+func TestDiscoverHermesReportsUnusableActiveProfile(t *testing.T) {
+	native := hermesDiscoverHome(t)
+	writeHermesConfigFixture(t, native, hermesBeaconHooksYAML)
+	if err := os.WriteFile(filepath.Join(native, "active_profile"), []byte("gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := DiscoverHermes()
+	if h.TelemetryStatus != TelemetryMissing || !strings.Contains(h.Message, "active profile") || h.ConfigPath != "" {
+		t.Fatalf("DiscoverHermes = status %q message %q path %q, want missing naming the active profile", h.TelemetryStatus, h.Message, h.ConfigPath)
 	}
 }
 

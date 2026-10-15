@@ -1,11 +1,13 @@
 package hooks
 
 import (
-	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 )
 
 func TestInstallHermesConfigPreservesExistingSettingsAndHooks(t *testing.T) {
@@ -129,10 +131,24 @@ func TestRemoveHermesEndpointHooksPreservesOtherHooks(t *testing.T) {
 	}
 }
 
-func TestHermesHookStatusDetectsInstalled(t *testing.T) {
+// hermesTestHome moves the home directory to a temporary one, clears every variable that moves
+// Hermes's home, and returns Hermes's native root there.
+func hermesTestHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	testenv.SetHome(t, home)
-	path := filepath.Join(home, ".hermes", "config.yaml")
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "LocalAppData"))
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "LocalAppData", "hermes")
+	}
+	return filepath.Join(home, ".hermes")
+}
+
+func TestHermesHookStatusDetectsInstalled(t *testing.T) {
+	native := hermesTestHome(t)
+	path := filepath.Join(native, "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -155,5 +171,112 @@ func TestHermesHookStatusDetectsInstalled(t *testing.T) {
 func TestHermesProjectLevelReturnsClearError(t *testing.T) {
 	if _, err := hermesConfigPath(LevelProject); err == nil || !strings.Contains(err.Error(), "user-level config only") {
 		t.Fatalf("hermesConfigPath project err = %v, want user-level config only", err)
+	}
+}
+
+// Install, status and uninstall resolve one config.yaml, the one Hermes reads: under HERMES_HOME
+// when it is set, under the sticky profile when one is active, and ~/.hermes otherwise.
+func TestHermesHooksInstallStatusUninstallAgreeOnHermesHome(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, native string) string
+	}{
+		{"unset", func(t *testing.T, native string) string { return native }},
+		{"HERMES_HOME", func(t *testing.T, native string) string {
+			dir := filepath.Join(t.TempDir(), "hermes-data")
+			t.Setenv("HERMES_HOME", dir)
+			return dir
+		}},
+		{"relative HERMES_HOME", func(t *testing.T, native string) string {
+			t.Chdir(t.TempDir())
+			cwd, err := os.Getwd()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("HERMES_HOME", "relative-hermes")
+			return filepath.Join(cwd, "relative-hermes")
+		}},
+		{"active profile", func(t *testing.T, native string) string {
+			profile := filepath.Join(native, "profiles", "work")
+			if err := os.MkdirAll(profile, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(native, "active_profile"), []byte("work\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			return profile
+		}},
+		{"HERMES_HOME names a profile", func(t *testing.T, native string) string {
+			profile := filepath.Join(t.TempDir(), "profiles", "coder")
+			t.Setenv("HERMES_HOME", profile)
+			return profile
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			native := hermesTestHome(t)
+			want := filepath.Join(tc.setup(t, native), "config.yaml")
+			opts := HermesOptions{Level: LevelUser, UserMode: true}
+
+			installed, err := InstallHermes(opts)
+			if err != nil {
+				t.Fatalf("InstallHermes: %v", err)
+			}
+			if installed.ConfigPath != want {
+				t.Fatalf("InstallHermes ConfigPath = %q, want %q", installed.ConfigPath, want)
+			}
+			if !isHermesInstalledAt(want) {
+				t.Fatalf("no Beacon hooks in %s after install", want)
+			}
+			if want != filepath.Join(native, "config.yaml") {
+				if _, err := os.Stat(filepath.Join(native, "config.yaml")); !os.IsNotExist(err) {
+					t.Fatalf("InstallHermes also wrote the default config.yaml: %v", err)
+				}
+			}
+			status := HermesHookStatus(opts)
+			if !status.Installed || status.ConfigPath != want {
+				t.Fatalf("HermesHookStatus = %#v, want installed at %q", status, want)
+			}
+			if !IsHermesInstalled(opts) {
+				t.Fatal("IsHermesInstalled = false after install")
+			}
+
+			removed, err := UninstallHermes(opts)
+			if err != nil {
+				t.Fatalf("UninstallHermes: %v", err)
+			}
+			if removed.ConfigPath != want {
+				t.Fatalf("UninstallHermes ConfigPath = %q, want %q", removed.ConfigPath, want)
+			}
+			if _, err := os.Stat(want); !os.IsNotExist(err) {
+				t.Fatalf("config.yaml holding only Beacon hooks was not removed: %v", err)
+			}
+			if status := HermesHookStatus(opts); status.Installed || status.ConfigPath != want {
+				t.Fatalf("HermesHookStatus after uninstall = %#v, want not installed at %q", status, want)
+			}
+		})
+	}
+}
+
+// Hermes refuses to start when active_profile names a profile it cannot use, so hook install must
+// fail rather than write the default profile's config.yaml.
+func TestHermesHooksRefuseUnusableActiveProfile(t *testing.T) {
+	native := hermesTestHome(t)
+	if err := os.MkdirAll(native, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(native, "active_profile"), []byte("gone\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := HermesOptions{Level: LevelUser, UserMode: true}
+	if _, err := InstallHermes(opts); err == nil || !strings.Contains(err.Error(), "active profile") {
+		t.Fatalf("InstallHermes err = %v, want the active profile named", err)
+	}
+	for _, path := range []string{filepath.Join(native, "config.yaml"), filepath.Join(native, "profiles", "gone")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("InstallHermes created %s: %v", path, err)
+		}
+	}
+	if status := HermesHookStatus(opts); status.Installed {
+		t.Fatalf("HermesHookStatus = %#v, want not installed", status)
 	}
 }

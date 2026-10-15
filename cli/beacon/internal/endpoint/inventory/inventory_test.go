@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -369,6 +370,75 @@ func TestScanReadsCodexUserConfigFromCodexHome(t *testing.T) {
 	}
 }
 
+// hermesDefaultRoot clears every variable that moves Hermes's home and returns its native root
+// under home.
+func hermesDefaultRoot(t *testing.T, home string) string {
+	t.Helper()
+	t.Setenv("HERMES_HOME", "")
+	t.Setenv("HERMES_DATA_DIR_SUFFIX", "")
+	t.Setenv("LOCALAPPDATA", "")
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "AppData", "Local", "hermes")
+	}
+	return filepath.Join(home, ".hermes")
+}
+
+const hermesMCPConfig = `
+mcp_servers:
+  memory:
+    command: uvx
+`
+
+// With HERMES_HOME set, or a sticky profile active, inventory reads the config.yaml Hermes reads
+// and not the default profile's.
+func TestScanReadsHermesConfigFromHermesHomeAndActiveProfile(t *testing.T) {
+	scanHermes := func(home string) []Config {
+		return Scan(Options{HomeDir: home, SkipProjectScope: true, Runtimes: []string{"hermes"}, Now: fixedNow}).Configs
+	}
+	t.Run("HERMES_HOME", func(t *testing.T) {
+		home := t.TempDir()
+		root := hermesDefaultRoot(t, home)
+		writeFile(t, filepath.Join(root, "config.yaml"), "model: stale\n")
+		dir := t.TempDir()
+		t.Setenv("HERMES_HOME", dir)
+		writeFile(t, filepath.Join(dir, "config.yaml"), hermesMCPConfig)
+		configs := scanHermes(home)
+		if config := findConfig(configs, "hermes", filepath.Join(dir, "config.yaml")); config == nil || !config.Exists || config.MCPServerCount != 1 {
+			t.Fatalf("HERMES_HOME config.yaml = %#v, want it read with one MCP server", config)
+		}
+		if stale := findConfig(configs, "hermes", filepath.Join(root, "config.yaml")); stale != nil {
+			t.Fatalf("inventory reported the default config.yaml, which Hermes does not read with HERMES_HOME set: %#v", stale)
+		}
+	})
+	t.Run("active profile", func(t *testing.T) {
+		home := t.TempDir()
+		root := hermesDefaultRoot(t, home)
+		writeFile(t, filepath.Join(root, "config.yaml"), "model: stale\n")
+		writeFile(t, filepath.Join(root, "active_profile"), "work\n")
+		profile := filepath.Join(root, "profiles", "work")
+		writeFile(t, filepath.Join(profile, "config.yaml"), hermesMCPConfig)
+		configs := scanHermes(home)
+		if config := findConfig(configs, "hermes", filepath.Join(profile, "config.yaml")); config == nil || !config.Exists || config.MCPServerCount != 1 {
+			t.Fatalf("active profile config.yaml = %#v, want it read with one MCP server", config)
+		}
+		if stale := findConfig(configs, "hermes", filepath.Join(root, "config.yaml")); stale != nil {
+			t.Fatalf("inventory reported the default profile's config.yaml: %#v", stale)
+		}
+	})
+	t.Run("unusable active profile", func(t *testing.T) {
+		// Hermes refuses to start, so there is no config.yaml in use to report.
+		home := t.TempDir()
+		root := hermesDefaultRoot(t, home)
+		writeFile(t, filepath.Join(root, "config.yaml"), hermesMCPConfig)
+		writeFile(t, filepath.Join(root, "active_profile"), "gone\n")
+		for _, config := range scanHermes(home) {
+			if config.Runtime == "hermes" {
+				t.Fatalf("inventory reported %#v for an active profile Hermes cannot use", config)
+			}
+		}
+	})
+}
+
 // With CLINE_DIR set, the user plugin inventory reports is the one Cline loads.
 func TestScanReadsClinePluginFromClineDir(t *testing.T) {
 	home := t.TempDir()
@@ -457,6 +527,8 @@ func TestScanIncludesAllSupportedCurrentUserAndProjectConfigs(t *testing.T) {
 	t.Setenv("CODEX_HOME", "")
 	t.Setenv("CLINE_DIR", "")
 	t.Setenv("GEMINI_CLI_HOME", "")
+	// Hermes's config.yaml follows HERMES_HOME, its data-dir suffix and, on Windows, LOCALAPPDATA.
+	hermesRoot := hermesDefaultRoot(t, home)
 
 	result := Scan(Options{
 		HomeDir:    home,
@@ -515,7 +587,7 @@ func TestScanIncludesAllSupportedCurrentUserAndProjectConfigs(t *testing.T) {
 		// plugin root and a global one, and a gateway can be running with either.
 		{runtime: "openclaw_gateway", path: filepath.Join(home, ".openclaw", "extensions", "beacon-endpoint", "beacon.js"), scope: ScopeUser, format: formatMetadataOnly, kind: KindPlugin},
 		{runtime: "openclaw_gateway", path: filepath.Join(work, ".openclaw", "extensions", "beacon-endpoint", "beacon.js"), scope: ScopeProject, format: formatMetadataOnly, kind: KindPlugin},
-		{runtime: "hermes", path: filepath.Join(home, ".hermes", "config.yaml"), scope: ScopeUser, format: formatYAML, kind: KindNativeConfig},
+		{runtime: "hermes", path: filepath.Join(hermesRoot, "config.yaml"), scope: ScopeUser, format: formatYAML, kind: KindNativeConfig},
 		{runtime: "devin-cli", path: filepath.Join(home, ".config", "devin", "config.json"), scope: ScopeUser, format: formatJSON, kind: KindNativeConfig},
 		{runtime: "devin-cli", path: filepath.Join(work, ".devin", "hooks.v1.json"), scope: ScopeProject, format: formatJSON, kind: KindHookConfig},
 		{runtime: "devin-desktop", path: filepath.Join(home, ".codeium", "windsurf", "hooks.json"), scope: ScopeUser, format: formatJSON, kind: KindHookConfig},
@@ -585,7 +657,7 @@ func TestScanYAMLAndMetadataOnlyConfigs(t *testing.T) {
 	work := t.TempDir()
 	t.Setenv("SHELL", "/bin/zsh")
 	t.Setenv("CLINE_DIR", "")
-	writeFile(t, filepath.Join(home, ".hermes", "config.yaml"), `
+	writeFile(t, filepath.Join(hermesDefaultRoot(t, home), "config.yaml"), `
 mcpServers:
   memory:
     command: uvx

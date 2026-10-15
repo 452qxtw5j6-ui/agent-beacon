@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 )
 
 type HermesOptions struct {
@@ -219,6 +221,8 @@ func isHermesInstalledAt(path string) bool {
 	return false
 }
 
+// hermesConfigPath is the config.yaml a plain `hermes` reads: HERMES_HOME or the native root, then
+// the active profile, as hermessession.HomeDir resolves it.
 func hermesConfigPath(level Level) (string, error) {
 	switch level {
 	case "", LevelUser:
@@ -226,7 +230,11 @@ func hermesConfigPath(level Level) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return filepath.Join(home, ".hermes", "config.yaml"), nil
+		dir, err := hermessession.HomeDir(home)
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, "config.yaml"), nil
 	case LevelProject:
 		return "", fmt.Errorf("Hermes Agent endpoint hooks support user-level config only")
 	default:
