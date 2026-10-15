@@ -694,7 +694,8 @@ func (m wizardModel) View() string {
 			}
 			rows = append(rows, line, choiceDetail(detail, contentWidth))
 		}
-		body = strings.Join(rows, "\n")
+		body = strings.Join(rows, "\n") +
+			"\n\nChange later with `beacon endpoint connect --privacy-mode`."
 	case agentToolsScreen:
 		title = "Set up your agents"
 		body = "Give your agents their own history.\n\n"
@@ -714,19 +715,28 @@ func (m wizardModel) View() string {
 		body += strings.Join(rows, "\n")
 	case confirmScreen:
 		title = "Ready to set up Beacon"
-		label, _ := destinationCopy(m.result.Destination)
-		if m.options.Email != "" {
-			body = "Account: " + m.options.Email + "\n"
-		}
-		body += "Destination: " + label
 		if m.result.Destination == DestinationAsymptote {
-			body += "\nPrivacy: " + managedprivacy.Label(m.result.PrivacyMode) +
-				"\n\n" + wizardWarn.Render("This installs Beacon and starts forwarding to beacon.sh.") +
-				"\n" + wizardDim.Render(privacySends(m.result.PrivacyMode))
+			// Values share a column: "Destination:" is one character shorter than
+			// "Capture mode:", so it takes one more space.
+			body = "Beacon Cloud is operated by Asymptote Labs, Inc." +
+				"\n\n" +
+				"  Destination:       Beacon Cloud\n" +
+				"  Capture mode:      " + managedprivacy.Label(m.result.PrivacyMode) +
+				"\n\n" +
+				"Turn off research and AI training any time in Beacon Cloud:\n" +
+				"click your profile picture (top right), then Settings.\n" +
+				"Change capture mode any time with `beacon endpoint connect --privacy-mode`.\n" +
+				"Stop sending any time with `beacon endpoint disconnect`.\n" +
+				"To delete your data, email privacy@asymptotelabs.ai."
 			if m.options.BackfillDays > 0 {
-				body += "\n" + wizardDim.Render(fmt.Sprintf("It also uploads your agent sessions from the last %d days, read from their session history on this machine.", m.options.BackfillDays))
+				body += "\n\n" + fmt.Sprintf("It also uploads your agent sessions from the last %d days, read from their session history on this machine.", m.options.BackfillDays)
 			}
 		} else {
+			label, _ := destinationCopy(m.result.Destination)
+			if m.options.Email != "" {
+				body = "Account: " + m.options.Email + "\n"
+			}
+			body += "Destination: " + label
 			body += "\n\nYour telemetry stays on this machine."
 			if m.options.BackfillDays > 0 {
 				body += fmt.Sprintf(" Beacon reads your agent sessions from the last %d days into its local log.", m.options.BackfillDays)
@@ -793,17 +803,18 @@ func destinationCopy(destination string) (string, string) {
 	switch destination {
 	case DestinationAsymptote:
 		return "Beacon Cloud (recommended)",
-			"Free, unlimited cloud-based retention of all your agent sessions. " +
+			"Your agent sessions are sent to your Beacon account and kept in the cloud " +
+				"while your account is active. Includes " +
 				// Non-breaking hyphen: the wrapper treats a plain "-" as a break
 				// point and split this across lines as "AI-" / "powered".
 				"AI\u2011powered search and analytics on Beacon's hosted dashboard. " +
-				"Rich findings analyzing your AI usage, coming soon. " +
-				"Pick this for Beacon's full feature set."
+				"Pick this for Beacon's full feature set. " +
+				"Unless you opt out, Asymptote uses your sessions for research and AI " +
+				"training and may share de-identified data. Details: beacon.sh/privacy"
 	default:
 		return "Local only",
-			"A local dashboard for this machine's agent telemetry, kept for as long as " +
-				"the logs are on disk. Nothing leaves your machine. Pick this for " +
-				"testing, or to just see your agent activity in one place."
+			"A local dashboard for this machine's agent activity, kept for as long as " +
+				"the logs are on disk. Your agent activity stays on this machine."
 	}
 }
 
@@ -826,9 +837,20 @@ func choiceDetail(detail string, width int) string {
 
 func privacyCopy(mode string) (string, string) {
 	if mode == managedprivacy.MetadataOnly {
-		return "Metadata only", "No prompts, responses, tool arguments or results, command output, or diffs."
+		return "Metadata only",
+			"Prompts, responses, reasoning, tool arguments and results, command output, " +
+				"file diffs, and file contents are removed on your machine before anything " +
+				"is sent. Only structural information is sent: which agent and tool ran, " +
+				"file paths, exit codes, token counts, timestamps, repository and branch " +
+				"names, and full command lines. Common secret formats in command lines are " +
+				"also masked."
 	}
-	return "Standard (recommended)", "Locally sanitized content, including prompts and tool activity."
+	return "Standard",
+		"Prompts, responses, tool activity, command output, file diffs, and file " +
+			"contents returned by tools. Common secret formats, such as API keys and " +
+			"tokens, are masked on your machine before anything is sent. Masking is " +
+			"pattern-based and may not catch everything. May include source code, file " +
+			"contents, and confidential information."
 }
 
 func privacyIndex(mode string) int {
@@ -838,16 +860,6 @@ func privacyIndex(mode string) int {
 		}
 	}
 	return 0
-}
-
-// privacySends states, in the present tense, what the selected mode puts on the
-// wire. The confirm screen is where forwarding is authorized, so it has to name what
-// leaves this machine rather than point at a command to run later.
-func privacySends(mode string) string {
-	if mode == managedprivacy.MetadataOnly {
-		return "Prompts, responses, tool arguments and results, command output and diffs stay here."
-	}
-	return "Sends locally sanitized content, including prompts and tool activity."
 }
 
 // waitStatus renders the spinner, how long this has been going, and how long is

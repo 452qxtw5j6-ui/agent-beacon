@@ -20,11 +20,14 @@ Beacon does not repeat completed setup.
 The first interactive `beacon endpoint install` opens a full-screen terminal wizard:
 
 1. Sign in through beacon.sh using the same browser PKCE flow as [`beacon login`](/cli/account-auth).
-2. Choose **Local only** or **Beacon Cloud**. Beacon Cloud offers free, unlimited
-   cloud-based retention of every agent session. It adds AI-powered search and
-   analytics on Beacon's hosted dashboard, with rich findings analyzing your AI
-   usage coming soon. Local is a dashboard for this machine's telemetry,
-   kept for as long as the logs are on disk, with nothing leaving the machine.
+2. Choose **Local only** or **Beacon Cloud**. Beacon Cloud sends your agent
+   sessions to your Beacon account and keeps them in the cloud while your
+   account is active. It includes AI-powered search and analytics on Beacon's
+   hosted dashboard. Unless you opt out, Asymptote uses your sessions for
+   research and AI training and may share de-identified data
+   ([beacon.sh/privacy](https://beacon.sh/privacy)). Local is a dashboard for
+   this machine's agent activity, kept for as long as the logs are on disk.
+   Your agent activity stays on this machine.
 3. For Beacon Cloud, choose **Standard** or **Metadata only** forwarding.
 4. Choose the agent tools to set up: Beacon Cloud MCP (Beacon Cloud only) and the
    Beacon agent skills. Each is selected; press <kbd>space</kbd> to turn one off.
@@ -70,15 +73,26 @@ which agent runtimes, skills, and MCP servers are installed does upload once as 
 endpoint's baseline. That detail is documented here rather than shown on the screen
 where someone is choosing.
 
-Standard forwards the complete locally sanitized event. Metadata only strips retained
-prompts, responses, reasoning, tool arguments/results, command output, raw fields,
-diffs, and optional inventory content locally before upload. See
+Standard sends prompts, responses, tool activity, command output, file diffs, and
+file contents returned by tools. Common secret formats, such as API keys and tokens,
+are masked on your machine before anything is sent. Masking is pattern-based and may
+not catch everything, and the upload may include source code, file contents, and
+confidential information. Metadata only removes prompts, responses, reasoning, tool
+arguments and results, command output, file diffs, and file contents on your machine
+before anything is sent. Only structural information is sent: which agent and tool
+ran, file paths, exit codes, token counts, timestamps, repository and branch names,
+and full command lines. Common secret formats in command lines are also masked.
+Change the mode later with `beacon endpoint connect --privacy-mode`. See
 [`beacon endpoint connect`](/cli/endpoint-connect#privacy-modes) for the exact contract.
 
 Confirming Beacon Cloud connects this endpoint in the same command, after the
-local install succeeds. The confirm screen says so before you press enter, and names
-what the selected privacy mode sends, so it is the point at which forwarding is
-authorized. An endpoint that is already enrolled is not re-enrolled: enrollment
+local install succeeds. The confirm screen names Asymptote Labs, Inc. as the
+operator, the destination, and the capture mode (Standard or Metadata only). It
+says how to turn off research and AI training in Beacon Cloud (profile picture,
+then Settings), how to change the capture mode (`beacon endpoint connect
+--privacy-mode`), how to stop sending (`beacon endpoint disconnect`), and that
+deleting data is an email to privacy@asymptotelabs.ai. That screen is where
+forwarding is authorized. An endpoint that is already enrolled is not re-enrolled: enrollment
 rotates the device key, so a connected machine keeps the key it has and simply
 records the destination.
 

@@ -120,8 +120,24 @@ func TestManagedWizardRequiresDisclosureConfirmation(t *testing.T) {
 	if model.screen != privacyScreen {
 		t.Fatalf("screen = %v, want privacy", model.screen)
 	}
-	if view := model.View(); !strings.Contains(view, "Standard (recommended)") || !strings.Contains(view, "Metadata only") {
-		t.Fatalf("privacy choices missing:\n%s", view)
+	view = strings.Join(strings.Fields(model.View()), " ")
+	for _, want := range []string{
+		"Standard",
+		"Metadata only",
+		"file contents returned by tools",
+		"Masking is pattern-based and may not catch everything",
+		"May include source code, file contents, and confidential information",
+		"Only structural information is sent",
+		"full command lines",
+		"Common secret formats in command lines are also masked",
+		"beacon endpoint connect --privacy-mode",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("privacy screen missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "Standard (recommended)") {
+		t.Fatalf("privacy screen still marks Standard as recommended:\n%s", view)
 	}
 	model, _ = advanceWizard(t, model, "enter")
 	if model.screen != confirmScreen {
@@ -185,7 +201,13 @@ func TestDestinationCaptionsNameTheValueNotTheMechanism(t *testing.T) {
 	if !strings.Contains(managedLabel, "Beacon Cloud") {
 		t.Fatalf("managed label = %q", managedLabel)
 	}
-	for _, want := range []string{"Free, unlimited cloud-based retention", "AI\u2011powered search and analytics on Beacon's hosted dashboard", "Rich findings analyzing your AI usage, coming soon.", "full feature set"} {
+	for _, want := range []string{
+		"sent to your Beacon account and kept in the cloud while your account is active",
+		"AI\u2011powered search and analytics on Beacon's hosted dashboard",
+		"full feature set",
+		"Unless you opt out, Asymptote uses your sessions for research and AI training and may share de-identified data",
+		"Details: beacon.sh/privacy",
+	} {
 		if !strings.Contains(managedDetail, want) {
 			t.Fatalf("managed detail missing %q: %q", want, managedDetail)
 		}
@@ -195,23 +217,19 @@ func TestDestinationCaptionsNameTheValueNotTheMechanism(t *testing.T) {
 	if !strings.Contains(localLabel, "Local only") {
 		t.Fatalf("local label = %q", localLabel)
 	}
-	// Local is a supported end state, not a penalty, and it is not feature-poor:
-	// the local dashboard ships the same Findings, Detections, Analytics and Token
-	// Usage views. Claiming Beacon Cloud adds those would be false, so the copy has to
-	// differentiate on scope, retention and durability instead.
-	for _, want := range []string{"this machine", "Nothing leaves your machine", "testing", "agent activity in one place"} {
+	// Local is a supported end state, not a refusal of Beacon Cloud. The research
+	// and training disclosure belongs on the cloud caption, where the data leaves
+	// the machine.
+	for _, want := range []string{"this machine's agent activity", "kept for as long as the logs are on disk", "Your agent activity stays on this machine"} {
 		if !strings.Contains(localDetail, want) {
 			t.Fatalf("local detail missing %q: %q", want, localDetail)
 		}
 	}
-	if strings.Contains(localDetail, "Opt out") {
+	if strings.Contains(localDetail, "opt out") || strings.Contains(localDetail, "research") {
 		t.Fatalf("local should read as a peer choice, not a refusal: %q", localDetail)
 	}
-	// Both say when to choose them, which is the part a first-time user needs.
-	for name, detail := range map[string]string{"managed": managedDetail, "local": localDetail} {
-		if !strings.Contains(detail, "Pick this") {
-			t.Fatalf("%s detail gives no guidance on when to choose it: %q", name, detail)
-		}
+	if !strings.Contains(managedDetail, "Pick this") {
+		t.Fatalf("managed detail gives no guidance on when to choose it: %q", managedDetail)
 	}
 }
 
@@ -239,7 +257,7 @@ func TestChoiceDetailIndentsEveryWrappedLine(t *testing.T) {
 
 	// And the whole screen still renders every word of both captions.
 	view := strings.Join(strings.Fields(model.View()), " ")
-	for _, want := range []string{"full feature set.", "agent activity in one place."} {
+	for _, want := range []string{"full feature set.", "beacon.sh/privacy", "Your agent activity stays on this machine."} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("destination screen truncated %q:\n%s", want, view)
 		}
@@ -267,13 +285,13 @@ func TestWizardHasNoGlobalQuitKey(t *testing.T) {
 	}
 }
 
-// The confirm screen is where forwarding is authorized, so it has to name the
-// action. It used to say "Next step after install: beacon endpoint connect", which
-// stopped being true once confirming did the connecting.
+// The confirm screen is where forwarding is authorized. It names the operator,
+// the destination, the capture mode, and how to opt out, change the mode, stop
+// sending, or delete the data.
 func TestConfirmScreenNamesWhatConfirmingStarts(t *testing.T) {
-	for mode, wantSends := range map[string]string{
-		"standard":      "including prompts and tool activity",
-		"metadata_only": "stay here",
+	for mode, wantMode := range map[string]string{
+		"standard":      "Standard",
+		"metadata_only": "Metadata only",
 	} {
 		model := newWizardModel(WizardOptions{
 			SignedIn:          true,
@@ -283,23 +301,28 @@ func TestConfirmScreenNamesWhatConfirmingStarts(t *testing.T) {
 			PresetDestination: DestinationAsymptote,
 			PresetPrivacyMode: mode,
 		})
-		model.width, model.height = 100, 30
+		model.width, model.height = 100, 40
 		model.screen = confirmScreen
 		model.result.Destination = DestinationAsymptote
 		model.result.PrivacyMode = mode
 
 		view := strings.Join(strings.Fields(model.View()), " ")
 		for _, want := range []string{
-			"This installs Beacon and starts forwarding to beacon.sh.",
-			wantSends,
+			"Beacon Cloud is operated by Asymptote Labs, Inc.",
+			"Destination: Beacon Cloud",
+			"Capture mode: " + wantMode,
+			"Turn off research and AI training any time in Beacon Cloud: click your profile picture (top right), then Settings.",
+			"Change capture mode any time with `beacon endpoint connect --privacy-mode`.",
+			"Stop sending any time with `beacon endpoint disconnect`.",
+			"To delete your data, email privacy@asymptotelabs.ai.",
 			"enter install and connect",
 		} {
 			if !strings.Contains(view, want) {
 				t.Fatalf("confirm screen for %s missing %q:\n%s", mode, want, view)
 			}
 		}
-		if strings.Contains(view, "Next step after install") {
-			t.Fatalf("confirm screen still defers connect to a later command:\n%s", view)
+		if strings.Contains(view, "Next step after install") || strings.Contains(view, "(recommended)") {
+			t.Fatalf("confirm screen still uses retired copy:\n%s", view)
 		}
 	}
 
