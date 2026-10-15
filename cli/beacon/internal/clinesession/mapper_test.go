@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 )
 
 func TestStoreListsTaskHistoryAndMapsEvents(t *testing.T) {
@@ -199,5 +201,23 @@ func writeJSON(t *testing.T, path string, value interface{}) {
 	}
 	if err := os.WriteFile(path, data, 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDefaultClineDirHonorsClineDir(t *testing.T) {
+	home := t.TempDir()
+	testenv.SetHome(t, home)
+	t.Setenv("CLINE_DIR", "")
+	if got := DefaultClineDir(); got != filepath.Join(home, ".cline") {
+		t.Fatalf("default dir = %q", got)
+	}
+	custom := filepath.Join(t.TempDir(), "cline-state")
+	t.Setenv("CLINE_DIR", custom)
+	if got := DefaultClineDir(); got != custom {
+		t.Fatalf("CLINE_DIR dir = %q, want %q", got, custom)
+	}
+	store, err := NewStore("")
+	if err != nil || store.SessionsDir != filepath.Join(custom, "data", "sessions") {
+		t.Fatalf("store = %+v, %v", store, err)
 	}
 }
