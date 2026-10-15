@@ -74,6 +74,10 @@ func runStop(cmd *cobra.Command, args []string) {
 
 	config.RotateLogIfNeededForPlatform(platformFlag)
 	st := state.NewSessionState(sessionID, platformFlag)
+	// Factory Droid's Stop payload carries no reply; its transcript does.
+	if platformFlag == "factory" {
+		emitFactoryTranscriptReply(logger, input, sessionID, transcriptPath, st)
+	}
 
 	// The public Beacon build is local-only. Clear any pending remote evaluations
 	// left over from older hook versions instead of polling a hosted service.

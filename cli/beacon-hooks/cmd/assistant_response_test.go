@@ -39,7 +39,13 @@ func TestHookProcess(t *testing.T) {
 // home directory of its own, so no hook state or session record reaches the real one.
 func runHookProcess(t *testing.T, input map[string]interface{}, args ...string) (logPath string, stdout []byte) {
 	t.Helper()
-	dir := t.TempDir()
+	return runHookProcessIn(t, t.TempDir(), input, args...)
+}
+
+// runHookProcessIn is runHookProcess with the log and home directory under dir, so consecutive
+// hooks of one session share their log and hook state.
+func runHookProcessIn(t *testing.T, dir string, input map[string]interface{}, args ...string) (logPath string, stdout []byte) {
+	t.Helper()
 	logPath = filepath.Join(dir, "runtime.jsonl")
 	home := filepath.Join(dir, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {

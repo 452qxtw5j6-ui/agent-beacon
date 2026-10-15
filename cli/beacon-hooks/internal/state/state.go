@@ -70,6 +70,10 @@ func writeStateFile(path string, data []byte) error {
 
 const (
 	staleEvaluationTTLHours = 2
+	// replyMarkerTTL is how long a session's last recorded reply is remembered. A Stop that
+	// re-fires over an unchanged transcript after that writes the reply again, which costs one
+	// duplicate event rather than an unbounded state file.
+	replyMarkerTTL = 14 * 24 * time.Hour
 )
 
 // Evaluation represents a pending evaluation
@@ -85,7 +89,14 @@ type SessionData struct {
 	RepromptCount int          `json:"reprompt_count"`
 	Model         string       `json:"model,omitempty"`
 	PromptEmitted bool         `json:"prompt_emitted,omitempty"`
-	CreatedAt     string       `json:"created_at,omitempty"`
+	// LastReplyID names the last assistant reply a hook recorded for this session, so a reply read
+	// from a transcript that has not moved since the previous turn is not recorded twice.
+	LastReplyID string `json:"last_reply_id,omitempty"`
+	// LastReplyAt is when LastReplyID was recorded. Stale-session cleanup keeps a session whose
+	// reply marker is younger than replyMarkerTTL, so the dedupe outlives the two-hour evaluation
+	// window that every other session field is cleaned up on.
+	LastReplyAt string `json:"last_reply_at,omitempty"`
+	CreatedAt   string `json:"created_at,omitempty"`
 }
 
 // SessionState manages session state
@@ -190,6 +201,25 @@ func (s *SessionState) MarkPromptEmittedIfNeeded() (bool, error) {
 		return false, nil
 	}
 	state[s.sessionID].PromptEmitted = true
+	if err := s.saveStateFile(state); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// MarkReplyRecorded records id as the session's last recorded assistant reply. It reports false,
+// and changes nothing, when id is already the last one recorded, so a caller writes a reply at
+// most once even when two Stop hooks of one session race.
+func (s *SessionState) MarkReplyRecorded(id string) (bool, error) {
+	defer lockState(s.platform)()
+
+	state := s.loadStateFile()
+	s.ensureSession(state)
+	if state[s.sessionID].LastReplyID == id {
+		return false, nil
+	}
+	state[s.sessionID].LastReplyID = id
+	state[s.sessionID].LastReplyAt = time.Now().UTC().Format(time.RFC3339)
 	if err := s.saveStateFile(state); err != nil {
 		return false, err
 	}
@@ -305,7 +335,7 @@ func CleanupStaleForPlatform(platform string) int {
 		sessionData.Evaluations = freshEvals
 
 		// Mark empty sessions for removal only if they are stale
-		if len(freshEvals) == 0 && sessionData.RepromptCount == 0 {
+		if len(freshEvals) == 0 && sessionData.RepromptCount == 0 && !sessionData.hasRecentReplyMarker() {
 			createdAt, err := time.Parse(time.RFC3339, sessionData.CreatedAt)
 			if err != nil || createdAt.Before(cutoff) {
 				sessionsToRemove = append(sessionsToRemove, sessionID)
@@ -328,4 +358,13 @@ func CleanupStaleForPlatform(platform string) int {
 	}
 
 	return removedCount
+}
+
+// hasRecentReplyMarker reports whether the session recorded a reply within replyMarkerTTL.
+func (d *SessionData) hasRecentReplyMarker() bool {
+	if d.LastReplyID == "" {
+		return false
+	}
+	at, err := time.Parse(time.RFC3339, d.LastReplyAt)
+	return err == nil && time.Since(at) < replyMarkerTTL
 }
