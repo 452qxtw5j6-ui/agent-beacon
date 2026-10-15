@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/testenv"
 )
 
-func TestInstallCodexHooksWritesSessionContextOnly(t *testing.T) {
+func TestInstallCodexHooksWritesSessionContextAndAssistantResponse(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
 	existing := `{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"echo keep"},{"type":"command","command":"BEACON_ENDPOINT_MODE=1 beacon-hooks --platform codex inventory-heartbeat"}]}],"Stop":[{"hooks":[{"type":"command","command":"BEACON_ENDPOINT_MODE=1 beacon-hooks --platform codex codex-usage-sync"}]}]}}`
 	if err := os.WriteFile(path, []byte(existing), 0600); err != nil {
@@ -30,6 +31,7 @@ func TestInstallCodexHooksWritesSessionContextOnly(t *testing.T) {
 		"SessionStart",
 		"--platform codex",
 		"codex-session-context",
+		"codex-assistant-response",
 		"--log '/tmp/runtime.jsonl'",
 		"--config '/tmp/config.json'",
 	} {
@@ -43,8 +45,49 @@ func TestInstallCodexHooksWritesSessionContextOnly(t *testing.T) {
 			t.Fatalf("Codex hooks should not install duplicate generic runtime hooks %q:\n%s", forbidden, text)
 		}
 	}
-	if !strings.Contains(text, "SessionStart") || strings.Contains(text, `"Stop"`) {
-		t.Fatalf("existing non-Beacon SessionStart should remain and old Beacon Stop should be removed:\n%s", text)
+	if !strings.Contains(text, "SessionStart") {
+		t.Fatalf("existing non-Beacon SessionStart should remain:\n%s", text)
+	}
+	// The old Beacon Stop entry is replaced, not kept beside the new one: Stop holds exactly the
+	// assistant-response command.
+	var parsed struct {
+		Hooks map[string][]settingsHookGroup `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("decode hooks: %v", err)
+	}
+	var stopCommands []string
+	for _, group := range parsed.Hooks["Stop"] {
+		for _, hook := range group.Hooks {
+			stopCommands = append(stopCommands, hook.Command)
+		}
+	}
+	if len(stopCommands) != 1 || !strings.HasSuffix(stopCommands[0], " codex-assistant-response") {
+		t.Fatalf("Stop commands = %q, want only codex-assistant-response", stopCommands)
+	}
+}
+
+func TestInstallCodexHooksIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	for i := 0; i < 2; i++ {
+		if err := installCodexHooks(path, "/tmp/beacon-hooks", "/tmp/runtime.jsonl", ""); err != nil {
+			t.Fatalf("install %d: %v", i+1, err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(data), "codex-assistant-response"); n != 1 {
+		t.Fatalf("codex-assistant-response appears %d times after two installs, want 1:\n%s", n, data)
+	}
+	removed, err := removeCodexEndpointHooks(path)
+	if err != nil || !removed {
+		t.Fatalf("remove = %v, %v", removed, err)
+	}
+	data, _ = os.ReadFile(path)
+	if strings.Contains(string(data), "codex-assistant-response") || strings.Contains(string(data), "codex-session-context") {
+		t.Fatalf("uninstall left Beacon hooks behind:\n%s", data)
 	}
 }
 
