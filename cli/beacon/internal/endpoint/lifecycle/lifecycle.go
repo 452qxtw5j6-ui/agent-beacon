@@ -22,6 +22,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/service"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/sysacl"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/writer"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/version"
 )
 
@@ -134,12 +135,16 @@ func reconcileInventoryJobWith(job inventoryJobController, opts InventoryJobOpti
 }
 
 // inventoryJobEnv is the environment written into a per-user inventory job. launchd and systemd
-// start the job without the user's shell environment, so a CODEX_HOME, CLINE_DIR, GEMINI_CLI_HOME
-// or CLAUDE_CONFIG_DIR exported in a shell profile would not reach it and the scheduled scan would
-// inventory ~/.codex, ~/.cline, ~/.gemini or ~/.claude while the runtime reads the moved directory.
-// Each value is resolved now, from the install's shell, as its runtime resolves it, and recorded as
-// an absolute path so a relative value still means the directory it named at install time:
+// start the job without the user's shell environment, so a CODEX_HOME, HERMES_HOME, CLINE_DIR,
+// GEMINI_CLI_HOME or CLAUDE_CONFIG_DIR exported in a shell profile would not reach it and the
+// scheduled scan would inventory ~/.codex, ~/.hermes, ~/.cline, ~/.gemini or ~/.claude while the
+// runtime reads the moved directory. Each value is resolved now, from the install's shell, as its
+// runtime resolves it, and recorded as an absolute path so a relative value still means the
+// directory it named at install time:
 //   - CODEX_HOME must name an existing directory, as Codex requires; otherwise nothing is recorded.
+//   - HERMES_HOME is trimmed and expanded as Hermes does, and HERMES_DATA_DIR_SUFFIX is recorded as
+//     it is. HERMES_HOME is recorded before profiles are applied, so the job still follows a later
+//     `hermes profile use`.
 //   - CLINE_DIR is used whenever it is non-empty after trimming, as Cline uses it.
 //   - GEMINI_CLI_HOME is used whenever it is non-empty, as Gemini CLI uses it.
 //   - CLAUDE_CONFIG_DIR is used whenever it is non-empty after trimming, as Claude Code uses it.
@@ -155,6 +160,12 @@ func inventoryJobEnv(userMode bool) map[string]string {
 		if dir, err := codexsession.HomeDir(""); err == nil {
 			env["CODEX_HOME"] = dir
 		}
+	}
+	if dir, err := hermessession.HomeOverride(""); err == nil && dir != "" {
+		env["HERMES_HOME"] = dir
+	}
+	if suffix := os.Getenv("HERMES_DATA_DIR_SUFFIX"); suffix != "" {
+		env["HERMES_DATA_DIR_SUFFIX"] = suffix
 	}
 	if value := strings.TrimSpace(os.Getenv("CLINE_DIR")); value != "" {
 		if dir, err := filepath.Abs(value); err == nil {

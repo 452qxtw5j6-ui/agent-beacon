@@ -20,6 +20,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/harness"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 )
 
 const (
@@ -497,8 +498,14 @@ func omoCandidates(home, wd string) []candidate {
 	return items
 }
 
+// hermesCandidates resolves config.yaml through HERMES_HOME and the active profile, as Hermes does,
+// and leaves it out when the active profile names one Hermes itself would refuse to start with.
 func hermesCandidates(home string) []candidate {
-	return []candidate{{runtime: "hermes", path: filepath.Join(home, ".hermes", "config.yaml"), scope: ScopeUser, format: formatYAML, kind: KindNativeConfig}}
+	dir, err := hermessession.HomeDir(home)
+	if err != nil {
+		return nil
+	}
+	return []candidate{{runtime: "hermes", path: filepath.Join(dir, "config.yaml"), scope: ScopeUser, format: formatYAML, kind: KindNativeConfig}}
 }
 
 func devinCandidates(home, wd string) []candidate {

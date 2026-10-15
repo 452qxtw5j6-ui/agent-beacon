@@ -15,6 +15,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/integrations/cowork"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 	"gopkg.in/yaml.v3"
 )
 
@@ -255,8 +256,14 @@ func DiscoverHermes() Harness {
 	h := Harness{Name: "hermes", DisplayName: "Hermes Agent", Capability: "hooks"}
 	detectExecutable(&h, "hermes")
 	home, _ := os.UserHomeDir()
-	h.ConfigPath = filepath.Join(home, ".hermes", "config.yaml")
-	if !h.Detected && dirExists(filepath.Join(home, ".hermes")) {
+	dir, err := hermessession.HomeDir(home)
+	if err != nil {
+		h.TelemetryStatus = TelemetryMissing
+		h.Message = "Hermes home directory could not be resolved: " + err.Error()
+		return h
+	}
+	h.ConfigPath = filepath.Join(dir, "config.yaml")
+	if !h.Detected && dirExists(dir) {
 		h.Detected = true
 	}
 	if fileExists(h.ConfigPath) {

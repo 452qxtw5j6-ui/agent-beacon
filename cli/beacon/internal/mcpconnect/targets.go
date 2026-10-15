@@ -11,6 +11,7 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/codexsession"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/harness"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/hermessession"
 )
 
 // ServerName is the name Beacon registers the Beacon Cloud MCP server under in every harness.
@@ -236,7 +237,7 @@ func Targets() []Target {
 		{
 			Name: "hermes", DisplayName: "Hermes Agent", Aliases: []string{"hermes", "hermes-agent"},
 			manual: func(url string) string {
-				return "Add to ~/.hermes/config.yaml:\n" +
+				return "Add to " + hermesConfigHint() + ":\n" +
 					"mcp_servers:\n  " + ServerName + ":\n    url: " + url + "\n    headers:\n      Authorization: \"Bearer <token>\""
 			},
 		},
@@ -319,6 +320,18 @@ func codexConfigPath(home string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "config.toml"), nil
+}
+
+// hermesConfigHint names the config.yaml a plain `hermes` reads, resolved through HERMES_HOME and
+// the active profile as Hermes does. When that fails, it says why instead of naming a file Hermes
+// would not read.
+func hermesConfigHint() string {
+	home, _ := os.UserHomeDir()
+	dir, err := hermessession.HomeDir(home)
+	if err != nil {
+		return "config.yaml in your Hermes home (" + err.Error() + ")"
+	}
+	return filepath.Join(dir, "config.yaml")
 }
 
 // vscodeMCPPath is the user-profile mcp.json, next to the settings.json VS Code discovery uses.
