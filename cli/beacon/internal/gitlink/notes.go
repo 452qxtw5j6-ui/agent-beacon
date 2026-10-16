@@ -103,10 +103,13 @@ func updateNoteOnce(ctx context.Context, g Git, commit string, update func(strin
 	}
 	defer func() {
 		// Best effort, and on a fresh context: a transaction that timed out must still not leave
-		// its working ref behind.
-		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// its working ref behind. Every ref deletion takes packed-refs.lock, which concurrent
+		// writers contend for, so wait for it longer than git's default second -- but never
+		// further past the caller's deadline than that second.
+		wait := txCleanupWait(ctx)
+		cleanup, cancel := context.WithTimeout(context.Background(), wait+time.Second)
 		defer cancel()
-		_, _ = g.Run(cleanup, nil, "update-ref", "-d", txRef)
+		_, _ = g.Run(cleanup, nil, "-c", "core.packedRefsTimeout="+strconv.FormatInt(wait.Milliseconds(), 10), "update-ref", "-d", txRef)
 	}()
 
 	current, err := readNote(ctx, g, txRef, commit)
@@ -141,6 +144,15 @@ func updateNoteOnce(ctx context.Context, g Git, commit string, update func(strin
 }
 
 func normalizeNote(note string) string { return MergeNote(note, nil) }
+
+// txCleanupWait is how long a transaction's ref deletion waits for packed-refs.lock.
+func txCleanupWait(ctx context.Context) time.Duration {
+	wait := 5 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		wait = min(wait, max(time.Until(deadline), 0)+time.Second)
+	}
+	return wait
+}
 
 func refMoved(ctx context.Context, g Git, base string) (bool, error) {
 	now, err := resolveRef(ctx, g, NotesRef)

@@ -266,6 +266,49 @@ func TestAddLinksConcurrentWritersLoseNothing(t *testing.T) {
 	}
 }
 
+func TestAddLinksWaitsForPackedRefsLock(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("f", "1")
+	sha := r.commitAt("c", t0)
+	// Another writer's ref deletion holds packed-refs.lock for longer than git's default wait.
+	lock := filepath.Join(r.root, ".git", "packed-refs.lock")
+	if err := os.WriteFile(lock, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	go func() {
+		defer close(released)
+		time.Sleep(1500 * time.Millisecond)
+		_ = os.Remove(lock)
+	}()
+	if _, err := AddLinks(context.Background(), r.gitClient(), sha, []Link{{Harness: "codex", SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	<-released
+	if refs := r.git("for-each-ref", "--format=%(refname)", "refs/notes/"); refs != NotesRef {
+		t.Fatalf("leftover transaction refs:\n%s", refs)
+	}
+}
+
+func TestAddLinksCleanupKeepsCallerDeadline(t *testing.T) {
+	r := newTestRepo(t)
+	r.write("f", "1")
+	sha := r.commitAt("c", t0)
+	if err := os.WriteFile(filepath.Join(r.root, ".git", "packed-refs.lock"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	start := time.Now()
+	if _, err := AddLinks(ctx, r.gitClient(), sha, []Link{{Harness: "codex", SessionID: "s"}}); err != nil {
+		t.Fatal(err)
+	}
+	// The deadline plus one second of lock wait, not the five a caller without a deadline gets.
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Fatalf("AddLinks took %v under a 1s deadline", elapsed)
+	}
+}
+
 func TestListLinked(t *testing.T) {
 	r := newTestRepo(t)
 	ctx := context.Background()
