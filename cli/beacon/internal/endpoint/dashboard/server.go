@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,9 @@ type Options struct {
 	// LensFiles are lens files served alongside the built-ins, read from disk on every request.
 	// They are for developing a lens; the dashboard never writes them.
 	LensFiles []string
+	// EnvironmentDir holds runtime environment reports written by other machines
+	// (`beacon endpoint environment --output`). The dashboard only reads it.
+	EnvironmentDir string
 }
 
 type StatusResponse struct {
@@ -146,6 +150,18 @@ func Handler(opts Options) (http.Handler, error) {
 			return
 		}
 		writeJSON(w, scanEnvironment(environment.Options{}))
+	})
+	mux.HandleFunc("/api/environment/hosts", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		host, _ := os.Hostname()
+		reports := environment.ReadReports(opts.EnvironmentDir, host, time.Now())
+		if reports == nil {
+			reports = []environment.HostReport{}
+		}
+		writeJSON(w, reports)
 	})
 	mux.HandleFunc("/api/summary", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

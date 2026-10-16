@@ -10,6 +10,24 @@
   };
   const supervisorTone = { launchd: "badge-ok", app: "badge-muted", unmanaged: "badge-warn" };
 
+  let reports = [];
+  let selected = 0;
+
+  function renderHosts() {
+    const el = document.getElementById("environment-hosts");
+    el.hidden = reports.length < 2;
+    el.innerHTML = reports
+      .map((report, index) => `<button type="button" class="${index === selected ? "active" : ""}" data-host="${index}">${esc(report.host || "this machine")}${index === 0 ? " (this machine)" : ""}${report.stale ? ' <span class="badge badge-warn">stale</span>' : ""} (${(report.warnings || []).length})</button>`)
+      .join("");
+    el.querySelectorAll("[data-host]").forEach((button) =>
+      button.addEventListener("click", () => {
+        selected = Number(button.dataset.host);
+        renderHosts();
+        render(reports[selected]);
+      }),
+    );
+  }
+
   function render(report) {
     const installs = report.installs || [];
     const processes = report.processes || [];
@@ -18,6 +36,7 @@
     const warnings = report.warnings || [];
     document.getElementById("environment-meta").textContent =
       `${report.host || "This machine"} · scanned ${new Date(report.generated_at).toLocaleString()}` +
+      (report.stale ? " · stale: this machine has not written a new report in over 30 minutes" : "") +
       (report.supported ? "" : " · process and launchd details are collected on macOS only");
 
     const cards = [
@@ -66,12 +85,17 @@
     ], "No launchd job starts these CLIs.");
   }
 
-  fetch("/api/environment", { headers: { Accept: "application/json" } })
-    .then((resp) => {
+  const getJSON = (path) =>
+    fetch(path, { headers: { Accept: "application/json" } }).then((resp) => {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
       return resp.json();
+    });
+  Promise.all([getJSON("/api/environment"), getJSON("/api/environment/hosts").catch(() => [])])
+    .then(([local, others]) => {
+      reports = [local, ...(others || [])];
+      renderHosts();
+      render(reports[0]);
     })
-    .then(render)
     .catch((err) => {
       document.getElementById("environment-meta").textContent = `Failed to load environment: ${err.message}`;
     });

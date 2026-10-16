@@ -884,3 +884,66 @@ func uniqueStrings(items []string) []string {
 	}
 	return out
 }
+
+// --- sharing reports between machines ---
+
+// ReportStaleAfter is how old another machine's report may be before the dashboard marks it stale.
+const ReportStaleAfter = 30 * time.Minute
+
+// WriteFile writes the report as JSON through a temporary file and a rename, so a reader on a
+// synced folder never sees half a report.
+func WriteFile(path string, report Report) error {
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".environment-*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// HostReport is another machine's report read from a shared folder.
+type HostReport struct {
+	Report
+	File  string `json:"file"`
+	Stale bool   `json:"stale"`
+}
+
+// ReadReports reads every *.json report in dir, skipping the local host and unreadable files.
+func ReadReports(dir, localHost string, now time.Time) []HostReport {
+	if dir == "" {
+		return nil
+	}
+	paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	var out []HostReport
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var report Report
+		if json.Unmarshal(data, &report) != nil || report.Host == "" || report.Host == localHost {
+			continue
+		}
+		item := HostReport{Report: report, File: path}
+		if generated, err := time.Parse(time.RFC3339, report.GeneratedAt); err != nil || now.Sub(generated) > ReportStaleAfter {
+			item.Stale = true
+		}
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
+	return out
+}

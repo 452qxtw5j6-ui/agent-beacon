@@ -92,9 +92,10 @@ func runEndpointDashboard(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return dashboardListenAndServe(dashboard.Options{
-		Addr:     endpointOpts.dashboardAddr,
-		LogPath:  endpointOpts.logPath,
-		UserMode: userMode,
+		Addr:           endpointOpts.dashboardAddr,
+		LogPath:        endpointOpts.logPath,
+		UserMode:       userMode,
+		EnvironmentDir: endpointDashboardEnvironmentDir,
 	})
 }
 

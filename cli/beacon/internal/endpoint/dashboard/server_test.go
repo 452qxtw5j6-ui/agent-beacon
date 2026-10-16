@@ -566,6 +566,25 @@ func TestEnvironmentEndpointServesTheScan(t *testing.T) {
 		t.Fatalf("environment response = %+v", resp)
 	}
 	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/environment/hosts", nil))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("hosts without a folder = %d %s", rec.Code, rec.Body.String())
+	}
+	dir := t.TempDir()
+	if err := environment.WriteFile(filepath.Join(dir, "server.json"), environment.Report{Host: "server-mac", GeneratedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		t.Fatal(err)
+	}
+	withDir, err := Handler(Options{UserMode: true, LogPath: filepath.Join(t.TempDir(), "runtime.jsonl"), EnvironmentDir: dir})
+	if err != nil {
+		t.Fatalf("Handler returned error: %v", err)
+	}
+	rec = httptest.NewRecorder()
+	withDir.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/environment/hosts", nil))
+	var hosts []environment.HostReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &hosts); err != nil || len(hosts) != 1 || hosts[0].Host != "server-mac" || hosts[0].Stale {
+		t.Fatalf("hosts = %s (%v)", rec.Body.String(), err)
+	}
+	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/environment", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("POST status = %d", rec.Code)

@@ -13,7 +13,12 @@ import (
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/environment"
 )
 
-var endpointEnvironmentJSON bool
+var (
+	endpointEnvironmentJSON   bool
+	endpointEnvironmentOutput string
+
+	endpointDashboardEnvironmentDir string
+)
 
 var endpointEnvironmentCmd = &cobra.Command{
 	Use:          "environment",
@@ -22,6 +27,9 @@ var endpointEnvironmentCmd = &cobra.Command{
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		report := environment.Scan(environment.Options{})
+		if endpointEnvironmentOutput != "" {
+			return environment.WriteFile(endpointEnvironmentOutput, report)
+		}
 		if endpointEnvironmentJSON {
 			return json.NewEncoder(os.Stdout).Encode(report)
 		}
@@ -31,7 +39,9 @@ var endpointEnvironmentCmd = &cobra.Command{
 
 func init() {
 	endpointEnvironmentCmd.Flags().BoolVar(&endpointEnvironmentJSON, "json", false, "Print the environment report as JSON")
+	endpointEnvironmentCmd.Flags().StringVar(&endpointEnvironmentOutput, "output", "", "Write the report as JSON to this file (atomically) instead of printing it, for a dashboard on another machine to read")
 	endpointCmd.AddCommand(endpointEnvironmentCmd)
+	endpointDashboardCmd.Flags().StringVar(&endpointDashboardEnvironmentDir, "environment-dir", "", "Folder of runtime environment reports from other machines to show beside this one")
 }
 
 func printEnvironment(out io.Writer, report environment.Report) error {
