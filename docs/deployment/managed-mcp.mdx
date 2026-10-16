@@ -131,6 +131,9 @@ anyone else's data. A tool that needs write access is hidden from read-only conn
 | `beacon_usage` | Summarizes token usage and reported cost by model, harness, repository or day |
 | `beacon_lenses_list` | Lists your lenses, the lenses you added, or the marketplace |
 | `beacon_lenses_*` | Create, upload, release and update lenses (write access). See [Lenses with MCP](/cloud/lenses/lenses-mcp) |
+| `beacon_shared_traces_list` | Lists your shared traces with their link, visibility and view counts |
+| `beacon_share_session` | Shares one of your sessions as a trace and returns its link; direct (link-only) unless you ask for public or private (write access) |
+| `beacon_shared_trace_update` | Changes a shared trace's visibility, title or keep-updating setting, or unshares it after you confirm (write access) |
 | `beacon_findings_list` | Lists your findings, the ones that still need review first, filtered by severity or kind |
 | `beacon_get_finding` | Returns one finding in full: detail, recommendation, cited sessions and evidence, and the prompt in effect |
 | `beacon_finding_feedback` | Marks a finding helpful or not helpful with a note, and/or sets it resolved, dismissed or open (write access) |
