@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Beacon | Self‑improving memory for coding agents</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body data-page="environment">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Local-only</p>
+        <h1>Runtime Environment</h1>
+      </div>
+      <nav class="nav-toggle" aria-label="Dashboard navigation">
+        <div class="nav-section">
+          <div class="nav-section-title">Overview</div>
+          <a href="/findings.html">Findings</a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-parent">Analytics</div>
+          <a href="/tokens.html">Token Usage</a>
+          <a href="/overview.html">Agent Activity</a>
+          <a href="/memory.html">Memory</a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-title">Observe</div>
+          <a href="/inventory.html">Agent Inventory</a>
+          <a class="active" aria-current="page" href="/environment.html">Runtime Environment</a>
+          <a href="/">Agent Activity Sessions</a>
+        </div>
+        <div class="nav-section">
+          <div class="nav-section-title">Control</div>
+          <a href="/detections.html">Detections</a>
+        </div>
+      </nav>
+    </header>
+
+    <main>
+      <div class="inventory-page-head">
+        <h1>Runtime Environment</h1>
+        <p class="muted" id="environment-meta">Loading...</p>
+      </div>
+      <section class="cards" id="environment-cards"></section>
+      <section class="panel" id="environment-warnings-panel">
+        <div class="section-head"><div><h2>Warnings</h2><p class="muted">Duplicate installs, broken links, processes nothing will restart, SSH-backed MCP servers and failing launchd jobs.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Subject</th><th>Detail</th></tr></thead><tbody id="environment-warnings"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><div><h2>Installs</h2><p class="muted">Every Claude Code and Codex CLI found on this machine. Versions come from paths and package files; nothing is executed.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Tool</th><th>Kind</th><th>Source</th><th>Version</th><th>Active</th><th>Path</th></tr></thead><tbody id="environment-installs"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><div><h2>Processes</h2><p class="muted">Running Claude Code and Codex processes and what supervises them. Command arguments are never shown.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>PID</th><th>Tool</th><th>Executable</th><th>Subcommand</th><th>Uptime</th><th>RSS MB</th><th>Supervisor</th></tr></thead><tbody id="environment-processes"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><div><h2>Plugins</h2><p class="muted">Claude Code and Codex plugins and the MCP servers they add.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Runtime</th><th>Plugin</th><th>Version</th><th>Enabled</th><th>MCP servers</th></tr></thead><tbody id="environment-plugins"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="section-head"><div><h2>launchd jobs</h2><p class="muted">User LaunchAgents that start or supervise these CLIs.</p></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Label</th><th>Running</th><th>Last exit</th><th>Interval</th><th>Recent errors</th><th>Program</th></tr></thead><tbody id="environment-jobs"></tbody></table></div>
+      </section>
+    </main>
+
+    <script src="/environment.js"></script>
+  </body>
+</html>

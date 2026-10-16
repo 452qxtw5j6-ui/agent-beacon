@@ -14,6 +14,7 @@ import (
 
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/auth"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/detect"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/environment"
 	endpointhooks "github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/hooks"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/inventory"
 	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/lensstore"
@@ -82,6 +83,7 @@ var (
 	resolveRuntimeLog = lifecycle.ResolveRuntimeLog
 	getEndpointStatus = lifecycle.GetStatus
 	scanInventory     = inventory.Scan
+	scanEnvironment   = environment.Scan
 )
 
 func Handler(opts Options) (http.Handler, error) {
@@ -137,6 +139,13 @@ func Handler(opts Options) (http.Handler, error) {
 			MCPServers:  scan.MCPServers,
 			Skills:      scan.Skills,
 		})
+	})
+	mux.HandleFunc("/api/environment", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			methodNotAllowed(w)
+			return
+		}
+		writeJSON(w, scanEnvironment(environment.Options{}))
 	})
 	mux.HandleFunc("/api/summary", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {

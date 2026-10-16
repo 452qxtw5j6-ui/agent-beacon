@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"encoding/json"
+	"github.com/asymptote-labs/agent-beacon/cli/beacon/internal/endpoint/environment"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -542,6 +543,35 @@ func TestRunScanRejectsEmptyRuleSet(t *testing.T) {
 	}
 }
 
+func TestEnvironmentEndpointServesTheScan(t *testing.T) {
+	previous := scanEnvironment
+	t.Cleanup(func() { scanEnvironment = previous })
+	scanEnvironment = func(environment.Options) environment.Report {
+		return environment.Report{Host: "test-host", Warnings: []environment.Warning{{Kind: "duplicate_install", Subject: "codex"}}}
+	}
+	handler, err := Handler(Options{UserMode: true, LogPath: filepath.Join(t.TempDir(), "runtime.jsonl")})
+	if err != nil {
+		t.Fatalf("Handler returned error: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/environment", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp environment.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal environment response: %v", err)
+	}
+	if resp.Host != "test-host" || len(resp.Warnings) != 1 {
+		t.Fatalf("environment response = %+v", resp)
+	}
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/environment", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d", rec.Code)
+	}
+}
+
 func TestInventoryEndpointReturnsConfigsAndMCPServers(t *testing.T) {
 	home := t.TempDir()
 	testenv.SetHome(t, home)
@@ -653,6 +683,7 @@ func TestStaticDashboardPagesServe(t *testing.T) {
 		{path: "/findings.html", want: "Beacon | Self‑improving memory for coding agents"},
 		{path: "/inventory.html", want: "Beacon | Self‑improving memory for coding agents"},
 		{path: "/inventory-hooks.html", want: "Beacon | Self‑improving memory for coding agents"},
+		{path: "/environment.html", want: "Beacon | Self‑improving memory for coding agents"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
