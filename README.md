@@ -159,10 +159,11 @@ Or inspect the raw event stream:
 
 > [!NOTE]
 > Signing in does not enable forwarding. Confirming the preselected Beacon Cloud
-> option does: the wizard says so on the confirm screen, names what your chosen
-> privacy mode sends, and connects the endpoint after the install succeeds. Choose
-> Local to keep everything on this machine, and disconnect any time with
-> `beacon endpoint disconnect`.
+> option does: the confirm screen names the signed-in account, states that
+> confirming installs Beacon and starts forwarding, names Asymptote Labs as the
+> operator, the destination, and the capture mode, and connects the endpoint
+> after the install succeeds. Choose Local to keep everything on this machine,
+> and disconnect any time with `beacon endpoint disconnect`.
 
 Whichever destination you choose, the wizard also installs the
 [Beacon Skills](https://docs.beacon.sh/concepts/beacon-skills) into `~/.agents/skills`
