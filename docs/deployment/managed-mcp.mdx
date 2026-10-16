@@ -110,10 +110,11 @@ List my five most recent Beacon sessions.
 
 When your client signs in, the Beacon approval page asks what to allow:
 
-- **Read** is always granted. The agent can search and read your sessions: prompts, responses,
-  tool calls and output, commands and file edits.
+- **Read** is always granted. The agent can search and read your sessions (prompts, responses,
+  tool calls and output, commands and file edits) and your findings.
 - **Write** is optional and only offered when the client asks for it. Tick the checkbox to let the
-  agent create, upload, release and publish lenses under your account.
+  agent share your sessions, create, upload, release and publish lenses under your account, and
+  record your feedback on findings or resolve and dismiss them.
 
 Neither lets the agent change your sessions, your devices, or anything on your machine, or read
 anyone else's data. A tool that needs write access is hidden from read-only connections.
@@ -130,11 +131,21 @@ anyone else's data. A tool that needs write access is hidden from read-only conn
 | `beacon_usage` | Summarizes token usage and reported cost by model, harness, repository or day |
 | `beacon_lenses_list` | Lists your lenses, the lenses you added, or the marketplace |
 | `beacon_lenses_*` | Create, upload, release and update lenses (write access). See [Lenses with MCP](/cloud/lenses/lenses-mcp) |
+| `beacon_findings_list` | Lists your findings, the ones that still need review first, filtered by severity or kind |
+| `beacon_get_finding` | Returns one finding in full: detail, recommendation, cited sessions and evidence, and the prompt in effect |
+| `beacon_finding_feedback` | Marks a finding helpful or not helpful with a note, and/or sets it resolved, dismissed or open (write access) |
 
 Time filters accept a relative window such as `24h`, `7d` or `2w`, or exact `after` and `before`
 dates. `beacon_read_session` also accepts a dashboard session URL.
 
 Agents work best when they search first and then read only the part of a session they need.
+
+Findings are what Beacon Cloud's hourly analysis noticed in your forwarded activity (security
+issues, repeated workflows worth turning into skills, and behavioral insights), the same ones the
+dashboard's **Findings** page shows. They are separate from the local `beacon scan` results.
+Feedback and status set over MCP are the same review you give on the dashboard: the next analysis
+reads your feedback and note, so it stops repeating what you rejected. `beacon_get_finding` and
+`beacon_finding_feedback` also accept a finding's dashboard URL.
 
 ## Example prompts
 
@@ -143,6 +154,8 @@ Agents work best when they search first and then read only the part of a session
 - "Search my Claude Code and Cursor history for changes to the MCP connection flow."
 - "Summarize token usage for this repository over the past seven days, by model."
 - "Build a lens that shows every failed command and publish it." (needs write access)
+- "Which of my Beacon findings are high severity? Open the first one and check its evidence."
+- "Dismiss that finding as not helpful: the key it flagged is a test fixture." (needs write access)
 
 Session titles and summaries are metadata. For exact claims about commands, files or errors, have
 the agent read the events.

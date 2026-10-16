@@ -26,8 +26,10 @@ with different names, so neither entry ever overwrites the other:
 | `beacon-managed` | Session history this endpoint forwarded to Beacon Cloud | Beacon Cloud, over HTTPS | `beacon mcp connect` |
 
 Beacon Cloud MCP reads your forwarded history with `beacon_search_sessions`, `beacon_grep`,
-`beacon_read_session`, `beacon_get_event`, `beacon_lookup` and `beacon_usage`. A connection
-signed in with write access can also publish lenses; see [Beacon Cloud MCP](/deployment/managed-mcp#tools).
+`beacon_read_session`, `beacon_get_event`, `beacon_lookup` and `beacon_usage`, and your Beacon
+Cloud findings with `beacon_findings_list` and `beacon_get_finding`. A connection signed in with
+write access can also share sessions, publish lenses and give feedback on findings; see
+[Beacon Cloud MCP](/deployment/managed-mcp#tools).
 Tokens from `beacon mcp token create` are always read-only.
 
 <Note>
