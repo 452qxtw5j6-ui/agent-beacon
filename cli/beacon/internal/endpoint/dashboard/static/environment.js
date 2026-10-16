@@ -17,7 +17,7 @@
     const el = document.getElementById("environment-hosts");
     el.hidden = reports.length < 2;
     el.innerHTML = reports
-      .map((report, index) => `<button type="button" class="${index === selected ? "active" : ""}" data-host="${index}">${esc(report.host || "this machine")}${index === 0 ? " (this machine)" : ""}${report.stale ? ' <span class="badge badge-warn">stale</span>' : ""} (${(report.warnings || []).length})</button>`)
+      .map((report, index) => `<button type="button" class="${index === selected ? "active" : ""}" data-host="${index}">${esc(report.host || report.source || "this machine")}${index === 0 ? " (this machine)" : ""}${report.error ? ' <span class="badge badge-danger">unreachable</span>' : ""}${report.stale ? ' <span class="badge badge-warn">stale</span>' : ""} (${(report.warnings || []).length})</button>`)
       .join("");
     el.querySelectorAll("[data-host]").forEach((button) =>
       button.addEventListener("click", () => {
@@ -34,8 +34,9 @@
     const plugins = report.plugins || [];
     const jobs = report.launch_jobs || [];
     const warnings = report.warnings || [];
-    document.getElementById("environment-meta").textContent =
-      `${report.host || "This machine"} · scanned ${new Date(report.generated_at).toLocaleString()}` +
+    document.getElementById("environment-meta").textContent = report.error
+      ? `${report.source}: ${report.error}`
+      : `${report.host || "This machine"} · scanned ${new Date(report.generated_at).toLocaleString()}` +
       (report.stale ? " · stale: this machine has not written a new report in over 30 minutes" : "") +
       (report.supported ? "" : " · process and launchd details are collected on macOS only");
 

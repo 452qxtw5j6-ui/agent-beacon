@@ -11,6 +11,9 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -915,35 +918,49 @@ func WriteFile(path string, report Report) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// HostReport is another machine's report read from a shared folder.
+// HostReport is another machine's report fetched from the address it publishes it at.
 type HostReport struct {
 	Report
-	File  string `json:"file"`
-	Stale bool   `json:"stale"`
+	Source string `json:"source"`
+	Stale  bool   `json:"stale"`
+	Error  string `json:"error,omitempty"`
 }
 
-// ReadReports reads every *.json report in dir, skipping the local host and unreadable files.
-func ReadReports(dir, localHost string, now time.Time) []HostReport {
-	if dir == "" {
-		return nil
-	}
-	paths, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+// FetchReports fetches each published report over HTTP. A machine that cannot be reached is
+// returned with its error rather than dropped, so the dashboard shows it as missing.
+func FetchReports(client *http.Client, urls []string, now time.Time) []HostReport {
 	var out []HostReport
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
+	for _, url := range urls {
+		item := HostReport{Source: url}
+		report, err := fetchReport(client, url)
 		if err != nil {
-			continue
-		}
-		var report Report
-		if json.Unmarshal(data, &report) != nil || report.Host == "" || report.Host == localHost {
-			continue
-		}
-		item := HostReport{Report: report, File: path}
-		if generated, err := time.Parse(time.RFC3339, report.GeneratedAt); err != nil || now.Sub(generated) > ReportStaleAfter {
+			item.Error = err.Error()
 			item.Stale = true
+		} else {
+			item.Report = report
+			generated, err := time.Parse(time.RFC3339, report.GeneratedAt)
+			item.Stale = err != nil || now.Sub(generated) > ReportStaleAfter
 		}
 		out = append(out, item)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Host < out[j].Host })
 	return out
+}
+
+func fetchReport(client *http.Client, url string) (Report, error) {
+	var report Report
+	resp, err := client.Get(url)
+	if err != nil {
+		return report, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return report, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 8<<20)).Decode(&report); err != nil {
+		return report, err
+	}
+	if report.Host == "" {
+		return report, fmt.Errorf("not an environment report")
+	}
+	return report, nil
 }

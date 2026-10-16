@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -37,9 +36,9 @@ type Options struct {
 	// LensFiles are lens files served alongside the built-ins, read from disk on every request.
 	// They are for developing a lens; the dashboard never writes them.
 	LensFiles []string
-	// EnvironmentDir holds runtime environment reports written by other machines
-	// (`beacon endpoint environment --output`). The dashboard only reads it.
-	EnvironmentDir string
+	// EnvironmentURLs are addresses where other machines publish their runtime environment
+	// report (`beacon endpoint environment --output`), fetched read-only on each request.
+	EnvironmentURLs []string
 }
 
 type StatusResponse struct {
@@ -156,8 +155,7 @@ func Handler(opts Options) (http.Handler, error) {
 			methodNotAllowed(w)
 			return
 		}
-		host, _ := os.Hostname()
-		reports := environment.ReadReports(opts.EnvironmentDir, host, time.Now())
+		reports := environment.FetchReports(&http.Client{Timeout: 5 * time.Second}, opts.EnvironmentURLs, time.Now())
 		if reports == nil {
 			reports = []environment.HostReport{}
 		}

@@ -17,7 +17,7 @@ var (
 	endpointEnvironmentJSON   bool
 	endpointEnvironmentOutput string
 
-	endpointDashboardEnvironmentDir string
+	endpointDashboardEnvironmentURLs []string
 )
 
 var endpointEnvironmentCmd = &cobra.Command{
@@ -41,7 +41,7 @@ func init() {
 	endpointEnvironmentCmd.Flags().BoolVar(&endpointEnvironmentJSON, "json", false, "Print the environment report as JSON")
 	endpointEnvironmentCmd.Flags().StringVar(&endpointEnvironmentOutput, "output", "", "Write the report as JSON to this file (atomically) instead of printing it, for a dashboard on another machine to read")
 	endpointCmd.AddCommand(endpointEnvironmentCmd)
-	endpointDashboardCmd.Flags().StringVar(&endpointDashboardEnvironmentDir, "environment-dir", "", "Folder of runtime environment reports from other machines to show beside this one")
+	endpointDashboardCmd.Flags().StringArrayVar(&endpointDashboardEnvironmentURLs, "environment-url", nil, "Address where another machine publishes its runtime environment report, shown beside this one (repeatable)")
 }
 
 func printEnvironment(out io.Writer, report environment.Report) error {

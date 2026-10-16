@@ -574,7 +574,9 @@ func TestEnvironmentEndpointServesTheScan(t *testing.T) {
 	if err := environment.WriteFile(filepath.Join(dir, "server.json"), environment.Report{Host: "server-mac", GeneratedAt: time.Now().UTC().Format(time.RFC3339)}); err != nil {
 		t.Fatal(err)
 	}
-	withDir, err := Handler(Options{UserMode: true, LogPath: filepath.Join(t.TempDir(), "runtime.jsonl"), EnvironmentDir: dir})
+	published := httptest.NewServer(http.FileServer(http.Dir(dir)))
+	defer published.Close()
+	withDir, err := Handler(Options{UserMode: true, LogPath: filepath.Join(t.TempDir(), "runtime.jsonl"), EnvironmentURLs: []string{published.URL + "/server.json"}})
 	if err != nil {
 		t.Fatalf("Handler returned error: %v", err)
 	}

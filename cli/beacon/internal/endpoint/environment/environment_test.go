@@ -2,6 +2,8 @@ package environment
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -220,13 +222,12 @@ func TestParseEtime(t *testing.T) {
 	}
 }
 
-func TestReportsRoundTripThroughASharedFolder(t *testing.T) {
+func TestReportsArePublishedAndFetched(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Date(2026, 10, 16, 12, 0, 0, 0, time.UTC)
 	fresh := Report{Host: "server", GeneratedAt: now.Add(-5 * time.Minute).Format(time.RFC3339), Warnings: []Warning{{Kind: "duplicate_install", Subject: "codex"}}}
 	old := Report{Host: "laptop", GeneratedAt: now.Add(-2 * time.Hour).Format(time.RFC3339)}
-	self := Report{Host: "work", GeneratedAt: now.Format(time.RFC3339)}
-	for name, report := range map[string]Report{"server.json": fresh, "laptop.json": old, "work.json": self} {
+	for name, report := range map[string]Report{"server.json": fresh, "laptop.json": old} {
 		if err := WriteFile(filepath.Join(dir, name), report); err != nil {
 			t.Fatal(err)
 		}
@@ -235,11 +236,24 @@ func TestReportsRoundTripThroughASharedFolder(t *testing.T) {
 	if leftovers, _ := filepath.Glob(filepath.Join(dir, ".environment-*")); len(leftovers) != 0 {
 		t.Fatalf("temporary files left behind: %v", leftovers)
 	}
-	got := ReadReports(dir, "work", now)
-	if len(got) != 2 || got[0].Host != "laptop" || !got[0].Stale || got[1].Host != "server" || got[1].Stale || len(got[1].Warnings) != 1 {
-		t.Fatalf("ReadReports = %+v", got)
+	server := httptest.NewServer(http.FileServer(http.Dir(dir)))
+	defer server.Close()
+	got := FetchReports(server.Client(), []string{server.URL + "/server.json", server.URL + "/laptop.json", server.URL + "/broken.json", server.URL + "/missing.json"}, now)
+	if len(got) != 4 {
+		t.Fatalf("FetchReports = %+v", got)
 	}
-	if ReadReports("", "work", now) != nil {
-		t.Fatal("an unset folder must read nothing")
+	if got[0].Host != "server" || got[0].Stale || got[0].Error != "" || len(got[0].Warnings) != 1 {
+		t.Fatalf("fresh report = %+v", got[0])
+	}
+	if got[1].Host != "laptop" || !got[1].Stale {
+		t.Fatalf("old report = %+v", got[1])
+	}
+	for _, item := range got[2:] {
+		if item.Error == "" || !item.Stale || item.Source == "" {
+			t.Fatalf("unreadable report = %+v", item)
+		}
+	}
+	if FetchReports(server.Client(), nil, now) != nil {
+		t.Fatal("no addresses must fetch nothing")
 	}
 }
